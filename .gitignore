@@ -12,5 +12,8 @@ Cargo.lock
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 
-# Don't commit reference dependencies
+# Don't commit references
 ref/*
+
+.vscode/*
+.idea/*

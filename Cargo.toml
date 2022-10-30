@@ -1,5 +1,4 @@
 [workspace]
 members = [
-    "galaxy_engine",
-    "vk_loader",
+    "galaxy_engine"
 ]
