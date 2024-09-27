@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ffi::{c_char, CStr};
 
 use ash::{ext, vk, Entry, Instance};
@@ -36,9 +37,69 @@ pub enum InstanceExtensionError {
     ExtensionNotFound(&'static CStr),
 }
 
+struct DebugMessenger {
+    messenger: vk::DebugUtilsMessengerEXT,
+    loader: ext::debug_utils::Instance,
+}
+
+impl DebugMessenger {
+    fn new(entry: &Entry, instance: &Instance) -> VkResult<Self> {
+        let debug_utils_ci = vk::DebugUtilsMessengerCreateInfoEXT::default()
+            .message_severity(
+                vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE |
+                    vk::DebugUtilsMessageSeverityFlagsEXT::WARNING |
+                    vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+            )
+            .message_type(
+                vk::DebugUtilsMessageTypeFlagsEXT::GENERAL |
+                    vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION |
+                    vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
+            )
+            .pfn_user_callback(Some(Self::debug_callback));
+
+        let loader = ext::debug_utils::Instance::new(entry, instance);
+        let messenger = unsafe { loader.create_debug_utils_messenger(&debug_utils_ci, None) }?;
+
+        Ok(Self { messenger, loader })
+    }
+
+    unsafe extern "system" fn debug_callback(
+        message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
+        message_type: vk::DebugUtilsMessageTypeFlagsEXT,
+        p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
+        _user_data: *mut std::os::raw::c_void,
+    ) -> vk::Bool32 {
+        let callback_data = *p_callback_data;
+        let message_id_number = callback_data.message_id_number;
+
+        let message_id_name = if callback_data.p_message_id_name.is_null() {
+            Cow::from("")
+        } else {
+            CStr::from_ptr(callback_data.p_message_id_name).to_string_lossy()
+        };
+
+        let message = if callback_data.p_message.is_null() {
+            Cow::from("")
+        } else {
+            CStr::from_ptr(callback_data.p_message).to_string_lossy()
+        };
+        
+        log::warn!("{message_severity:?}:\n{message_type:?} [{message_id_name} ({message_id_number})] : {message}\n");
+        
+        vk::FALSE
+    }
+}
+
+impl Drop for DebugMessenger {
+    fn drop(&mut self) {
+        unsafe { self.loader.destroy_debug_utils_messenger(self.messenger, None) };
+    }
+}
+
 pub struct GalaxyEngine {
     entry: Entry,
     instance: Instance,
+    debug_messenger: Option<DebugMessenger>,
 }
 
 impl GalaxyEngine {
@@ -69,14 +130,28 @@ impl GalaxyEngine {
             .engine_version(utils::parse_version(Self::ENGINE_VERSION_STR))
             .api_version(api_version);
 
+        let create_flags = if cfg!(any(target_os = "macos", target_os = "ios")) {
+            vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
+        } else {
+            vk::InstanceCreateFlags::default()
+        };
+
         let instance_ci = vk::InstanceCreateInfo::default()
             .application_info(&vk_app_info)
             .enabled_layer_names(&layers)
-            .enabled_extension_names(&extensions);
+            .enabled_extension_names(&extensions)
+            .flags(create_flags);
 
         let instance = unsafe { entry.create_instance(&instance_ci, None) }?;
 
-        Ok(Self { instance, entry })
+        // Create debug messenger.
+        let debug_messenger = if app_info.flags.contains(app::AppFlags::DEBUG) {
+            Some(DebugMessenger::new(&entry, &instance)?)
+        } else {
+            None
+        };
+
+        Ok(Self { instance, entry, debug_messenger })
     }
 
     fn get_instance_layers(entry: &Entry, flags: &app::AppFlags) -> VkResult<Vec<*const c_char>> {
@@ -88,6 +163,13 @@ impl GalaxyEngine {
         let mut required_layers = Vec::new();
         if flags.contains(app::AppFlags::DEBUG) {
             required_layers.push(VALIDATION_LAYER);
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        {
+            extension_names.push(ash::khr::portability_enumeration::NAME.as_ptr());
+            // Enabling this extension is a requirement when using `VK_KHR_portability_subset`
+            extension_names.push(ash::khr::get_physical_device_properties2::NAME.as_ptr());
         }
 
         // Check all required layers are available. Not fatal if not found.
@@ -105,11 +187,7 @@ impl GalaxyEngine {
         Ok(utils::cstr_to_ptrs(required_layers))
     }
 
-    fn get_required_instance_extensions(
-        entry: &Entry,
-        flags: &app::AppFlags,
-        display: DisplayHandle,
-    ) -> Result<Vec<*const c_char>, InstanceExtensionError> {
+    fn get_required_instance_extensions(entry: &Entry, flags: &app::AppFlags, display: DisplayHandle) -> Result<Vec<*const c_char>, InstanceExtensionError> {
         // Query available extensions
         let available_extensions = unsafe { entry.enumerate_instance_extension_properties(None) }?;
 
@@ -139,5 +217,12 @@ impl GalaxyEngine {
         }
 
         Ok(utils::cstr_to_ptrs(required_extensions))
+    }
+}
+
+impl Drop for GalaxyEngine {
+    fn drop(&mut self) {
+        drop(self.debug_messenger.take());
+        unsafe { self.instance.destroy_instance(None) };
     }
 }

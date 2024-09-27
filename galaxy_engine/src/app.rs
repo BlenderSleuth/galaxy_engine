@@ -4,6 +4,7 @@ use bitflags::bitflags;
 
 bitflags! {
     pub struct AppFlags: u32 {
+        // #[cfg(debug_assertions)]
         const DEBUG = 1 << 0;
     }
 }

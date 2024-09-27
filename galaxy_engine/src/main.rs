@@ -26,7 +26,7 @@ struct GalaxyApp {
 }
 
 impl GalaxyApp {
-    fn new(app_info: AppInfo) -> Self {
+    pub fn new(app_info: AppInfo) -> Self {
         Self {
             app_info,
             window: None,
