@@ -4,10 +4,10 @@ use ash::prelude::VkResult;
 use crate::device::Device;
 
 pub struct Swapchain {
-    swapchain_fn: khr::swapchain::Device,
-    swapchain: vk::SwapchainKHR,
-    swapchain_images: Vec<vk::Image>,
-    swapchain_image_views: Vec<vk::ImageView>,
+    functor: khr::swapchain::Device,
+    pub(crate) handle: vk::SwapchainKHR,
+    images: Vec<vk::Image>,
+    image_views: Vec<vk::ImageView>,
 }
 
 impl Swapchain {
@@ -22,13 +22,13 @@ impl Swapchain {
             (vk::SharingMode::EXCLUSIVE, Vec::new())
         };
 
-        let swapchain_fn = khr::swapchain::Device::new(&instance, &device.device());
-        let swapchain_ci = vk::SwapchainCreateInfoKHR::default()
+        let functor = khr::swapchain::Device::new(&instance, &device.device());
+        let swapchain_info = vk::SwapchainCreateInfoKHR::default()
             .surface(surface)
             .min_image_count(device_properties.image_count)
             .image_format(device_properties.swapchain_format.format)
             .image_color_space(device_properties.swapchain_format.color_space)
-            .image_extent(device_properties.swap_extent)
+            .image_extent(device_properties.swapchain_extent)
             .image_array_layers(1)
             .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
             .image_sharing_mode(image_sharing_mode)
@@ -37,15 +37,15 @@ impl Swapchain {
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(device_properties.presentation_mode)
             .clipped(true)
-            .old_swapchain(old_swapchain.map_or(vk::SwapchainKHR::null(), |swapchain| swapchain.swapchain));
+            .old_swapchain(old_swapchain.map_or(vk::SwapchainKHR::null(), |swapchain| swapchain.handle));
 
-        let swapchain = unsafe { swapchain_fn.create_swapchain(&swapchain_ci, None) }?;
+        let swapchain = unsafe { functor.create_swapchain(&swapchain_info, None) }?;
 
         // Get swapchain images.
-        let swapchain_images = unsafe { swapchain_fn.get_swapchain_images(swapchain) }?;
+        let images = unsafe { functor.get_swapchain_images(swapchain) }?;
 
         // Create image views.
-        let mut image_view_ci = vk::ImageViewCreateInfo::default()
+        let mut image_view_info = vk::ImageViewCreateInfo::default()
             .view_type(vk::ImageViewType::TYPE_2D)
             .format(device_properties.swapchain_format.format)
             .components(vk::ComponentMapping::default())
@@ -56,23 +56,31 @@ impl Swapchain {
                 base_array_layer: 0,
                 layer_count: 1,
             });
-        let swapchain_image_views = swapchain_images.iter().map(|swapchain_image| {
-            image_view_ci.image = *swapchain_image;
-            unsafe { device.device().create_image_view(&image_view_ci, None) }
+        let image_views = images.iter().map(|swapchain_image| {
+            image_view_info.image = *swapchain_image;
+            unsafe { device.device().create_image_view(&image_view_info, None) }
         }).collect::<VkResult<Vec<_>>>()?;
 
-        Ok(Self { swapchain_fn, swapchain, swapchain_images, swapchain_image_views })
+        Ok(Self { functor, handle: swapchain, images, image_views })
+    }
+    
+    pub fn get_functor(&self) -> &khr::swapchain::Device {
+        &self.functor
+    }
+    
+    pub fn get_image_views(&self) -> &[vk::ImageView] {
+        &self.image_views
     }
     
     pub unsafe fn destroy(&mut self, device: &Device) {
         // Drop image views.
-        for image_view in self.swapchain_image_views.iter() {
+        for image_view in self.image_views.iter() {
             unsafe { device.device().destroy_image_view(*image_view, None) };
         }
-        self.swapchain_image_views.clear();
-        self.swapchain_images.clear();
+        self.image_views.clear();
+        self.images.clear();
 
         // Drop swapchain (also drops images).
-        unsafe { self.swapchain_fn.destroy_swapchain(self.swapchain, None) };
+        unsafe { self.functor.destroy_swapchain(self.handle, None) };
     }
 }

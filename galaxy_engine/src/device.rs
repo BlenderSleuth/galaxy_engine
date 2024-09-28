@@ -18,7 +18,7 @@ pub struct PhysicalDeviceProperties {
     pub is_discrete: bool,
     pub swapchain_format: vk::SurfaceFormatKHR,
     pub presentation_mode: vk::PresentModeKHR,
-    pub swap_extent: vk::Extent2D,
+    pub swapchain_extent: vk::Extent2D,
     pub image_count: u32,
     pub surface_capabilities: vk::SurfaceCapabilitiesKHR,
 }
@@ -49,7 +49,7 @@ impl Device {
             return Err(DeviceInitError::NoPhysicalDevices);
         }
 
-        let required_device_extensions = vec![khr::swapchain::NAME];
+        let required_device_extensions = vec![khr::swapchain::NAME, khr::dynamic_rendering::NAME];
 
         let mut current_device_properties = None;
         for physical_device in physical_devices.iter() {
@@ -145,7 +145,7 @@ impl Device {
                 is_discrete: unsafe { instance.get_physical_device_properties(*physical_device) }.device_type == vk::PhysicalDeviceType::DISCRETE_GPU,
                 swapchain_format,
                 presentation_mode,
-                swap_extent,
+                swapchain_extent: swap_extent,
                 image_count,
                 surface_capabilities,
             };
@@ -163,21 +163,21 @@ impl Device {
         let unique_queue_families = current_device_properties.get_unique_queue_families();
 
         // Create logical device.
-        let mut queue_cis = Vec::with_capacity(unique_queue_families.len());
+        let mut queue_infos = Vec::with_capacity(unique_queue_families.len());
         for unique_queue_family in unique_queue_families.iter() {
-            queue_cis.push(vk::DeviceQueueCreateInfo::default()
+            queue_infos.push(vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(*unique_queue_family)
                 .queue_priorities(&[1.0]));
         }
 
         let device_features = vk::PhysicalDeviceFeatures::default();
         let device_extensions = utils::cstr_to_ptrs(required_device_extensions);
-        let device_ci = vk::DeviceCreateInfo::default()
-            .queue_create_infos(&queue_cis)
+        let device_info = vk::DeviceCreateInfo::default()
+            .queue_create_infos(&queue_infos)
             .enabled_features(&device_features)
             .enabled_extension_names(&device_extensions);
 
-        let device = unsafe { instance.create_device(current_device_properties.physical_device, &device_ci, None) }?;
+        let device = unsafe { instance.create_device(current_device_properties.physical_device, &device_info, None) }?;
 
         // Get queues.
         let graphics_queue = unsafe { device.get_device_queue(current_device_properties.graphics_queue_family_idx, 0) };
@@ -188,6 +188,14 @@ impl Device {
 
     pub fn get_properties(&self) -> PhysicalDeviceProperties {
         self.properties.clone()
+    }
+    
+    pub fn graphics_queue(&self) -> vk::Queue {
+        self.graphics_queue
+    }
+    
+    pub fn present_queue(&self) -> vk::Queue {
+        self.present_queue
     }
     
     pub fn device(&self) -> &ash::Device {
