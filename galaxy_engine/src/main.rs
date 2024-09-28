@@ -2,7 +2,7 @@ mod app;
 mod engine;
 mod utils;
 
-use raw_window_handle::HasDisplayHandle;
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::application::ApplicationHandler;
 use winit::error::EventLoopError;
 use winit::event::WindowEvent;
@@ -18,6 +18,20 @@ enum MainError {
     #[error("Event loop error: {0}.")]
     EventLoopError(#[from] EventLoopError),
 }
+
+// Unwrap macro to log an error and exit the event loop on error.
+macro_rules! unwrap_or_exit {
+        ($result:expr, $message:literal, $event_loop:ident) => {
+            match $result {
+                Ok(value) => value,
+                Err(err) => {
+                    log::error!($message, err);
+                    $event_loop.exit();
+                    return;
+                }
+            }
+        };
+    }
 
 struct GalaxyApp {
     app_info: AppInfo,
@@ -37,34 +51,14 @@ impl GalaxyApp {
 
 impl ApplicationHandler for GalaxyApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window_attributes = Window::default_attributes().with_title("Galaxy Engine");
-
-        let window = match event_loop.create_window(window_attributes) {
-            Ok(window) => window,
-            Err(err) => {
-                log::error!("Failed to create window: {err}. Exiting.");
-                event_loop.exit();
-                return;
-            }
-        };
-        let display_handle = match window.display_handle() {
-            Ok(handle) => handle,
-            Err(err) => {
-                log::error!("Failed to get display handle: {err}. Exiting.");
-                event_loop.exit();
-                return;
-            }
-        };
-
-        self.engine = Some(match GalaxyEngine::new(&self.app_info, display_handle) {
-            Ok(engine) => engine,
-            Err(err) => {
-                log::error!("Failed to create engine: {err}. Exiting.");
-                event_loop.exit();
-                return;
-            }
-        });
-
+        let title = unwrap_or_exit!(self.app_info.name.to_str(), "Title is not valid UTF-8: {}", event_loop);
+        let window_attributes = Window::default_attributes().with_title(title);
+        
+        let window = unwrap_or_exit!(event_loop.create_window(window_attributes), "Failed to create window: \n{}\nExiting.", event_loop);
+        let display_handle = unwrap_or_exit!(window.display_handle(), "Failed to get display handle: \n{}\nExiting.", event_loop);
+        let window_handle = unwrap_or_exit!(window.window_handle(), "Failed to get window handle: \n{}\nExiting.", event_loop);
+        
+        self.engine = Some(unwrap_or_exit!(GalaxyEngine::new(&self.app_info, display_handle, window_handle, window.inner_size()), "Failed to create engine: \n{}\nExiting.", event_loop));
         self.window = Some(window);
     }
 
