@@ -1,6 +1,8 @@
 mod app;
 mod engine;
 mod utils;
+mod device;
+mod swapchain;
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::application::ApplicationHandler;
