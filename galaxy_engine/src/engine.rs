@@ -323,18 +323,7 @@ impl GalaxyEngine {
             vk::SharingMode::EXCLUSIVE,
             vk::MemoryPropertyFlags::DEVICE_LOCAL
         )?;
-        {
-            let mut staging_vertex_buffer = Buffer::new_for_typed_data(
-                &device,
-                &VERTICES,
-                vk::BufferUsageFlags::TRANSFER_SRC,
-                vk::SharingMode::EXCLUSIVE,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
-            )?;
-            staging_vertex_buffer.copy_into_buffer(&device, &VERTICES)?;
-            buffer::copy_buffer(transfer_cmd_pool, &device, &staging_vertex_buffer, &vertex_buffer, staging_vertex_buffer.size())?;
-            unsafe { staging_vertex_buffer.destroy(&device) };
-        }
+        buffer::copy_via_staging_buffer(&device, transfer_cmd_pool, &VERTICES, &vertex_buffer)?;
 
         // Index buffer.
         let index_buffer = Buffer::new_for_typed_data(
@@ -344,18 +333,8 @@ impl GalaxyEngine {
             vk::SharingMode::EXCLUSIVE,
             vk::MemoryPropertyFlags::DEVICE_LOCAL
         )?;
-        {
-            let mut staging_index_buffer = Buffer::new_for_typed_data(
-                &device,
-                &INDICES,
-                vk::BufferUsageFlags::TRANSFER_SRC,
-                vk::SharingMode::EXCLUSIVE,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
-            )?;
-            staging_index_buffer.copy_into_buffer(&device, &INDICES)?;
-            buffer::copy_buffer(transfer_cmd_pool, &device, &staging_index_buffer, &index_buffer, staging_index_buffer.size())?;
-            unsafe { staging_index_buffer.destroy(&device) };
-        }
+        buffer::copy_via_staging_buffer(&device, transfer_cmd_pool, &INDICES, &index_buffer)?;
+        
         
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)

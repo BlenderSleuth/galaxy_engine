@@ -23,6 +23,7 @@ pub struct PhysicalDeviceProperties {
     pub physical_device: vk::PhysicalDevice,
     pub graphics_queue_family_idx: u32,
     pub present_queue_family_idx: u32,
+    pub transfer_queue_family_idx: u32,
     pub memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub is_discrete: bool,
     pub swapchain_format: vk::SurfaceFormatKHR,
@@ -34,7 +35,7 @@ impl PhysicalDeviceProperties {
     const DEPTH_STENCIL_FORMAT: vk::Format = vk::Format::D32_SFLOAT_S8_UINT;
 
     pub fn get_unique_queue_families(&self) -> Vec<u32> {
-        let mut unique_queue_families = vec![self.graphics_queue_family_idx, self.present_queue_family_idx];
+        let mut unique_queue_families = vec![self.graphics_queue_family_idx, self.present_queue_family_idx, self.transfer_queue_family_idx];
         unique_queue_families.sort_unstable();
         unique_queue_families.dedup();
         unique_queue_families
@@ -45,6 +46,7 @@ pub struct Device {
     device: ash::Device,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
+    transfer_queue: vk::Queue,
     properties: PhysicalDeviceProperties,
 }
 
@@ -100,8 +102,22 @@ impl Device {
                 }
             }
 
-            if graphics_queue_family_idx.is_none() || present_queue_family_idx.is_none() {
+            // Require graphics and present queue families.
+            let (Some(graphics_queue_family_idx), Some(present_queue_family_idx)) =
+                (graphics_queue_family_idx, present_queue_family_idx) else {
                 continue;
+            };
+
+            // Find separate transfer queue family. 
+            // Default to graphics queue family, which implicitly supports transfer operations.
+            let mut transfer_queue_family_idx = graphics_queue_family_idx;
+            for (queue_family_idx, queue_family) in queue_families.iter().enumerate() {
+                // Choose first queue family that supports transfer operations but is not a graphics queue.
+                let queue_family_idx = queue_family_idx as u32;
+                if queue_family.queue_flags.contains(vk::QueueFlags::TRANSFER) && !queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
+                    transfer_queue_family_idx = queue_family_idx;
+                    break;
+                }
             }
 
             // Require VK_FORMAT_D32_SFLOAT_S8_UINT for depth/stencil.
@@ -111,7 +127,7 @@ impl Device {
             }
 
             // Require compatible surface properties.
-            let surface_capabilities = surface.get_capabilities(*physical_device)?; 
+            let surface_capabilities = surface.get_capabilities(*physical_device)?;
             let surface_formats = surface.get_formats(*physical_device)?;
             let surface_present_modes = surface.get_present_modes(*physical_device)?;
 
@@ -136,21 +152,22 @@ impl Device {
 
             let physical_device_properties = unsafe { instance.get_physical_device_properties(*physical_device) };
             let memory_properties = unsafe { instance.get_physical_device_memory_properties(*physical_device) };
-            
+
             let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default();
             let mut physical_device_features = vk::PhysicalDeviceFeatures2::default()
                 .push_next(&mut dynamic_rendering_features);
             unsafe { instance.get_physical_device_features2(*physical_device, &mut physical_device_features) };
-            
+
             // Require dynamic rendering support.
             if dynamic_rendering_features.dynamic_rendering == vk::FALSE {
                 continue;
             }
-            
+
             let device_properties = PhysicalDeviceProperties {
                 physical_device: *physical_device,
-                graphics_queue_family_idx: graphics_queue_family_idx.unwrap(),
-                present_queue_family_idx: present_queue_family_idx.unwrap(),
+                graphics_queue_family_idx,
+                present_queue_family_idx,
+                transfer_queue_family_idx,
                 memory_properties,
                 is_discrete: physical_device_properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU,
                 swapchain_format,
@@ -182,11 +199,11 @@ impl Device {
         // Enable dynamic rendering.
         let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default()
             .dynamic_rendering(true);
-        
+
         // Enable synchronization2.
         let mut synchronization2_features = vk::PhysicalDeviceSynchronization2Features::default()
             .synchronization2(true);
-        
+
         let device_features = vk::PhysicalDeviceFeatures::default();
         let device_extensions = utils::cstr_to_ptrs(required_device_extensions);
         let device_info = vk::DeviceCreateInfo::default()
@@ -201,14 +218,15 @@ impl Device {
         // Get queues.
         let graphics_queue = unsafe { device.get_device_queue(current_device_properties.graphics_queue_family_idx, 0) };
         let present_queue = unsafe { device.get_device_queue(current_device_properties.present_queue_family_idx, 0) };
+        let transfer_queue = unsafe { device.get_device_queue(current_device_properties.transfer_queue_family_idx, 0) };
 
-        Ok(Self { device, graphics_queue, present_queue, properties: current_device_properties })
+        Ok(Self { device, graphics_queue, present_queue, transfer_queue, properties: current_device_properties })
     }
 
     pub fn device(&self) -> &ash::Device {
         &self.device
     }
-    
+
     pub fn find_memory_type(&self, memory_type_bits: u32, properties: vk::MemoryPropertyFlags) -> Option<u32> {
         for i in 0..self.properties.memory_properties.memory_type_count {
             if (memory_type_bits & (1 << i)) != 0 && self.properties.memory_properties.memory_types[i as usize].property_flags.contains(properties) {
@@ -217,26 +235,26 @@ impl Device {
         }
         None
     }
-    
+
     pub fn get_properties(&self) -> &PhysicalDeviceProperties {
         &self.properties
     }
-    
+
     pub fn get_queue(&self, queue: QueueFamily) -> vk::Queue {
         match queue {
             QueueFamily::Graphics => self.graphics_queue,
             QueueFamily::Present => self.present_queue,
-            QueueFamily::Transfer => self.graphics_queue,
+            QueueFamily::Transfer => self.transfer_queue,
         }
     }
     pub fn get_queue_family_idx(&self, queue: QueueFamily) -> u32 {
         match queue {
             QueueFamily::Graphics => self.properties.graphics_queue_family_idx,
             QueueFamily::Present => self.properties.present_queue_family_idx,
-            QueueFamily::Transfer => self.properties.graphics_queue_family_idx,
+            QueueFamily::Transfer => self.properties.transfer_queue_family_idx,
         }
     }
-    
+
     // Doesn't allocate a vec for the single buffer case.
     pub unsafe fn allocate_command_buffer(&self, cmd_pool: vk::CommandPool, level: vk::CommandBufferLevel) -> VkResult<vk::CommandBuffer> {
         let allocate_info = vk::CommandBufferAllocateInfo::default()
@@ -251,15 +269,15 @@ impl Device {
         ).result()?;
         Ok(buffer.assume_init())
     }
-    
+
     pub fn create_transient_command_pool(&self, queue_family: QueueFamily) -> VkResult<vk::CommandPool> {
         // Create command pool.
         let command_pool_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::TRANSIENT)
             .queue_family_index(self.get_queue_family_idx(queue_family));
-         unsafe { self.device.create_command_pool(&command_pool_info, None) }
+        unsafe { self.device.create_command_pool(&command_pool_info, None) }
     }
-    
+
     pub unsafe fn destroy(&self) {
         unsafe { self.device.destroy_device(None) };
     }
