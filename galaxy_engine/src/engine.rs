@@ -200,6 +200,8 @@ pub struct GalaxyEngine {
     swapchain: Swapchain,
     vertex_buffer: Buffer,
     index_buffer: Buffer,
+    texture_image: vk::Image,
+    texture_image_memory: vk::DeviceMemory,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: [vk::DescriptorSet; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
@@ -283,6 +285,52 @@ impl GalaxyEngine {
         let window_size = vk::Extent2D { width, height };
         let swapchain = Swapchain::new(&instance, &device, &surface, window_size, None)?;
 
+        let transfer_cmd_pool = device.create_transient_command_pool(QueueFamily::Transfer)?;
+
+        // Load texture.
+        let image = image::open("galaxy_engine/textures/texture.jpg").unwrap().to_rgba8();
+
+        let image_buffer = Buffer::new_for_typed_data(
+            &device,
+            &image,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::SharingMode::EXCLUSIVE,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
+        {
+            let image_mapped = image_buffer.map(&device, 0, Some(image.len() as vk::DeviceSize))?;
+            unsafe { std::ptr::copy_nonoverlapping(image.as_ptr(), image_mapped, image.len()) };
+            image_buffer.unmap(&device);
+        }
+        let texture_image_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .extent(vk::Extent3D { width: image.width(), height: image.height(), depth: 1 })
+            .mip_levels(1)
+            .array_layers(1)
+            .format(vk::Format::R8G8B8A8_SRGB)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .samples(vk::SampleCountFlags::TYPE_1);
+        
+        let texture_image = unsafe { device.device().create_image(&texture_image_info, None) }?;
+        
+        // Allocate memory for texture image.
+        let texture_memory_requirements = unsafe { device.device().get_image_memory_requirements(texture_image) };
+        let texture_memory_type_index = device.find_memory_type(
+            texture_memory_requirements.memory_type_bits,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        ).unwrap();
+        let texture_alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(texture_memory_requirements.size)
+            .memory_type_index(texture_memory_type_index);
+        let texture_image_memory = unsafe { device.device().allocate_memory(&texture_alloc_info, None) }?;
+        unsafe { device.device().bind_image_memory(texture_image, texture_image_memory, 0) }?;
+        
+        
+        unsafe { image_buffer.destroy(&device) };
+
         // Create graphics pipeline.
 
         // TODO: More robust shader file resolution.
@@ -326,8 +374,6 @@ impl GalaxyEngine {
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
             .vertex_binding_descriptions(slice::from_ref(&binding_description))
             .vertex_attribute_descriptions(&attribute_descriptions);
-
-        let transfer_cmd_pool = device.create_transient_command_pool(QueueFamily::Transfer)?;
 
         // Vertex buffer.
         let vertex_buffer = Buffer::new_for_typed_data(
@@ -378,38 +424,38 @@ impl GalaxyEngine {
         let uniform_buffers_mapped = core::array::from_fn(|i| {
             uniform_buffers[i].map(&device, 0, Some(std::mem::size_of::<UniformBufferObject>() as vk::DeviceSize)).unwrap()
         });
-        
+
         // Create descriptor pool.
         let pool_size = vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::UNIFORM_BUFFER)
             .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32);
-        
+
         let descriptor_pool_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(slice::from_ref(&pool_size))
             .max_sets(Self::MAX_FRAMES_IN_FLIGHT as u32);
-        
+
         let descriptor_pool = unsafe { device.device().create_descriptor_pool(&descriptor_pool_info, None) }?;
-        
+
         // Create descriptor sets.
         let layouts = [descriptor_set_layout; Self::MAX_FRAMES_IN_FLIGHT];
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&layouts);
         let descriptor_sets = unsafe { device.device().allocate_descriptor_sets(&alloc_info) }?;
-        
-        for (i ,descriptor_set) in descriptor_sets.iter().enumerate() {
+
+        for (i, descriptor_set) in descriptor_sets.iter().enumerate() {
             let buffer_info = vk::DescriptorBufferInfo::default()
                 .buffer(uniform_buffers[i].handle())
                 .offset(0)
                 .range(std::mem::size_of::<UniformBufferObject>() as vk::DeviceSize);
-            
+
             let descriptor_write = vk::WriteDescriptorSet::default()
                 .dst_set(*descriptor_set)
                 .dst_binding(0)
                 .dst_array_element(0)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(slice::from_ref(&buffer_info));
-            
+
             unsafe { device.device().update_descriptor_sets(slice::from_ref(&descriptor_write), &[]) };
         }
 
@@ -503,6 +549,8 @@ impl GalaxyEngine {
             swapchain,
             vertex_buffer,
             index_buffer,
+            texture_image,
+            texture_image_memory,
             descriptor_set_layout,
             descriptor_pool,
             descriptor_sets: descriptor_sets.try_into().unwrap(),
@@ -543,12 +591,12 @@ impl GalaxyEngine {
             view: nalgebra_glm::look_at(&glm::vec3(2., 2., 2.), &glm::vec3(0., 0., 0.), &glm::vec3(0., 0., 1.)),
             proj: nalgebra_glm::perspective(self.window_size.width as f32 / self.window_size.height as f32, 45f32.to_radians(), 0.1, 10.0),
         };
-        ubo.proj[(1,1)] *= -1.0;
-        
+        ubo.proj[(1, 1)] *= -1.0;
+
         // Copy UBO to uniform buffer.
         let ubo_size = std::mem::size_of::<UniformBufferObject>();
         unsafe { std::ptr::copy_nonoverlapping(bytemuck::bytes_of(&ubo).as_ptr(), self.uniform_buffers_mapped[current_frame], ubo_size) };
-        
+
         // Wait for fence.
         unsafe { device.wait_for_fences(&[self.in_flight_fences[current_frame]], true, u64::MAX) }?;
 
@@ -770,6 +818,10 @@ impl Drop for GalaxyEngine {
         for uniform_buffer in self.uniform_buffers.iter_mut() {
             unsafe { uniform_buffer.destroy(&self.device) };
         }
+        // Drop texture image.
+        unsafe { device.destroy_image(self.texture_image, None) };
+        // Drop texture image memory.
+        unsafe { device.free_memory(self.texture_image_memory, None) };
 
         // Drop swapchain.
         unsafe { self.swapchain.destroy(&self.device) };

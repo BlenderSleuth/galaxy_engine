@@ -50,6 +50,9 @@ pub struct Buffer {
 }
 
 impl Buffer {
+}
+
+impl Buffer {
     pub fn new_for_typed_data<T: bytemuck::Pod>(device: &Device, data: &[T], usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode, memory_properties: vk::MemoryPropertyFlags) -> Result<Self, vk::Result> {
         Self::new_for_data(device, bytemuck::cast_slice(data), data.len() as u32, usage, sharing_mode, memory_properties)
     }
@@ -117,6 +120,10 @@ impl Buffer {
     // TODO: offset and size should be optional together.
     pub fn map(&self, device: &Device, offset: vk::DeviceSize, size: Option<vk::DeviceSize>) -> VkResult<*mut u8> {
         unsafe { device.device().map_memory(self.memory, offset, size.unwrap_or(vk::WHOLE_SIZE), vk::MemoryMapFlags::empty()) }.map(|ptr| ptr as *mut u8)
+    }
+    
+    pub fn unmap(&self, device: &Device) {
+        unsafe { device.device().unmap_memory(self.memory) };
     }
 
     pub unsafe fn destroy(&self, device: &Device) {
