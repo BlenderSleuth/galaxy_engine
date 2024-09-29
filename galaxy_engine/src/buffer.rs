@@ -113,6 +113,11 @@ impl Buffer {
     pub fn len(&self) -> u32 {
         self.length
     }
+    
+    // TODO: offset and size should be optional together.
+    pub fn map(&self, device: &Device, offset: vk::DeviceSize, size: Option<vk::DeviceSize>) -> VkResult<*mut u8> {
+        unsafe { device.device().map_memory(self.memory, offset, size.unwrap_or(vk::WHOLE_SIZE), vk::MemoryMapFlags::empty()) }.map(|ptr| ptr as *mut u8)
+    }
 
     pub unsafe fn destroy(&self, device: &Device) {
         device.device().destroy_buffer(self.handle, None);

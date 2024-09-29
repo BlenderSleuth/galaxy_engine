@@ -1,20 +1,20 @@
+use ash::prelude::VkResult;
+use ash::{ext, khr, vk};
+use raw_window_handle::{DisplayHandle, WindowHandle};
 use std::ffi::{c_char, CStr};
 use std::slice;
-use ash::{ext, khr, vk};
-use ash::prelude::VkResult;
-use raw_window_handle::{DisplayHandle, WindowHandle};
 
-use crate::{app, utils, surface, device, swapchain, buffer};
-use app::AppInfo;
-use surface::Surface;
-use device::Device;
-use swapchain::Swapchain;
 use crate::buffer::Buffer;
 use crate::device::QueueFamily;
+use crate::{app, buffer, device, surface, swapchain, utils};
+use app::AppInfo;
+use device::Device;
+use surface::Surface;
+use swapchain::Swapchain;
 
 // Const versions of nalgebra-glm functions. TODO: pull request to nalgebra-glm.
 mod glm {
-    pub use nalgebra_glm::{Vec2, Vec3};
+    pub use nalgebra_glm::{Mat4, Vec2, Vec3};
     use nalgebra_glm::{Scalar, TVec2, TVec3, TVec4};
 
     pub const fn vec2<T: Scalar>(x: T, y: T) -> TVec2<T> {
@@ -157,7 +157,7 @@ impl Vertex {
             .stride(std::mem::size_of::<Vertex>() as u32)
             .input_rate(vk::VertexInputRate::VERTEX)
     }
-    
+
     fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
         [
             vk::VertexInputAttributeDescription::default()
@@ -182,6 +182,14 @@ const VERTICES: [Vertex; 4] = [
 ];
 const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
+struct UniformBufferObject {
+    model: glm::Mat4,
+    view: glm::Mat4,
+    proj: glm::Mat4,
+}
+
 pub struct GalaxyEngine {
     _entry: ash::Entry,
     instance: ash::Instance,
@@ -192,15 +200,21 @@ pub struct GalaxyEngine {
     swapchain: Swapchain,
     vertex_buffer: Buffer,
     index_buffer: Buffer,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    descriptor_pool: vk::DescriptorPool,
+    descriptor_sets: [vk::DescriptorSet; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
     graphics_cmd_pool: vk::CommandPool,
     transfer_cmd_pool: vk::CommandPool,
+    uniform_buffers: [Buffer; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
+    uniform_buffers_mapped: [*mut u8; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     cmd_buffers: [vk::CommandBuffer; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     image_available_semaphores: [vk::Semaphore; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     render_finished_semaphores: [vk::Semaphore; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     in_flight_fences: [vk::Fence; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     current_frame: u32,
+    start_time: std::time::Instant,
     window_size: vk::Extent2D,
     window_resized: bool,
 }
@@ -314,14 +328,14 @@ impl GalaxyEngine {
             .vertex_attribute_descriptions(&attribute_descriptions);
 
         let transfer_cmd_pool = device.create_transient_command_pool(QueueFamily::Transfer)?;
-        
+
         // Vertex buffer.
         let vertex_buffer = Buffer::new_for_typed_data(
             &device,
             &VERTICES,
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
             vk::SharingMode::EXCLUSIVE,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
         buffer::copy_via_staging_buffer(&device, transfer_cmd_pool, &VERTICES, &vertex_buffer)?;
 
@@ -331,14 +345,73 @@ impl GalaxyEngine {
             &INDICES,
             vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             vk::SharingMode::EXCLUSIVE,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
         buffer::copy_via_staging_buffer(&device, transfer_cmd_pool, &INDICES, &index_buffer)?;
-        
-        
+
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
+
+        // Create descriptor sets.
+        let ubo_layout_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX);
+
+        let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::default()
+            .bindings(slice::from_ref(&ubo_layout_binding));
+        let descriptor_set_layout = unsafe { device.device().create_descriptor_set_layout(&descriptor_set_layout_info, None) }?;
+
+        // Create uniform buffers.
+        let uniform_buffers: [Buffer; Self::MAX_FRAMES_IN_FLIGHT] = core::array::from_fn(|_| {
+            Buffer::new(
+                &device,
+                std::mem::size_of::<UniformBufferObject>() as vk::DeviceSize,
+                1,
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
+                vk::SharingMode::EXCLUSIVE,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            ).unwrap()
+        });
+        let uniform_buffers_mapped = core::array::from_fn(|i| {
+            uniform_buffers[i].map(&device, 0, Some(std::mem::size_of::<UniformBufferObject>() as vk::DeviceSize)).unwrap()
+        });
+        
+        // Create descriptor pool.
+        let pool_size = vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32);
+        
+        let descriptor_pool_info = vk::DescriptorPoolCreateInfo::default()
+            .pool_sizes(slice::from_ref(&pool_size))
+            .max_sets(Self::MAX_FRAMES_IN_FLIGHT as u32);
+        
+        let descriptor_pool = unsafe { device.device().create_descriptor_pool(&descriptor_pool_info, None) }?;
+        
+        // Create descriptor sets.
+        let layouts = [descriptor_set_layout; Self::MAX_FRAMES_IN_FLIGHT];
+        let alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(descriptor_pool)
+            .set_layouts(&layouts);
+        let descriptor_sets = unsafe { device.device().allocate_descriptor_sets(&alloc_info) }?;
+        
+        for (i ,descriptor_set) in descriptor_sets.iter().enumerate() {
+            let buffer_info = vk::DescriptorBufferInfo::default()
+                .buffer(uniform_buffers[i].handle())
+                .offset(0)
+                .range(std::mem::size_of::<UniformBufferObject>() as vk::DeviceSize);
+            
+            let descriptor_write = vk::WriteDescriptorSet::default()
+                .dst_set(*descriptor_set)
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(slice::from_ref(&buffer_info));
+            
+            unsafe { device.device().update_descriptor_sets(slice::from_ref(&descriptor_write), &[]) };
+        }
 
         let pipeline_dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
             .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
@@ -353,7 +426,7 @@ impl GalaxyEngine {
             .polygon_mode(vk::PolygonMode::FILL)
             .line_width(1.0)
             .cull_mode(vk::CullModeFlags::BACK)
-            .front_face(vk::FrontFace::CLOCKWISE)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false);
 
         let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
@@ -371,10 +444,11 @@ impl GalaxyEngine {
             .logic_op_enable(false)
             .attachments(&color_blend_attachments);
 
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
+        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(slice::from_ref(&descriptor_set_layout));
         let pipeline_layout = unsafe { device.device().create_pipeline_layout(&pipeline_layout_info, None) }?;
 
-        let mut dynamic_pipeline_info = vk::PipelineRenderingCreateInfoKHR::default()
+        let mut dynamic_pipeline_info = vk::PipelineRenderingCreateInfo::default()
             .color_attachment_formats(slice::from_ref(&color_format));
 
         let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
@@ -429,21 +503,32 @@ impl GalaxyEngine {
             swapchain,
             vertex_buffer,
             index_buffer,
+            descriptor_set_layout,
+            descriptor_pool,
+            descriptor_sets: descriptor_sets.try_into().unwrap(),
             pipeline_layout,
             pipeline,
             graphics_cmd_pool,
             transfer_cmd_pool,
+            uniform_buffers,
+            uniform_buffers_mapped,
             cmd_buffers: command_buffers.try_into().unwrap(),
             image_available_semaphores,
             render_finished_semaphores,
             in_flight_fences,
             current_frame: 0,
+            start_time: std::time::Instant::now(),
             window_size,
             window_resized: false,
         })
     }
 
     pub fn main_loop(&mut self) -> VkResult<()> {
+        if self.window_resized {
+            self.window_resized = false;
+            self.recreate_swapchain()?;
+        }
+
         let device = self.device.device();
 
         let sync2 = &self.loaded_extensions.synchronisation2;
@@ -451,6 +536,19 @@ impl GalaxyEngine {
 
         let current_frame = self.current_frame as usize;
 
+        // Update uniform buffer.
+        let time = self.start_time.elapsed().as_secs_f32();
+        let mut ubo = UniformBufferObject {
+            model: nalgebra_glm::rotate(&glm::Mat4::identity(), time * 90f32.to_radians(), &glm::vec3(0., 0., 1.)),
+            view: nalgebra_glm::look_at(&glm::vec3(2., 2., 2.), &glm::vec3(0., 0., 0.), &glm::vec3(0., 0., 1.)),
+            proj: nalgebra_glm::perspective(self.window_size.width as f32 / self.window_size.height as f32, 45f32.to_radians(), 0.1, 10.0),
+        };
+        ubo.proj[(1,1)] *= -1.0;
+        
+        // Copy UBO to uniform buffer.
+        let ubo_size = std::mem::size_of::<UniformBufferObject>();
+        unsafe { std::ptr::copy_nonoverlapping(bytemuck::bytes_of(&ubo).as_ptr(), self.uniform_buffers_mapped[current_frame], ubo_size) };
+        
         // Wait for fence.
         unsafe { device.wait_for_fences(&[self.in_flight_fences[current_frame]], true, u64::MAX) }?;
 
@@ -513,6 +611,7 @@ impl GalaxyEngine {
         unsafe { device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline) };
         unsafe { device.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.vertex_buffer.handle()), slice::from_ref(&0)) };
         unsafe { device.cmd_bind_index_buffer(command_buffer, self.index_buffer.handle(), 0, vk::IndexType::UINT16) };
+        unsafe { device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline_layout, 0, slice::from_ref(&self.descriptor_sets[current_frame]), &[]) };
         unsafe { device.cmd_set_viewport(command_buffer, 0, &[viewport]) };
         unsafe { device.cmd_set_scissor(command_buffer, 0, &[scissor]) };
         unsafe { device.cmd_draw_indexed(command_buffer, self.index_buffer.len(), 1, 0, 0, 0) };
@@ -549,11 +648,6 @@ impl GalaxyEngine {
             }
             Err(e) => return Err(e),
         }
-        
-        if self.window_resized {
-            self.window_resized = false;
-            self.recreate_swapchain()?;
-        }
 
         self.current_frame = (self.current_frame + 1) % Self::MAX_FRAMES_IN_FLIGHT as u32;
 
@@ -576,7 +670,7 @@ impl GalaxyEngine {
         self.window_size = window_size;
         self.window_resized = true;
     }
-    
+
     fn get_instance_layers(entry: &ash::Entry, flags: &app::AppFlags) -> VkResult<Vec<*const c_char>> {
         // Query available layers.
         let available_layers = unsafe { entry.enumerate_instance_layer_properties() }?;
@@ -662,11 +756,20 @@ impl Drop for GalaxyEngine {
 
         // Drop pipeline layout.
         unsafe { device.destroy_pipeline_layout(self.pipeline_layout, None) };
-        
+
+        // Drop descriptor set layout.
+        unsafe { device.destroy_descriptor_set_layout(self.descriptor_set_layout, None) };
+        // Drop descriptor pool.
+        unsafe { device.destroy_descriptor_pool(self.descriptor_pool, None) };
+
         // Drop vertex buffer.
         unsafe { self.vertex_buffer.destroy(&self.device) };
         // Drop index buffer.
         unsafe { self.index_buffer.destroy(&self.device) };
+        // Drop uniform buffers.
+        for uniform_buffer in self.uniform_buffers.iter_mut() {
+            unsafe { uniform_buffer.destroy(&self.device) };
+        }
 
         // Drop swapchain.
         unsafe { self.swapchain.destroy(&self.device) };
