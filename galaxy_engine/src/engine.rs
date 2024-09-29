@@ -124,18 +124,19 @@ pub struct GalaxyEngine {
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
     command_pool: vk::CommandPool,
-    command_buffer: vk::CommandBuffer,
-    image_available_semaphore: vk::Semaphore,
-    render_finished_semaphore: vk::Semaphore,
-    in_flight_fence: vk::Fence,
+    command_buffers: [vk::CommandBuffer; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
+    image_available_semaphores: [vk::Semaphore; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
+    render_finished_semaphores: [vk::Semaphore; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
+    in_flight_fences: [vk::Fence; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
+    current_frame: u32,
 }
 
 impl GalaxyEngine {
     const MIN_VK_VERSION: u32 = vk::make_api_version(0, 1, 2, 0);
     const ENGINE_NAME: &'static CStr = c"Galaxy Engine";
     const ENGINE_VERSION_STR: &'static str = env!("CARGO_PKG_VERSION");
-    // const MAX_FRAMES_IN_FLIGHT: usize = 2;
-
+    const MAX_FRAMES_IN_FLIGHT: usize = 2;
+    
     pub fn new(app_info: &AppInfo, display: DisplayHandle, window: WindowHandle, window_size: PhysicalSize<u32>) -> Result<Self, EngineInitError> {
         // Setup Vulkan.
         let entry = unsafe { Entry::load() }?;
@@ -306,14 +307,19 @@ impl GalaxyEngine {
         let command_buffer_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
-        let command_buffer = unsafe { device.device().allocate_command_buffers(&command_buffer_info) }?[0];
+            .command_buffer_count(Self::MAX_FRAMES_IN_FLIGHT as u32);
+        let command_buffers = unsafe { device.device().allocate_command_buffers(&command_buffer_info) }?;
 
         // Create sync objects.
-        let image_available_semaphore = unsafe { device.device().create_semaphore(&Default::default(), None) }?;
-        let render_finished_semaphore = unsafe { device.device().create_semaphore(&Default::default(), None) }?;
+        let mut image_available_semaphores = [vk::Semaphore::null(); Self::MAX_FRAMES_IN_FLIGHT];
+        let mut render_finished_semaphores = [vk::Semaphore::null(); Self::MAX_FRAMES_IN_FLIGHT];
+        let mut in_flight_fences = [vk::Fence::null(); Self::MAX_FRAMES_IN_FLIGHT];
         let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-        let in_flight_fence = unsafe { device.device().create_fence(&fence_info, None) }?;
+        for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
+            image_available_semaphores[i] = unsafe { device.device().create_semaphore(&Default::default(), None) }?;
+            render_finished_semaphores[i] = unsafe { device.device().create_semaphore(&Default::default(), None) }?;
+            in_flight_fences[i] = unsafe { device.device().create_fence(&fence_info, None) }?;
+        }
 
         Ok(Self {
             entry,
@@ -326,27 +332,30 @@ impl GalaxyEngine {
             pipeline_layout,
             pipeline,
             command_pool,
-            command_buffer,
-            image_available_semaphore,
-            render_finished_semaphore,
-            in_flight_fence,
+            command_buffers: command_buffers.try_into().unwrap(),
+            image_available_semaphores,
+            render_finished_semaphores,
+            in_flight_fences,
+            current_frame: 0,
         })
     }
 
-    pub fn main_loop(&self) -> VkResult<()> {
+    pub fn main_loop(&mut self) -> VkResult<()> {
         let device = self.device.device();
 
         let sync2 = &self.loaded_extensions.synchronisation2;
         let dyn_cmd = &self.loaded_extensions.dynamic_rendering;
         
+        let current_frame = self.current_frame as usize;
+        
         // Wait for fence.
-        unsafe { device.wait_for_fences(&[self.in_flight_fence], true, u64::MAX) }?;
-        unsafe { device.reset_fences(&[self.in_flight_fence]) }?;
+        unsafe { device.wait_for_fences(&[self.in_flight_fences[current_frame]], true, u64::MAX) }?;
+        unsafe { device.reset_fences(&[self.in_flight_fences[current_frame]]) }?;
 
         // Acquire image from swapchain.
-        let (image_idx, _is_suboptimal) = self.swapchain.acquire_next_image(self.image_available_semaphore, vk::Fence::null())?;
+        let (image_idx, _is_suboptimal) = self.swapchain.acquire_next_image(self.image_available_semaphores[current_frame], vk::Fence::null())?;
 
-        let command_buffer = self.command_buffer;
+        let command_buffer = self.command_buffers[current_frame];
 
         unsafe { device.reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty()) }?;
 
@@ -363,7 +372,7 @@ impl GalaxyEngine {
 
         // Record command buffer.
         let begin_info = vk::CommandBufferBeginInfo::default();
-        unsafe { device.begin_command_buffer(self.command_buffer, &begin_info) }?;
+        unsafe { device.begin_command_buffer(command_buffer, &begin_info) }?;
         
         let color_optimal_transition = vk::ImageMemoryBarrier2::default()
             .src_access_mask(vk::AccessFlags2::empty())
@@ -415,16 +424,17 @@ impl GalaxyEngine {
         // Submit command buffer.
         let submit_info = vk::SubmitInfo::default()
             .command_buffers(slice::from_ref(&command_buffer))
-            .wait_semaphores(slice::from_ref(&self.image_available_semaphore))
+            .wait_semaphores(slice::from_ref(&self.image_available_semaphores[current_frame]))
             .wait_dst_stage_mask(slice::from_ref(&vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT))
-            .signal_semaphores(slice::from_ref(&self.render_finished_semaphore));
+            .signal_semaphores(slice::from_ref(&self.render_finished_semaphores[current_frame]));
 
-        unsafe { device.queue_submit(self.device.graphics_queue(), slice::from_ref(&submit_info), self.in_flight_fence) }?;
+        unsafe { device.queue_submit(self.device.graphics_queue(), slice::from_ref(&submit_info), self.in_flight_fences[current_frame]) }?;
 
-        self.swapchain.queue_present(self.device.present_queue(), image_idx, &[self.render_finished_semaphore])?;
+        self.swapchain.queue_present(self.device.present_queue(), image_idx, &[self.render_finished_semaphores[current_frame]])?;
 
-        unsafe { self.device.device().device_wait_idle() }?;
 
+        self.current_frame = (self.current_frame + 1) % Self::MAX_FRAMES_IN_FLIGHT as u32;
+        
         Ok(())
     }
 
@@ -491,16 +501,20 @@ impl GalaxyEngine {
 impl Drop for GalaxyEngine {
     fn drop(&mut self) {
         let device = self.device.device();
+        
+        unsafe { device.device_wait_idle() }.unwrap_or_else(|e| log::error!("Failed to wait for device idle: {:?}", e));
 
         // Drop sync objects.
-        unsafe { device.destroy_semaphore(self.image_available_semaphore, None) };
-        unsafe { device.destroy_semaphore(self.render_finished_semaphore, None) };
-        unsafe { device.destroy_fence(self.in_flight_fence, None) };
+        for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
+            unsafe { device.destroy_semaphore(self.image_available_semaphores[i], None) };
+            unsafe { device.destroy_semaphore(self.render_finished_semaphores[i], None) };
+            unsafe { device.destroy_fence(self.in_flight_fences[i], None) };
+        }
 
-        // Drop cr.
-        unsafe { device.free_command_buffers(self.command_pool, &[self.command_buffer]) };
+        // Drop command_buffers.
+        unsafe { device.free_command_buffers(self.command_pool, &self.command_buffers) };
 
-        // Drop c
+        // Drop command_pool.
         unsafe { device.destroy_command_pool(self.command_pool, None) };
 
         // Drop pipeline.
@@ -526,5 +540,7 @@ impl Drop for GalaxyEngine {
 
         // Drop instance.
         unsafe { self.instance.destroy_instance(None) };
+        
+        // Entry is automatically dropped.
     }
 }
