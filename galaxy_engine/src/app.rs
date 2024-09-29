@@ -1,12 +1,13 @@
 use std::ffi::CString;
-use std::sync::Arc;
-use ash::vk;
+
 use bitflags::bitflags;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::application::ApplicationHandler;
+use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
+
 use crate::engine::GalaxyEngine;
 
 bitflags! {
@@ -47,7 +48,7 @@ macro_rules! unwrap_or_exit {
 
 pub struct GalaxyApp {
     app_info: AppInfo,
-    window: Option<Arc<Window>>,
+    window: Option<Window>,
     engine: Option<GalaxyEngine>,
 }
 
@@ -66,18 +67,13 @@ impl ApplicationHandler for GalaxyApp {
         let title = unwrap_or_exit!(self.app_info.name.to_str(), "Title is not valid UTF-8: {}", event_loop);
         let window_attributes = Window::default_attributes().with_title(title);
 
-        let window = Arc::new(unwrap_or_exit!(event_loop.create_window(window_attributes), "Failed to create window: {}\nExiting.", event_loop));
+        let window = unwrap_or_exit!(event_loop.create_window(window_attributes), "Failed to create window: {}\nExiting.", event_loop);
         let display_handle = unwrap_or_exit!(window.display_handle(), "Failed to get display handle: {}\nExiting.", event_loop);
         let window_handle = unwrap_or_exit!(window.window_handle(), "Failed to get window handle: {}\nExiting.", event_loop);
 
-        let delegate_window = Arc::clone(&window);
-        self.engine = Some(unwrap_or_exit!(GalaxyEngine::new(&self.app_info, display_handle, window_handle, Box::new(move || {
-            let window_size = delegate_window.inner_size();
-            vk::Extent2D {
-                width: window_size.width,
-                height: window_size.height,
-            }
-        })), "Failed to create engine: {}\nExiting.", event_loop));
+        let PhysicalSize {width, height} = window.inner_size();
+        
+        self.engine = Some(unwrap_or_exit!(GalaxyEngine::new(&self.app_info, display_handle, window_handle, width, height), "Failed to create engine: {}\nExiting.", event_loop));
         self.window = Some(window);
     }
 
@@ -85,6 +81,11 @@ impl ApplicationHandler for GalaxyApp {
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
+            }
+            WindowEvent::Resized(size) => {
+                if let Some(engine) = self.engine.as_mut() {
+                    engine.notify_window_resize(size.width, size.height);
+                }
             }
             _ => {}
         }

@@ -121,8 +121,6 @@ impl LoadedExtensions {
     }
 }
 
-type WindowSizeCallback = Box<dyn FnMut() -> vk::Extent2D>;
-
 pub struct GalaxyEngine {
     _entry: ash::Entry,
     instance: ash::Instance,
@@ -139,7 +137,8 @@ pub struct GalaxyEngine {
     render_finished_semaphores: [vk::Semaphore; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     in_flight_fences: [vk::Fence; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     current_frame: u32,
-    window_size_callback: WindowSizeCallback,
+    window_size: vk::Extent2D,
+    window_resized: bool,
 }
 
 impl GalaxyEngine {
@@ -147,8 +146,8 @@ impl GalaxyEngine {
     const ENGINE_NAME: &'static CStr = c"Galaxy Engine";
     const ENGINE_VERSION_STR: &'static str = env!("CARGO_PKG_VERSION");
     const MAX_FRAMES_IN_FLIGHT: usize = 2;
-    
-    pub fn new(app_info: &AppInfo, display: DisplayHandle, window: WindowHandle, mut window_size_callback: WindowSizeCallback) -> Result<Self, EngineInitError> {
+
+    pub fn new(app_info: &AppInfo, display: DisplayHandle, window: WindowHandle, width: u32, height: u32) -> Result<Self, EngineInitError> {
         // Setup Vulkan.
         let entry = unsafe { ash::Entry::load() }?;
 
@@ -194,7 +193,7 @@ impl GalaxyEngine {
 
         // Create surface.
         let surface = Surface::new(&entry, &instance, display, window)?;
-        
+
         // Create device.
         let device = Device::new(&instance, &surface)?;
         let device_properties = device.get_properties();
@@ -203,7 +202,8 @@ impl GalaxyEngine {
         let loaded_extensions = LoadedExtensions::new(&instance, device.device());
 
         // Create swapchain.
-        let swapchain = Swapchain::new(&instance, &device, &surface, window_size_callback(), None)?;
+        let window_size = vk::Extent2D { width, height };
+        let swapchain = Swapchain::new(&instance, &device, &surface, window_size, None)?;
 
         // Create graphics pipeline.
 
@@ -345,7 +345,8 @@ impl GalaxyEngine {
             render_finished_semaphores,
             in_flight_fences,
             current_frame: 0,
-            window_size_callback,
+            window_size,
+            window_resized: false,
         })
     }
 
@@ -368,7 +369,7 @@ impl GalaxyEngine {
             }
             Err(_) => return Err(vk::Result::ERROR_UNKNOWN),
         };
-        
+
         unsafe { device.reset_fences(&[self.in_flight_fences[current_frame]]) }?;
 
         let command_buffer = self.command_buffers[current_frame];
@@ -453,6 +454,11 @@ impl GalaxyEngine {
             }
             Err(e) => return Err(e),
         }
+        
+        if self.window_resized {
+            self.window_resized = false;
+            self.recreate_swapchain()?;
+        }
 
         self.current_frame = (self.current_frame + 1) % Self::MAX_FRAMES_IN_FLIGHT as u32;
 
@@ -461,12 +467,21 @@ impl GalaxyEngine {
 
     fn recreate_swapchain(&mut self) -> VkResult<()> {
         unsafe { self.device.device().device_wait_idle() }?;
-        let new_swapchain = Swapchain::new(&self.instance, &self.device, &self.surface, (self.window_size_callback)(), Some(&self.swapchain))?;
+        let new_swapchain = Swapchain::new(&self.instance, &self.device, &self.surface, self.window_size, Some(&self.swapchain))?;
         unsafe { self.swapchain.destroy(&self.device) };
         self.swapchain = new_swapchain;
         Ok(())
     }
 
+    pub fn notify_window_resize(&mut self, width: u32, height: u32) {
+        let window_size = vk::Extent2D { width, height };
+        if self.window_size == window_size {
+            return;
+        }
+        self.window_size = window_size;
+        self.window_resized = true;
+    }
+    
     fn get_instance_layers(entry: &ash::Entry, flags: &app::AppFlags) -> VkResult<Vec<*const c_char>> {
         // Query available layers.
         let available_layers = unsafe { entry.enumerate_instance_layer_properties() }?;

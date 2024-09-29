@@ -164,7 +164,8 @@ impl Device {
         for unique_queue_family in unique_queue_families.iter() {
             queue_infos.push(vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(*unique_queue_family)
-                .queue_priorities(&[1.0]));
+                .queue_priorities(&[1.0])
+            );
         }
 
         // Enable dynamic rendering.
