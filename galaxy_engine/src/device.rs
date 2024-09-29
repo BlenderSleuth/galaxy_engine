@@ -15,6 +15,7 @@ pub struct PhysicalDeviceProperties {
     pub physical_device: vk::PhysicalDevice,
     pub graphics_queue_family_idx: u32,
     pub present_queue_family_idx: u32,
+    pub memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub is_discrete: bool,
     pub swapchain_format: vk::SurfaceFormatKHR,
     pub presentation_mode: vk::PresentModeKHR,
@@ -126,6 +127,7 @@ impl Device {
             }
 
             let physical_device_properties = unsafe { instance.get_physical_device_properties(*physical_device) };
+            let memory_properties = unsafe { instance.get_physical_device_memory_properties(*physical_device) };
             
             let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default();
             let mut physical_device_features = vk::PhysicalDeviceFeatures2::default()
@@ -141,6 +143,7 @@ impl Device {
                 physical_device: *physical_device,
                 graphics_queue_family_idx: graphics_queue_family_idx.unwrap(),
                 present_queue_family_idx: present_queue_family_idx.unwrap(),
+                memory_properties,
                 is_discrete: physical_device_properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU,
                 swapchain_format,
                 presentation_mode,
@@ -194,6 +197,19 @@ impl Device {
         Ok(Self { device, graphics_queue, present_queue, properties: current_device_properties })
     }
 
+    pub fn device(&self) -> &ash::Device {
+        &self.device
+    }
+    
+    pub fn find_memory_type(&self, memory_type_bits: u32, properties: vk::MemoryPropertyFlags) -> Option<u32> {
+        for i in 0..self.properties.memory_properties.memory_type_count {
+            if (memory_type_bits & (1 << i)) != 0 && self.properties.memory_properties.memory_types[i as usize].property_flags.contains(properties) {
+                return Some(i);
+            }
+        }
+        None
+    }
+    
     pub fn get_properties(&self) -> &PhysicalDeviceProperties {
         &self.properties
     }
@@ -204,10 +220,6 @@ impl Device {
     
     pub fn present_queue(&self) -> vk::Queue {
         self.present_queue
-    }
-    
-    pub fn device(&self) -> &ash::Device {
-        &self.device
     }
     
     pub unsafe fn destroy(&self) {

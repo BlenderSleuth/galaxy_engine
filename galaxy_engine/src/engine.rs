@@ -4,11 +4,31 @@ use ash::{ext, khr, vk};
 use ash::prelude::VkResult;
 use raw_window_handle::{DisplayHandle, WindowHandle};
 
-use crate::{app, utils, device, swapchain};
+use crate::{app, utils, surface, device, swapchain};
 use app::AppInfo;
+use surface::Surface;
 use device::Device;
 use swapchain::Swapchain;
-use crate::surface::Surface;
+
+// Const versions of nalgebra-glm functions. TODO: pull request to nalgebra-glm.
+mod glm {
+    pub use nalgebra_glm::{Vec2, Vec3};
+    use nalgebra_glm::{Scalar, TVec2, TVec3, TVec4};
+
+    pub const fn vec2<T: Scalar>(x: T, y: T) -> TVec2<T> {
+        TVec2::new(x, y)
+    }
+
+    /// Creates a new 3D vector.
+    pub const fn vec3<T: Scalar>(x: T, y: T, z: T) -> TVec3<T> {
+        TVec3::new(x, y, z)
+    }
+
+    /// Creates a new 4D vector.
+    pub const fn _vec4<T: Scalar>(x: T, y: T, z: T, w: T) -> TVec4<T> {
+        TVec4::new(x, y, z, w)
+    }
+}
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
@@ -121,6 +141,41 @@ impl LoadedExtensions {
     }
 }
 
+struct Vertex {
+    pos: glm::Vec2,
+    color: glm::Vec3,
+}
+
+impl Vertex {
+    fn get_binding_description() -> vk::VertexInputBindingDescription {
+        vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(std::mem::size_of::<Vertex>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX)
+    }
+    
+    fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
+        [
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(0)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(std::mem::offset_of!(Vertex, pos) as u32),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(1)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(std::mem::offset_of!(Vertex, color) as u32),
+        ]
+    }
+}
+
+const VERTICES: [Vertex; 3] = [
+    Vertex { pos: glm::vec2(0., -0.5), color: glm::vec3(1.0, 0.0, 0.0) },
+    Vertex { pos: glm::vec2(0.5, 0.5), color: glm::vec3(0.0, 1.0, 0.0) },
+    Vertex { pos: glm::vec2(-0.5, 0.5), color: glm::vec3(0.0, 0.0, 1.0) },
+];
+
 pub struct GalaxyEngine {
     _entry: ash::Entry,
     instance: ash::Instance,
@@ -129,6 +184,8 @@ pub struct GalaxyEngine {
     surface: Surface,
     device: Device,
     swapchain: Swapchain,
+    vertex_buffer: vk::Buffer,
+    vertex_buffer_memory: vk::DeviceMemory,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
     command_pool: vk::CommandPool,
@@ -242,10 +299,36 @@ impl GalaxyEngine {
         let fragment_shader_stage_info = fragment_shader_module.get_stage_info();
         let shader_stages = [vertex_shader_stage_info, fragment_shader_stage_info];
 
+        let binding_description = Vertex::get_binding_description();
+        let attribute_descriptions = Vertex::get_attribute_descriptions();
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
-            .vertex_binding_descriptions(&[])
-            .vertex_attribute_descriptions(&[]);
+            .vertex_binding_descriptions(slice::from_ref(&binding_description))
+            .vertex_attribute_descriptions(&attribute_descriptions);
+        
+        let vertex_buffer_info = vk::BufferCreateInfo::default()
+            .size(std::mem::size_of_val(&VERTICES) as vk::DeviceSize)
+            .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let vertex_buffer = unsafe { device.device().create_buffer(&vertex_buffer_info, None) }?;
 
+        // Allocate memory for vertex buffer.
+        let mem_requirements = unsafe { device.device().get_buffer_memory_requirements(vertex_buffer) };
+        let memory_type = device.find_memory_type(mem_requirements.memory_type_bits, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
+        let alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(mem_requirements.size)
+            .memory_type_index(memory_type.unwrap());
+        let vertex_buffer_memory = unsafe { device.device().allocate_memory(&alloc_info, None) }?;
+        
+        // Bind vertex buffer memory.
+        unsafe { device.device().bind_buffer_memory(vertex_buffer, vertex_buffer_memory, 0) }?;
+        
+        // Copy vertex data to buffer.
+        {
+            let data = unsafe { device.device().map_memory(vertex_buffer_memory, 0, mem_requirements.size, vk::MemoryMapFlags::empty()) }?;
+            unsafe { std::ptr::copy_nonoverlapping(VERTICES.as_ptr() as *const u8, data as *mut u8, std::mem::size_of_val(&VERTICES)) };
+            unsafe { device.device().unmap_memory(vertex_buffer_memory) };
+        }
+        
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
@@ -337,6 +420,8 @@ impl GalaxyEngine {
             surface,
             device,
             swapchain,
+            vertex_buffer,
+            vertex_buffer_memory,
             pipeline_layout,
             pipeline,
             command_pool,
@@ -418,9 +503,10 @@ impl GalaxyEngine {
 
         unsafe { dyn_cmd.cmd_begin_rendering(command_buffer, &rendering_info) }
         unsafe { device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline) };
+        unsafe { device.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.vertex_buffer), slice::from_ref(&0)) };
         unsafe { device.cmd_set_viewport(command_buffer, 0, &[viewport]) };
         unsafe { device.cmd_set_scissor(command_buffer, 0, &[scissor]) };
-        unsafe { device.cmd_draw(command_buffer, 3, 1, 0, 0) };
+        unsafe { device.cmd_draw(command_buffer, VERTICES.len() as u32, 1, 0, 0) };
         unsafe { dyn_cmd.cmd_end_rendering(command_buffer) };
 
         let color_optimal_to_present_src_transition = vk::ImageMemoryBarrier2::default()
@@ -566,6 +652,11 @@ impl Drop for GalaxyEngine {
 
         // Drop pipeline layout.
         unsafe { device.destroy_pipeline_layout(self.pipeline_layout, None) };
+        
+        // Drop vertex buffer.
+        unsafe { device.destroy_buffer(self.vertex_buffer, None) };
+        // Free vertex buffer memory.
+        unsafe { device.free_memory(self.vertex_buffer_memory, None) };
 
         // Drop swapchain.
         unsafe { self.swapchain.destroy(&self.device) };
