@@ -3,6 +3,7 @@ mod engine;
 mod utils;
 mod device;
 mod swapchain;
+mod surface;
 
 use winit::error::EventLoopError;
 use winit::event_loop::{ControlFlow, EventLoop};

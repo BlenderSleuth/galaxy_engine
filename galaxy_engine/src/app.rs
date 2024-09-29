@@ -1,5 +1,6 @@
 use std::ffi::CString;
-
+use std::sync::Arc;
+use ash::vk;
 use bitflags::bitflags;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::application::ApplicationHandler;
@@ -46,7 +47,7 @@ macro_rules! unwrap_or_exit {
 
 pub struct GalaxyApp {
     app_info: AppInfo,
-    window: Option<Window>,
+    window: Option<Arc<Window>>,
     engine: Option<GalaxyEngine>,
 }
 
@@ -65,11 +66,18 @@ impl ApplicationHandler for GalaxyApp {
         let title = unwrap_or_exit!(self.app_info.name.to_str(), "Title is not valid UTF-8: {}", event_loop);
         let window_attributes = Window::default_attributes().with_title(title);
 
-        let window = unwrap_or_exit!(event_loop.create_window(window_attributes), "Failed to create window: \n{}\nExiting.", event_loop);
-        let display_handle = unwrap_or_exit!(window.display_handle(), "Failed to get display handle: \n{}\nExiting.", event_loop);
-        let window_handle = unwrap_or_exit!(window.window_handle(), "Failed to get window handle: \n{}\nExiting.", event_loop);
+        let window = Arc::new(unwrap_or_exit!(event_loop.create_window(window_attributes), "Failed to create window: {}\nExiting.", event_loop));
+        let display_handle = unwrap_or_exit!(window.display_handle(), "Failed to get display handle: {}\nExiting.", event_loop);
+        let window_handle = unwrap_or_exit!(window.window_handle(), "Failed to get window handle: {}\nExiting.", event_loop);
 
-        self.engine = Some(unwrap_or_exit!(GalaxyEngine::new(&self.app_info, display_handle, window_handle, window.inner_size()), "Failed to create engine: \n{}\nExiting.", event_loop));
+        let delegate_window = Arc::clone(&window);
+        self.engine = Some(unwrap_or_exit!(GalaxyEngine::new(&self.app_info, display_handle, window_handle, Box::new(move || {
+            let window_size = delegate_window.inner_size();
+            vk::Extent2D {
+                width: window_size.width,
+                height: window_size.height,
+            }
+        })), "Failed to create engine: {}\nExiting.", event_loop));
         self.window = Some(window);
     }
 
@@ -80,9 +88,15 @@ impl ApplicationHandler for GalaxyApp {
             }
             _ => {}
         }
+    }
 
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if event_loop.exiting() {
+            return;
+        }
+        
         if let Some(engine) = self.engine.as_mut() {
-            unwrap_or_exit!(engine.main_loop(), "Main loop error: \n{}\nExiting.", event_loop);
+            unwrap_or_exit!(engine.main_loop(), "Main loop error: {}\nExiting.", event_loop);
         }
     }
 }

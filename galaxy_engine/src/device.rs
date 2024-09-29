@@ -1,5 +1,5 @@
 use ash::{khr, vk};
-use winit::dpi::PhysicalSize;
+use crate::surface::Surface;
 use crate::utils;
 
 #[derive(Debug, thiserror::Error)]
@@ -18,9 +18,7 @@ pub struct PhysicalDeviceProperties {
     pub is_discrete: bool,
     pub swapchain_format: vk::SurfaceFormatKHR,
     pub presentation_mode: vk::PresentModeKHR,
-    pub swapchain_extent: vk::Extent2D,
     pub image_count: u32,
-    pub surface_capabilities: vk::SurfaceCapabilitiesKHR,
 }
 
 impl PhysicalDeviceProperties {
@@ -42,7 +40,7 @@ pub struct Device {
 }
 
 impl Device {
-    pub fn new(entry: &ash::Entry, instance: &ash::Instance, surface: vk::SurfaceKHR, window_size: PhysicalSize<u32>) -> Result<Self, DeviceInitError> {
+    pub fn new(instance: &ash::Instance, surface: &Surface) -> Result<Self, DeviceInitError> {
         // Pick physical device.
         let physical_devices = unsafe { instance.enumerate_physical_devices() }?;
         if physical_devices.is_empty() {
@@ -75,10 +73,9 @@ impl Device {
             let mut present_queue_family_idx = None;
             let queue_families = unsafe { instance.get_physical_device_queue_family_properties(*physical_device) };
 
-            let surface_fn = khr::surface::Instance::new(&entry, &instance);
             for (queue_family_idx, queue_family) in queue_families.iter().enumerate() {
                 let queue_family_idx = queue_family_idx as u32;
-                let is_present_supported = unsafe { surface_fn.get_physical_device_surface_support(*physical_device, queue_family_idx, surface) }?;
+                let is_present_supported = surface.get_physical_device_surface_support(*physical_device, queue_family_idx)?;
 
                 if queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
                     // Prefer queue family that supports both graphics and present.
@@ -105,9 +102,9 @@ impl Device {
             }
 
             // Require compatible surface properties.
-            let surface_capabilities = unsafe { surface_fn.get_physical_device_surface_capabilities(*physical_device, surface) }?;
-            let surface_formats = unsafe { surface_fn.get_physical_device_surface_formats(*physical_device, surface) }?;
-            let surface_present_modes = unsafe { surface_fn.get_physical_device_surface_present_modes(*physical_device, surface) }?;
+            let surface_capabilities = surface.get_capabilities(*physical_device)?; 
+            let surface_formats = surface.get_formats(*physical_device)?;
+            let surface_present_modes = surface.get_present_modes(*physical_device)?;
 
             if surface_formats.is_empty() || surface_present_modes.is_empty() {
                 continue;
@@ -121,16 +118,6 @@ impl Device {
             };
             let Some(presentation_mode) = surface_present_modes.into_iter().find(|&mode| mode == vk::PresentModeKHR::MAILBOX) else {
                 continue;
-            };
-
-            // Choose swap extent.
-            let swap_extent = if surface_capabilities.current_extent.width != u32::MAX {
-                surface_capabilities.current_extent
-            } else {
-                vk::Extent2D {
-                    width: window_size.width.clamp(surface_capabilities.min_image_extent.width, surface_capabilities.max_image_extent.width),
-                    height: window_size.height.clamp(surface_capabilities.min_image_extent.height, surface_capabilities.max_image_extent.height),
-                }
             };
 
             let mut image_count = surface_capabilities.min_image_count + 1;
@@ -157,9 +144,7 @@ impl Device {
                 is_discrete: physical_device_properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU,
                 swapchain_format,
                 presentation_mode,
-                swapchain_extent: swap_extent,
                 image_count,
-                surface_capabilities,
             };
 
             // Prefer discrete GPU.
@@ -208,8 +193,8 @@ impl Device {
         Ok(Self { device, graphics_queue, present_queue, properties: current_device_properties })
     }
 
-    pub fn get_properties(&self) -> PhysicalDeviceProperties {
-        self.properties.clone()
+    pub fn get_properties(&self) -> &PhysicalDeviceProperties {
+        &self.properties
     }
     
     pub fn graphics_queue(&self) -> vk::Queue {

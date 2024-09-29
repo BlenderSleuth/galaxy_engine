@@ -1,14 +1,14 @@
 use std::ffi::{c_char, CStr};
 use std::slice;
-use ash::{ext, khr, vk, Entry, Instance};
+use ash::{ext, khr, vk};
 use ash::prelude::VkResult;
 use raw_window_handle::{DisplayHandle, WindowHandle};
-use winit::dpi::PhysicalSize;
 
 use crate::{app, utils, device, swapchain};
 use app::AppInfo;
 use device::Device;
 use swapchain::Swapchain;
+use crate::surface::Surface;
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
@@ -49,7 +49,7 @@ struct DebugMessenger {
 }
 
 impl DebugMessenger {
-    fn new(entry: &Entry, instance: &Instance) -> VkResult<Self> {
+    fn new(entry: &ash::Entry, instance: &ash::Instance) -> VkResult<Self> {
         let debug_utils_ci = vk::DebugUtilsMessengerCreateInfoEXT::default()
             .message_severity(
                 vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE |
@@ -113,12 +113,22 @@ struct LoadedExtensions {
     dynamic_rendering: khr::dynamic_rendering::Device,
 }
 
+impl LoadedExtensions {
+    fn new(instance: &ash::Instance, device: &ash::Device) -> Self {
+        let synchronisation2 = khr::synchronization2::Device::new(&instance, &device);
+        let dynamic_rendering = khr::dynamic_rendering::Device::new(&instance, &device);
+        Self { synchronisation2, dynamic_rendering }
+    }
+}
+
+type WindowSizeCallback = Box<dyn FnMut() -> vk::Extent2D>;
+
 pub struct GalaxyEngine {
-    entry: Entry,
-    instance: Instance,
+    _entry: ash::Entry,
+    instance: ash::Instance,
     loaded_extensions: LoadedExtensions,
     debug_messenger: Option<DebugMessenger>,
-    surface: vk::SurfaceKHR,
+    surface: Surface,
     device: Device,
     swapchain: Swapchain,
     pipeline_layout: vk::PipelineLayout,
@@ -129,6 +139,7 @@ pub struct GalaxyEngine {
     render_finished_semaphores: [vk::Semaphore; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     in_flight_fences: [vk::Fence; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     current_frame: u32,
+    window_size_callback: WindowSizeCallback,
 }
 
 impl GalaxyEngine {
@@ -137,9 +148,9 @@ impl GalaxyEngine {
     const ENGINE_VERSION_STR: &'static str = env!("CARGO_PKG_VERSION");
     const MAX_FRAMES_IN_FLIGHT: usize = 2;
     
-    pub fn new(app_info: &AppInfo, display: DisplayHandle, window: WindowHandle, window_size: PhysicalSize<u32>) -> Result<Self, EngineInitError> {
+    pub fn new(app_info: &AppInfo, display: DisplayHandle, window: WindowHandle, mut window_size_callback: WindowSizeCallback) -> Result<Self, EngineInitError> {
         // Setup Vulkan.
-        let entry = unsafe { Entry::load() }?;
+        let entry = unsafe { ash::Entry::load() }?;
 
         // Check Vulkan API version.
         let api_version = unsafe { entry.try_enumerate_instance_version() }?.unwrap_or_else(|| vk::API_VERSION_1_0);
@@ -182,19 +193,17 @@ impl GalaxyEngine {
         };
 
         // Create surface.
-        let surface = unsafe { ash_window::create_surface(&entry, &instance, display.as_raw(), window.as_raw(), None) }?;
-
+        let surface = Surface::new(&entry, &instance, display, window)?;
+        
         // Create device.
-        let device = Device::new(&entry, &instance, surface, window_size)?;
+        let device = Device::new(&instance, &surface)?;
         let device_properties = device.get_properties();
 
         // Load extensions.
-        let synchronisation2 = khr::synchronization2::Device::new(&instance, &device.device());
-        let dynamic_rendering = khr::dynamic_rendering::Device::new(&instance, &device.device());
-        let loaded_extensions = LoadedExtensions { synchronisation2, dynamic_rendering };
-        
+        let loaded_extensions = LoadedExtensions::new(&instance, device.device());
+
         // Create swapchain.
-        let swapchain = Swapchain::new(&instance, &device, surface, None)?;
+        let swapchain = Swapchain::new(&instance, &device, &surface, window_size_callback(), None)?;
 
         // Create graphics pipeline.
 
@@ -207,7 +216,14 @@ impl GalaxyEngine {
             stage: vk::ShaderStageFlags,
             _marker: std::marker::PhantomData<&'a ()>,
         }
-        impl ShaderModule<'_> {
+        impl<'a> ShaderModule<'a> {
+            fn new(device: &Device, code: &'a [u8], stage: vk::ShaderStageFlags) -> VkResult<Self> {
+                let (prefix, code, suffix) = unsafe { code.align_to::<u32>() };
+                assert!(prefix.is_empty());
+                assert!(suffix.is_empty());
+                let create_info = vk::ShaderModuleCreateInfo::default().code(code);
+                Ok(Self { module: unsafe { device.device().create_shader_module(&create_info, None) }?, stage, _marker: std::marker::PhantomData })
+            }
             fn get_stage_info(&self) -> vk::PipelineShaderStageCreateInfo {
                 vk::PipelineShaderStageCreateInfo::default()
                     .stage(self.stage)
@@ -219,16 +235,8 @@ impl GalaxyEngine {
             }
         }
 
-        fn create_shader_module<'a>(device: &Device, code: &'a [u8], stage: vk::ShaderStageFlags) -> VkResult<ShaderModule<'a>> {
-            let (prefix, code, suffix) = unsafe { code.align_to::<u32>() };
-            assert!(prefix.is_empty());
-            assert!(suffix.is_empty());
-            let create_info = vk::ShaderModuleCreateInfo::default().code(code);
-            Ok(ShaderModule { module: unsafe { device.device().create_shader_module(&create_info, None) }?, stage, _marker: std::marker::PhantomData })
-        }
-
-        let mut vertex_shader_module = create_shader_module(&device, &vertex_shader_code, vk::ShaderStageFlags::VERTEX)?;
-        let mut fragment_shader_module = create_shader_module(&device, &fragment_shader_code, vk::ShaderStageFlags::FRAGMENT)?;
+        let mut vertex_shader_module = ShaderModule::new(&device, &vertex_shader_code, vk::ShaderStageFlags::VERTEX)?;
+        let mut fragment_shader_module = ShaderModule::new(&device, &fragment_shader_code, vk::ShaderStageFlags::FRAGMENT)?;
 
         let vertex_shader_stage_info = vertex_shader_module.get_stage_info();
         let fragment_shader_stage_info = fragment_shader_module.get_stage_info();
@@ -322,7 +330,7 @@ impl GalaxyEngine {
         }
 
         Ok(Self {
-            entry,
+            _entry: entry,
             instance,
             loaded_extensions,
             debug_messenger,
@@ -337,6 +345,7 @@ impl GalaxyEngine {
             render_finished_semaphores,
             in_flight_fences,
             current_frame: 0,
+            window_size_callback,
         })
     }
 
@@ -345,21 +354,28 @@ impl GalaxyEngine {
 
         let sync2 = &self.loaded_extensions.synchronisation2;
         let dyn_cmd = &self.loaded_extensions.dynamic_rendering;
-        
+
         let current_frame = self.current_frame as usize;
-        
+
         // Wait for fence.
         unsafe { device.wait_for_fences(&[self.in_flight_fences[current_frame]], true, u64::MAX) }?;
-        unsafe { device.reset_fences(&[self.in_flight_fences[current_frame]]) }?;
 
         // Acquire image from swapchain.
-        let (image_idx, _is_suboptimal) = self.swapchain.acquire_next_image(self.image_available_semaphores[current_frame], vk::Fence::null())?;
+        let (image_idx, _is_suboptimal) = match self.swapchain.acquire_next_image(self.image_available_semaphores[current_frame], vk::Fence::null()) {
+            Ok(x) => x,
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                return self.recreate_swapchain();
+            }
+            Err(_) => return Err(vk::Result::ERROR_UNKNOWN),
+        };
+        
+        unsafe { device.reset_fences(&[self.in_flight_fences[current_frame]]) }?;
 
         let command_buffer = self.command_buffers[current_frame];
 
         unsafe { device.reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty()) }?;
 
-        let swapchain_extent = self.device.get_properties().swapchain_extent;
+        let swapchain_extent = self.swapchain.get_extent();
 
         let viewport = vk::Viewport::default()
             .width(swapchain_extent.width as f32)
@@ -373,7 +389,7 @@ impl GalaxyEngine {
         // Record command buffer.
         let begin_info = vk::CommandBufferBeginInfo::default();
         unsafe { device.begin_command_buffer(command_buffer, &begin_info) }?;
-        
+
         let color_optimal_transition = vk::ImageMemoryBarrier2::default()
             .src_access_mask(vk::AccessFlags2::empty())
             .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
@@ -383,7 +399,7 @@ impl GalaxyEngine {
             .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .image(self.swapchain.get_images()[image_idx as usize])
             .subresource_range(self.swapchain.get_subresource_range());
-        
+
         let dependency_info = vk::DependencyInfo::default()
             .image_memory_barriers(slice::from_ref(&color_optimal_transition));
         unsafe { sync2.cmd_pipeline_barrier2(command_buffer, &dependency_info) };
@@ -418,7 +434,7 @@ impl GalaxyEngine {
         let dependency_info = vk::DependencyInfo::default()
             .image_memory_barriers(slice::from_ref(&color_optimal_to_present_src_transition));
         unsafe { sync2.cmd_pipeline_barrier2(command_buffer, &dependency_info) };
-        
+
         unsafe { device.end_command_buffer(command_buffer) }?;
 
         // Submit command buffer.
@@ -430,15 +446,28 @@ impl GalaxyEngine {
 
         unsafe { device.queue_submit(self.device.graphics_queue(), slice::from_ref(&submit_info), self.in_flight_fences[current_frame]) }?;
 
-        self.swapchain.queue_present(self.device.present_queue(), image_idx, &[self.render_finished_semaphores[current_frame]])?;
-
+        match self.swapchain.queue_present(self.device.present_queue(), image_idx, &[self.render_finished_semaphores[current_frame]]) {
+            Ok(_) => {}
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
+                self.recreate_swapchain()?;
+            }
+            Err(e) => return Err(e),
+        }
 
         self.current_frame = (self.current_frame + 1) % Self::MAX_FRAMES_IN_FLIGHT as u32;
-        
+
         Ok(())
     }
 
-    fn get_instance_layers(entry: &Entry, flags: &app::AppFlags) -> VkResult<Vec<*const c_char>> {
+    fn recreate_swapchain(&mut self) -> VkResult<()> {
+        unsafe { self.device.device().device_wait_idle() }?;
+        let new_swapchain = Swapchain::new(&self.instance, &self.device, &self.surface, (self.window_size_callback)(), Some(&self.swapchain))?;
+        unsafe { self.swapchain.destroy(&self.device) };
+        self.swapchain = new_swapchain;
+        Ok(())
+    }
+
+    fn get_instance_layers(entry: &ash::Entry, flags: &app::AppFlags) -> VkResult<Vec<*const c_char>> {
         // Query available layers.
         let available_layers = unsafe { entry.enumerate_instance_layer_properties() }?;
 
@@ -462,7 +491,7 @@ impl GalaxyEngine {
         Ok(utils::cstr_to_ptrs(&required_layers))
     }
 
-    fn get_required_instance_extensions(entry: &Entry, flags: &app::AppFlags, display: DisplayHandle) -> Result<Vec<*const c_char>, InstanceExtensionError> {
+    fn get_required_instance_extensions(entry: &ash::Entry, flags: &app::AppFlags, display: DisplayHandle) -> Result<Vec<*const c_char>, InstanceExtensionError> {
         // Query available extensions
         let available_extensions = unsafe { entry.enumerate_instance_extension_properties(None) }?;
 
@@ -501,7 +530,7 @@ impl GalaxyEngine {
 impl Drop for GalaxyEngine {
     fn drop(&mut self) {
         let device = self.device.device();
-        
+
         unsafe { device.device_wait_idle() }.unwrap_or_else(|e| log::error!("Failed to wait for device idle: {:?}", e));
 
         // Drop sync objects.
@@ -530,8 +559,7 @@ impl Drop for GalaxyEngine {
         unsafe { self.device.destroy() };
 
         // Drop surface.
-        let surface_fn = khr::surface::Instance::new(&self.entry, &self.instance);
-        unsafe { surface_fn.destroy_surface(self.surface, None) };
+        unsafe { self.surface.destroy() };
 
         // Drop debug messenger.
         if let Some(debug_messenger) = &mut self.debug_messenger {
@@ -540,7 +568,7 @@ impl Drop for GalaxyEngine {
 
         // Drop instance.
         unsafe { self.instance.destroy_instance(None) };
-        
+
         // Entry is automatically dropped.
     }
 }

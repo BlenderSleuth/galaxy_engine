@@ -3,16 +3,18 @@ use ash::{khr, vk};
 use ash::prelude::VkResult;
 
 use crate::device::Device;
+use crate::surface::Surface;
 
 pub struct Swapchain {
     loader: khr::swapchain::Device,
     pub(crate) handle: vk::SwapchainKHR,
     images: Vec<vk::Image>,
     image_views: Vec<vk::ImageView>,
+    extent: vk::Extent2D, 
 }
 
 impl Swapchain {
-    pub fn new(instance: &ash::Instance, device: &Device, surface: vk::SurfaceKHR, old_swapchain: Option<&Swapchain>) -> VkResult<Self> {
+    pub fn new(instance: &ash::Instance, device: &Device, surface: &Surface, window_size: vk::Extent2D, old_swapchain: Option<&Swapchain>) -> VkResult<Self> {
         let device_properties = device.get_properties();
         let unique_queue_families = device_properties.get_unique_queue_families();
 
@@ -22,28 +24,40 @@ impl Swapchain {
         } else {
             (vk::SharingMode::EXCLUSIVE, Vec::new())
         };
+        
+        let surface_capabilities = surface.get_capabilities(device.get_properties().physical_device)?;
 
-        let functor = khr::swapchain::Device::new(&instance, &device.device());
+        // Choose swap extent.
+        let swapchain_extent = if surface_capabilities.current_extent.width != u32::MAX {
+            surface_capabilities.current_extent
+        } else {
+            vk::Extent2D {
+                width: window_size.width.clamp(surface_capabilities.min_image_extent.width, surface_capabilities.max_image_extent.width),
+                height: window_size.height.clamp(surface_capabilities.min_image_extent.height, surface_capabilities.max_image_extent.height),
+            }
+        };
+        
+        let loader = khr::swapchain::Device::new(&instance, &device.device());
         let swapchain_info = vk::SwapchainCreateInfoKHR::default()
-            .surface(surface)
+            .surface(surface.handle())
             .min_image_count(device_properties.image_count)
             .image_format(device_properties.swapchain_format.format)
             .image_color_space(device_properties.swapchain_format.color_space)
-            .image_extent(device_properties.swapchain_extent)
+            .image_extent(swapchain_extent)
             .image_array_layers(1)
             .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
             .image_sharing_mode(image_sharing_mode)
             .queue_family_indices(&queue_family_indices)
-            .pre_transform(device_properties.surface_capabilities.current_transform)
+            .pre_transform(surface_capabilities.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(device_properties.presentation_mode)
             .clipped(true)
             .old_swapchain(old_swapchain.map_or(vk::SwapchainKHR::null(), |swapchain| swapchain.handle));
 
-        let swapchain = unsafe { functor.create_swapchain(&swapchain_info, None) }?;
+        let swapchain = unsafe { loader.create_swapchain(&swapchain_info, None) }?;
 
         // Get swapchain images.
-        let images = unsafe { functor.get_swapchain_images(swapchain) }?;
+        let images = unsafe { loader.get_swapchain_images(swapchain) }?;
 
         // Create image views.
         let mut image_view_info = vk::ImageViewCreateInfo::default()
@@ -62,7 +76,11 @@ impl Swapchain {
             unsafe { device.device().create_image_view(&image_view_info, None) }
         }).collect::<VkResult<Vec<_>>>()?;
 
-        Ok(Self { loader: functor, handle: swapchain, images, image_views })
+        Ok(Self { loader, handle: swapchain, images, image_views, extent: swapchain_extent })
+    }
+    
+    pub fn get_extent(&self) -> vk::Extent2D {
+        self.extent
     }
     
     pub fn get_images(&self) -> &[vk::Image] {
