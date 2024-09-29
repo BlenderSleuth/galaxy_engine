@@ -1,4 +1,6 @@
+use std::mem::MaybeUninit;
 use ash::{khr, vk};
+use ash::prelude::VkResult;
 use crate::surface::Surface;
 use crate::utils;
 
@@ -8,6 +10,12 @@ pub enum DeviceInitError {
     NoPhysicalDevices,
     #[error("Vulkan function failed with the error: {0}")]
     VulkanError(#[from] vk::Result),
+}
+
+pub enum QueueFamily {
+    Graphics,
+    Present,
+    Transfer,
 }
 
 #[derive(Debug, Clone)]
@@ -214,12 +222,42 @@ impl Device {
         &self.properties
     }
     
-    pub fn graphics_queue(&self) -> vk::Queue {
-        self.graphics_queue
+    pub fn get_queue(&self, queue: QueueFamily) -> vk::Queue {
+        match queue {
+            QueueFamily::Graphics => self.graphics_queue,
+            QueueFamily::Present => self.present_queue,
+            QueueFamily::Transfer => self.graphics_queue,
+        }
+    }
+    pub fn get_queue_family_idx(&self, queue: QueueFamily) -> u32 {
+        match queue {
+            QueueFamily::Graphics => self.properties.graphics_queue_family_idx,
+            QueueFamily::Present => self.properties.present_queue_family_idx,
+            QueueFamily::Transfer => self.properties.graphics_queue_family_idx,
+        }
     }
     
-    pub fn present_queue(&self) -> vk::Queue {
-        self.present_queue
+    // Doesn't allocate a vec for the single buffer case.
+    pub unsafe fn allocate_command_buffer(&self, cmd_pool: vk::CommandPool, level: vk::CommandBufferLevel) -> VkResult<vk::CommandBuffer> {
+        let allocate_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(cmd_pool)
+            .level(level)
+            .command_buffer_count(1);
+        let mut buffer = MaybeUninit::uninit();
+        (self.device.fp_v1_0().allocate_command_buffers)(
+            self.device.handle(),
+            &allocate_info,
+            buffer.as_mut_ptr(),
+        ).result()?;
+        Ok(buffer.assume_init())
+    }
+    
+    pub fn create_transient_command_pool(&self, queue_family: QueueFamily) -> VkResult<vk::CommandPool> {
+        // Create command pool.
+        let command_pool_info = vk::CommandPoolCreateInfo::default()
+            .flags(vk::CommandPoolCreateFlags::TRANSIENT)
+            .queue_family_index(self.get_queue_family_idx(queue_family));
+         unsafe { self.device.create_command_pool(&command_pool_info, None) }
     }
     
     pub unsafe fn destroy(&self) {

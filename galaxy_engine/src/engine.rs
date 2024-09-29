@@ -4,11 +4,13 @@ use ash::{ext, khr, vk};
 use ash::prelude::VkResult;
 use raw_window_handle::{DisplayHandle, WindowHandle};
 
-use crate::{app, utils, surface, device, swapchain};
+use crate::{app, utils, surface, device, swapchain, buffer};
 use app::AppInfo;
 use surface::Surface;
 use device::Device;
 use swapchain::Swapchain;
+use crate::buffer::Buffer;
+use crate::device::QueueFamily;
 
 // Const versions of nalgebra-glm functions. TODO: pull request to nalgebra-glm.
 mod glm {
@@ -141,6 +143,8 @@ impl LoadedExtensions {
     }
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
 struct Vertex {
     pos: glm::Vec2,
     color: glm::Vec3,
@@ -184,12 +188,12 @@ pub struct GalaxyEngine {
     surface: Surface,
     device: Device,
     swapchain: Swapchain,
-    vertex_buffer: vk::Buffer,
-    vertex_buffer_memory: vk::DeviceMemory,
+    vertex_buffer: Buffer,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
-    command_pool: vk::CommandPool,
-    command_buffers: [vk::CommandBuffer; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
+    graphics_cmd_pool: vk::CommandPool,
+    transfer_cmd_pool: vk::CommandPool,
+    cmd_buffers: [vk::CommandBuffer; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     image_available_semaphores: [vk::Semaphore; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     render_finished_semaphores: [vk::Semaphore; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     in_flight_fences: [vk::Fence; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
@@ -305,29 +309,27 @@ impl GalaxyEngine {
             .vertex_binding_descriptions(slice::from_ref(&binding_description))
             .vertex_attribute_descriptions(&attribute_descriptions);
         
-        let vertex_buffer_info = vk::BufferCreateInfo::default()
-            .size(std::mem::size_of_val(&VERTICES) as vk::DeviceSize)
-            .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-        let vertex_buffer = unsafe { device.device().create_buffer(&vertex_buffer_info, None) }?;
+        let mut staging_vertex_buffer = Buffer::new_for_typed_data(
+            &device,
+            &VERTICES,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::SharingMode::EXCLUSIVE,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
+        )?;
+        staging_vertex_buffer.copy_into_buffer(&device, &VERTICES)?;
+        
+        let vertex_buffer = Buffer::new_for_typed_data(
+            &device,
+            &VERTICES,
+            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
+            vk::SharingMode::EXCLUSIVE,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL
+        )?;
+        
+        let transfer_cmd_pool = device.create_transient_command_pool(QueueFamily::Transfer)?;
+        buffer::copy_buffer(transfer_cmd_pool, &device, &staging_vertex_buffer, &vertex_buffer, staging_vertex_buffer.size())?;
 
-        // Allocate memory for vertex buffer.
-        let mem_requirements = unsafe { device.device().get_buffer_memory_requirements(vertex_buffer) };
-        let memory_type = device.find_memory_type(mem_requirements.memory_type_bits, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
-        let alloc_info = vk::MemoryAllocateInfo::default()
-            .allocation_size(mem_requirements.size)
-            .memory_type_index(memory_type.unwrap());
-        let vertex_buffer_memory = unsafe { device.device().allocate_memory(&alloc_info, None) }?;
-        
-        // Bind vertex buffer memory.
-        unsafe { device.device().bind_buffer_memory(vertex_buffer, vertex_buffer_memory, 0) }?;
-        
-        // Copy vertex data to buffer.
-        {
-            let data = unsafe { device.device().map_memory(vertex_buffer_memory, 0, mem_requirements.size, vk::MemoryMapFlags::empty()) }?;
-            unsafe { std::ptr::copy_nonoverlapping(VERTICES.as_ptr() as *const u8, data as *mut u8, std::mem::size_of_val(&VERTICES)) };
-            unsafe { device.device().unmap_memory(vertex_buffer_memory) };
-        }
+        unsafe { staging_vertex_buffer.destroy(&device) };
         
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
@@ -392,11 +394,11 @@ impl GalaxyEngine {
         let command_pool_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
             .queue_family_index(device_properties.graphics_queue_family_idx);
-        let command_pool = unsafe { device.device().create_command_pool(&command_pool_info, None) }?;
+        let graphics_cmd_pool = unsafe { device.device().create_command_pool(&command_pool_info, None) }?;
 
         // Create command buffer.
         let command_buffer_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(command_pool)
+            .command_pool(graphics_cmd_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(Self::MAX_FRAMES_IN_FLIGHT as u32);
         let command_buffers = unsafe { device.device().allocate_command_buffers(&command_buffer_info) }?;
@@ -421,11 +423,11 @@ impl GalaxyEngine {
             device,
             swapchain,
             vertex_buffer,
-            vertex_buffer_memory,
             pipeline_layout,
             pipeline,
-            command_pool,
-            command_buffers: command_buffers.try_into().unwrap(),
+            graphics_cmd_pool,
+            transfer_cmd_pool,
+            cmd_buffers: command_buffers.try_into().unwrap(),
             image_available_semaphores,
             render_finished_semaphores,
             in_flight_fences,
@@ -457,7 +459,7 @@ impl GalaxyEngine {
 
         unsafe { device.reset_fences(&[self.in_flight_fences[current_frame]]) }?;
 
-        let command_buffer = self.command_buffers[current_frame];
+        let command_buffer = self.cmd_buffers[current_frame];
 
         unsafe { device.reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty()) }?;
 
@@ -503,10 +505,10 @@ impl GalaxyEngine {
 
         unsafe { dyn_cmd.cmd_begin_rendering(command_buffer, &rendering_info) }
         unsafe { device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline) };
-        unsafe { device.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.vertex_buffer), slice::from_ref(&0)) };
+        unsafe { device.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.vertex_buffer.handle()), slice::from_ref(&0)) };
         unsafe { device.cmd_set_viewport(command_buffer, 0, &[viewport]) };
         unsafe { device.cmd_set_scissor(command_buffer, 0, &[scissor]) };
-        unsafe { device.cmd_draw(command_buffer, VERTICES.len() as u32, 1, 0, 0) };
+        unsafe { device.cmd_draw(command_buffer, self.vertex_buffer.len() as u32, 1, 0, 0) };
         unsafe { dyn_cmd.cmd_end_rendering(command_buffer) };
 
         let color_optimal_to_present_src_transition = vk::ImageMemoryBarrier2::default()
@@ -531,9 +533,9 @@ impl GalaxyEngine {
             .wait_dst_stage_mask(slice::from_ref(&vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT))
             .signal_semaphores(slice::from_ref(&self.render_finished_semaphores[current_frame]));
 
-        unsafe { device.queue_submit(self.device.graphics_queue(), slice::from_ref(&submit_info), self.in_flight_fences[current_frame]) }?;
+        unsafe { device.queue_submit(self.device.get_queue(QueueFamily::Graphics), slice::from_ref(&submit_info), self.in_flight_fences[current_frame]) }?;
 
-        match self.swapchain.queue_present(self.device.present_queue(), image_idx, &[self.render_finished_semaphores[current_frame]]) {
+        match self.swapchain.queue_present(self.device.get_queue(QueueFamily::Present), image_idx, &[self.render_finished_semaphores[current_frame]]) {
             Ok(_) => {}
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
                 self.recreate_swapchain()?;
@@ -642,10 +644,11 @@ impl Drop for GalaxyEngine {
         }
 
         // Drop command_buffers.
-        unsafe { device.free_command_buffers(self.command_pool, &self.command_buffers) };
+        unsafe { device.free_command_buffers(self.graphics_cmd_pool, &self.cmd_buffers) };
 
-        // Drop command_pool.
-        unsafe { device.destroy_command_pool(self.command_pool, None) };
+        // Drop command_pools.
+        unsafe { device.destroy_command_pool(self.graphics_cmd_pool, None) };
+        unsafe { device.destroy_command_pool(self.transfer_cmd_pool, None) };
 
         // Drop pipeline.
         unsafe { device.destroy_pipeline(self.pipeline, None) };
@@ -654,9 +657,7 @@ impl Drop for GalaxyEngine {
         unsafe { device.destroy_pipeline_layout(self.pipeline_layout, None) };
         
         // Drop vertex buffer.
-        unsafe { device.destroy_buffer(self.vertex_buffer, None) };
-        // Free vertex buffer memory.
-        unsafe { device.free_memory(self.vertex_buffer_memory, None) };
+        unsafe { self.vertex_buffer.destroy(&self.device) };
 
         // Drop swapchain.
         unsafe { self.swapchain.destroy(&self.device) };
