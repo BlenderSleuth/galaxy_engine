@@ -1,10 +1,11 @@
+use std::slice;
 use ash::{khr, vk};
 use ash::prelude::VkResult;
 
 use crate::device::Device;
 
 pub struct Swapchain {
-    functor: khr::swapchain::Device,
+    loader: khr::swapchain::Device,
     pub(crate) handle: vk::SwapchainKHR,
     images: Vec<vk::Image>,
     image_views: Vec<vk::ImageView>,
@@ -61,15 +62,37 @@ impl Swapchain {
             unsafe { device.device().create_image_view(&image_view_info, None) }
         }).collect::<VkResult<Vec<_>>>()?;
 
-        Ok(Self { functor, handle: swapchain, images, image_views })
+        Ok(Self { loader: functor, handle: swapchain, images, image_views })
     }
     
-    pub fn get_functor(&self) -> &khr::swapchain::Device {
-        &self.functor
+    pub fn get_images(&self) -> &[vk::Image] {
+        &self.images
     }
     
     pub fn get_image_views(&self) -> &[vk::ImageView] {
         &self.image_views
+    }
+    
+    pub fn get_subresource_range(&self) -> vk::ImageSubresourceRange {
+        vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        }
+    }
+    
+    pub fn acquire_next_image(&self, semaphore: vk::Semaphore, fence: vk::Fence) -> VkResult<(u32, bool)> {
+        unsafe { self.loader.acquire_next_image(self.handle, u64::MAX, semaphore, fence) }
+    }
+    
+    pub fn queue_present(&self, queue: vk::Queue, image_index: u32, wait_semaphores: &[vk::Semaphore]) -> VkResult<bool> {
+        let present_info = vk::PresentInfoKHR::default()
+            .wait_semaphores(wait_semaphores)
+            .swapchains(slice::from_ref(&self.handle))
+            .image_indices(slice::from_ref(&image_index));
+        unsafe { self.loader.queue_present(queue, &present_info) }
     }
     
     pub unsafe fn destroy(&mut self, device: &Device) {
@@ -81,6 +104,6 @@ impl Swapchain {
         self.images.clear();
 
         // Drop swapchain (also drops images).
-        unsafe { self.functor.destroy_swapchain(self.handle, None) };
+        unsafe { self.loader.destroy_swapchain(self.handle, None) };
     }
 }

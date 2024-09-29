@@ -108,17 +108,21 @@ impl DebugMessenger {
     }
 }
 
+struct LoadedExtensions {
+    synchronisation2: khr::synchronization2::Device,
+    dynamic_rendering: khr::dynamic_rendering::Device,
+}
+
 pub struct GalaxyEngine {
     entry: Entry,
     instance: Instance,
+    loaded_extensions: LoadedExtensions,
     debug_messenger: Option<DebugMessenger>,
     surface: vk::SurfaceKHR,
     device: Device,
     swapchain: Swapchain,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
-    renderpass: vk::RenderPass,
-    swapchain_framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
     command_buffer: vk::CommandBuffer,
     image_available_semaphore: vk::Semaphore,
@@ -127,9 +131,10 @@ pub struct GalaxyEngine {
 }
 
 impl GalaxyEngine {
-    const MIN_VK_VERSION: u32 = vk::make_api_version(0, 1, 3, 0);
+    const MIN_VK_VERSION: u32 = vk::make_api_version(0, 1, 2, 0);
     const ENGINE_NAME: &'static CStr = c"Galaxy Engine";
     const ENGINE_VERSION_STR: &'static str = env!("CARGO_PKG_VERSION");
+    // const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
     pub fn new(app_info: &AppInfo, display: DisplayHandle, window: WindowHandle, window_size: PhysicalSize<u32>) -> Result<Self, EngineInitError> {
         // Setup Vulkan.
@@ -145,7 +150,7 @@ impl GalaxyEngine {
 
         // Get instance extensions and layers
         let layers = Self::get_instance_layers(&entry, &app_info.flags)?;
-        let extensions = Self::get_required_instance_extensions(&entry, &app_info.flags, display)?;
+        let instance_extensions = Self::get_required_instance_extensions(&entry, &app_info.flags, display)?;
 
         let vk_app_info = vk::ApplicationInfo::default()
             .application_name(&app_info.name)
@@ -163,7 +168,7 @@ impl GalaxyEngine {
         let instance_info = vk::InstanceCreateInfo::default()
             .application_info(&vk_app_info)
             .enabled_layer_names(&layers)
-            .enabled_extension_names(&extensions)
+            .enabled_extension_names(&instance_extensions)
             .flags(create_flags);
 
         let instance = unsafe { entry.create_instance(&instance_info, None) }?;
@@ -182,6 +187,11 @@ impl GalaxyEngine {
         let device = Device::new(&entry, &instance, surface, window_size)?;
         let device_properties = device.get_properties();
 
+        // Load extensions.
+        let synchronisation2 = khr::synchronization2::Device::new(&instance, &device.device());
+        let dynamic_rendering = khr::dynamic_rendering::Device::new(&instance, &device.device());
+        let loaded_extensions = LoadedExtensions { synchronisation2, dynamic_rendering };
+        
         // Create swapchain.
         let swapchain = Swapchain::new(&instance, &device, surface, None)?;
 
@@ -231,7 +241,6 @@ impl GalaxyEngine {
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
 
-
         let pipeline_dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
             .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
 
@@ -264,51 +273,10 @@ impl GalaxyEngine {
             .attachments(&color_blend_attachments);
 
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
-
         let pipeline_layout = unsafe { device.device().create_pipeline_layout(&pipeline_layout_info, None) }?;
 
-        //let colour_attachment_formats = [color_format];
-        //let mut dynamic_pipeline_info = vk::PipelineRenderingCreateInfoKHR::default()
-        //    .color_attachment_formats(&colour_attachment_formats);
-
-
-        let color_attachment = vk::AttachmentDescription::default()
-            .format(color_format)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
-
-        let color_attachment_ref = vk::AttachmentReference::default()
-            .attachment(0)
-            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-
-        // Indices in this array correspond to the layout(location = N) in the shader.
-        let color_attachment_refs = [color_attachment_ref];
-        let subpass = vk::SubpassDescription::default()
-            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-            .color_attachments(&color_attachment_refs);
-
-        let subpass_dependency = vk::SubpassDependency::default()
-            .src_subpass(vk::SUBPASS_EXTERNAL)
-            .dst_subpass(0)
-            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-            .src_access_mask(vk::AccessFlags::empty())
-            .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
-       
-        let renderpass_info = vk::RenderPassCreateInfo::default()
-            .attachments(slice::from_ref(&color_attachment))
-            .subpasses(slice::from_ref(&subpass))
-            .dependencies(slice::from_ref(&subpass_dependency));
-
-        let renderpass = unsafe { device.device().create_render_pass(&renderpass_info, None) }?;
-
-        //let color_attachment_info = vk::RenderingAttachmentInfoKHR::default()
-        //    .image_view(swapchain.get_image_views()[0]);
+        let mut dynamic_pipeline_info = vk::PipelineRenderingCreateInfoKHR::default()
+            .color_attachment_formats(slice::from_ref(&color_format));
 
         let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
@@ -320,27 +288,13 @@ impl GalaxyEngine {
             .color_blend_state(&color_blend_state)
             .dynamic_state(&pipeline_dynamic_state)
             .layout(pipeline_layout)
-            .render_pass(renderpass)
-            .subpass(0);
-        //  .push_next(&mut dynamic_pipeline_info);
+            .push_next(&mut dynamic_pipeline_info);
 
         let pipeline = unsafe { device.device().create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None) }.map_err(|(_, e)| e)?[0];
 
         // Drop shader modules after pipeline creation.
         unsafe { vertex_shader_module.destroy(&device) };
         unsafe { fragment_shader_module.destroy(&device) };
-
-        // Create swapchain framebuffers.
-        let swapchain_framebuffers = swapchain.get_image_views().iter().map(|&image_view| {
-            let attachments = [image_view];
-            let framebuffer_info = vk::FramebufferCreateInfo::default()
-                .render_pass(renderpass)
-                .attachments(&attachments)
-                .width(device_properties.swapchain_extent.width)
-                .height(device_properties.swapchain_extent.height)
-                .layers(1);
-            unsafe { device.device().create_framebuffer(&framebuffer_info, None) }
-        }).collect::<VkResult<Vec<_>>>()?;
 
         // Create command pool.
         let command_pool_info = vk::CommandPoolCreateInfo::default()
@@ -364,14 +318,13 @@ impl GalaxyEngine {
         Ok(Self {
             entry,
             instance,
+            loaded_extensions,
             debug_messenger,
             surface,
             device,
             swapchain,
             pipeline_layout,
-            renderpass,
             pipeline,
-            swapchain_framebuffers,
             command_pool,
             command_buffer,
             image_available_semaphore,
@@ -383,12 +336,15 @@ impl GalaxyEngine {
     pub fn main_loop(&self) -> VkResult<()> {
         let device = self.device.device();
 
+        let sync2 = &self.loaded_extensions.synchronisation2;
+        let dyn_cmd = &self.loaded_extensions.dynamic_rendering;
+        
         // Wait for fence.
         unsafe { device.wait_for_fences(&[self.in_flight_fence], true, u64::MAX) }?;
         unsafe { device.reset_fences(&[self.in_flight_fence]) }?;
 
         // Acquire image from swapchain.
-        let (image_idx, _is_suboptimal) = unsafe { self.swapchain.get_functor().acquire_next_image(self.swapchain.handle, u64::MAX, self.image_available_semaphore, vk::Fence::null()) }?;
+        let (image_idx, _is_suboptimal) = self.swapchain.acquire_next_image(self.image_available_semaphore, vk::Fence::null())?;
 
         let command_buffer = self.command_buffer;
 
@@ -408,22 +364,52 @@ impl GalaxyEngine {
         // Record command buffer.
         let begin_info = vk::CommandBufferBeginInfo::default();
         unsafe { device.begin_command_buffer(self.command_buffer, &begin_info) }?;
+        
+        let color_optimal_transition = vk::ImageMemoryBarrier2::default()
+            .src_access_mask(vk::AccessFlags2::empty())
+            .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+            .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+            .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .image(self.swapchain.get_images()[image_idx as usize])
+            .subresource_range(self.swapchain.get_subresource_range());
+        
+        let dependency_info = vk::DependencyInfo::default()
+            .image_memory_barriers(slice::from_ref(&color_optimal_transition));
+        unsafe { sync2.cmd_pipeline_barrier2(command_buffer, &dependency_info) };
 
-        let clear_values = [vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } }];
-
-        let render_pass_begin_info = vk::RenderPassBeginInfo::default()
-            .render_pass(self.renderpass)
-            .framebuffer(self.swapchain_framebuffers[image_idx as usize])
+        let color_attachment_info = vk::RenderingAttachmentInfo::default()
+            .image_view(self.swapchain.get_image_views()[image_idx as usize])
+            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } });
+        let rendering_info = vk::RenderingInfo::default()
             .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent: swapchain_extent })
-            .clear_values(&clear_values);
+            .layer_count(1)
+            .color_attachments(slice::from_ref(&color_attachment_info));
 
-        unsafe { device.cmd_begin_render_pass(command_buffer, &render_pass_begin_info, vk::SubpassContents::INLINE) };
+        unsafe { dyn_cmd.cmd_begin_rendering(command_buffer, &rendering_info) }
         unsafe { device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline) };
         unsafe { device.cmd_set_viewport(command_buffer, 0, &[viewport]) };
         unsafe { device.cmd_set_scissor(command_buffer, 0, &[scissor]) };
         unsafe { device.cmd_draw(command_buffer, 3, 1, 0, 0) };
-        unsafe { device.cmd_end_render_pass(command_buffer) };
+        unsafe { dyn_cmd.cmd_end_rendering(command_buffer) };
 
+        let color_optimal_to_present_src_transition = vk::ImageMemoryBarrier2::default()
+            .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+            .dst_stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE)
+            .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+            .image(self.swapchain.get_images()[image_idx as usize])
+            .subresource_range(self.swapchain.get_subresource_range());
+
+        let dependency_info = vk::DependencyInfo::default()
+            .image_memory_barriers(slice::from_ref(&color_optimal_to_present_src_transition));
+        unsafe { sync2.cmd_pipeline_barrier2(command_buffer, &dependency_info) };
+        
         unsafe { device.end_command_buffer(command_buffer) }?;
 
         // Submit command buffer.
@@ -434,13 +420,8 @@ impl GalaxyEngine {
             .signal_semaphores(slice::from_ref(&self.render_finished_semaphore));
 
         unsafe { device.queue_submit(self.device.graphics_queue(), slice::from_ref(&submit_info), self.in_flight_fence) }?;
-        
-        let present_info = vk::PresentInfoKHR::default()
-            .wait_semaphores(slice::from_ref(&self.render_finished_semaphore))
-            .swapchains(slice::from_ref(&self.swapchain.handle))
-            .image_indices(slice::from_ref(&image_idx));
-        
-        unsafe { self.swapchain.get_functor().queue_present(self.device.present_queue(), &present_info) }?;
+
+        self.swapchain.queue_present(self.device.present_queue(), image_idx, &[self.render_finished_semaphore])?;
 
         unsafe { self.device.device().device_wait_idle() }?;
 
@@ -468,7 +449,7 @@ impl GalaxyEngine {
             }
         });
 
-        Ok(utils::cstr_to_ptrs(required_layers))
+        Ok(utils::cstr_to_ptrs(&required_layers))
     }
 
     fn get_required_instance_extensions(entry: &Entry, flags: &app::AppFlags, display: DisplayHandle) -> Result<Vec<*const c_char>, InstanceExtensionError> {
@@ -503,7 +484,7 @@ impl GalaxyEngine {
             }
         }
 
-        Ok(utils::cstr_to_ptrs(required_extensions))
+        Ok(utils::cstr_to_ptrs(&required_extensions))
     }
 }
 
@@ -522,16 +503,8 @@ impl Drop for GalaxyEngine {
         // Drop c
         unsafe { device.destroy_command_pool(self.command_pool, None) };
 
-        // Drop swapchain framebuffers.
-        for &framebuffer in self.swapchain_framebuffers.iter() {
-            unsafe { device.destroy_framebuffer(framebuffer, None) };
-        }
-
         // Drop pipeline.
         unsafe { device.destroy_pipeline(self.pipeline, None) };
-
-        // Drop renderpass.
-        unsafe { device.destroy_render_pass(self.renderpass, None) };
 
         // Drop pipeline layout.
         unsafe { device.destroy_pipeline_layout(self.pipeline_layout, None) };

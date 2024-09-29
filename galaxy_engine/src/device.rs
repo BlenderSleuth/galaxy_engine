@@ -49,7 +49,7 @@ impl Device {
             return Err(DeviceInitError::NoPhysicalDevices);
         }
 
-        let required_device_extensions = vec![khr::swapchain::NAME, khr::dynamic_rendering::NAME];
+        let required_device_extensions = &[khr::swapchain::NAME, khr::synchronization2::NAME, khr::dynamic_rendering::NAME];
 
         let mut current_device_properties = None;
         for physical_device in physical_devices.iter() {
@@ -138,11 +138,23 @@ impl Device {
                 image_count = surface_capabilities.max_image_count;
             }
 
+            let physical_device_properties = unsafe { instance.get_physical_device_properties(*physical_device) };
+            
+            let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default();
+            let mut physical_device_features = vk::PhysicalDeviceFeatures2::default()
+                .push_next(&mut dynamic_rendering_features);
+            unsafe { instance.get_physical_device_features2(*physical_device, &mut physical_device_features) };
+            
+            // Require dynamic rendering support.
+            if dynamic_rendering_features.dynamic_rendering == vk::FALSE {
+                continue;
+            }
+            
             let device_properties = PhysicalDeviceProperties {
                 physical_device: *physical_device,
                 graphics_queue_family_idx: graphics_queue_family_idx.unwrap(),
                 present_queue_family_idx: present_queue_family_idx.unwrap(),
-                is_discrete: unsafe { instance.get_physical_device_properties(*physical_device) }.device_type == vk::PhysicalDeviceType::DISCRETE_GPU,
+                is_discrete: physical_device_properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU,
                 swapchain_format,
                 presentation_mode,
                 swapchain_extent: swap_extent,
@@ -170,12 +182,22 @@ impl Device {
                 .queue_priorities(&[1.0]));
         }
 
+        // Enable dynamic rendering.
+        let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default()
+            .dynamic_rendering(true);
+        
+        // Enable synchronization2.
+        let mut synchronization2_features = vk::PhysicalDeviceSynchronization2Features::default()
+            .synchronization2(true);
+        
         let device_features = vk::PhysicalDeviceFeatures::default();
         let device_extensions = utils::cstr_to_ptrs(required_device_extensions);
         let device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_infos)
             .enabled_features(&device_features)
-            .enabled_extension_names(&device_extensions);
+            .enabled_extension_names(&device_extensions)
+            .push_next(&mut dynamic_rendering_features)
+            .push_next(&mut synchronization2_features);
 
         let device = unsafe { instance.create_device(current_device_properties.physical_device, &device_info, None) }?;
 
