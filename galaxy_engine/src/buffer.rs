@@ -32,19 +32,19 @@ pub struct Buffer {
     handle: vk::Buffer,
     mem_requirements: vk::MemoryRequirements,
     memory: vk::DeviceMemory,
-    length: usize,
+    length: u32,
 }
 
 impl Buffer {
     pub fn new_for_typed_data<T: bytemuck::Pod>(device: &Device, data: &[T], usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode, memory_properties: vk::MemoryPropertyFlags) -> Result<Self, vk::Result> {
-        Self::new_for_data(device, bytemuck::cast_slice(data), data.len(), usage, sharing_mode, memory_properties)
+        Self::new_for_data(device, bytemuck::cast_slice(data), data.len() as u32, usage, sharing_mode, memory_properties)
     }
 
-    pub fn new_for_data(device: &Device, data: &[u8], length: usize, usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode, memory_properties: vk::MemoryPropertyFlags) -> Result<Self, vk::Result> {
+    pub fn new_for_data(device: &Device, data: &[u8], length: u32, usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode, memory_properties: vk::MemoryPropertyFlags) -> Result<Self, vk::Result> {
         Self::new(device, std::mem::size_of_val(data) as vk::DeviceSize, length, usage, sharing_mode, memory_properties)
     }
     
-    pub fn new(device: &Device, size: vk::DeviceSize, length: usize, usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode, memory_properties: vk::MemoryPropertyFlags) -> Result<Self, vk::Result> {
+    pub fn new(device: &Device, size: vk::DeviceSize, length: u32, usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode, memory_properties: vk::MemoryPropertyFlags) -> Result<Self, vk::Result> {
         let vertex_buffer_info = vk::BufferCreateInfo::default()
             .size(size as vk::DeviceSize)
             .usage(usage)
@@ -68,6 +68,7 @@ impl Buffer {
     
     pub fn copy_into_buffer<T: bytemuck::Pod>(&mut self, device: &Device, typed_data: &[T]) -> VkResult<()> {
         let data_size = std::mem::size_of_val(typed_data);
+        assert_eq!(data_size, self.size() as usize);
         let data = bytemuck::cast_slice(typed_data);
         {
             // Map memory.
@@ -91,7 +92,7 @@ impl Buffer {
     }
     
     // The number of elements in the buffer.
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> u32 {
         self.length
     }
     

@@ -174,11 +174,13 @@ impl Vertex {
     }
 }
 
-const VERTICES: [Vertex; 3] = [
-    Vertex { pos: glm::vec2(0., -0.5), color: glm::vec3(1.0, 0.0, 0.0) },
-    Vertex { pos: glm::vec2(0.5, 0.5), color: glm::vec3(0.0, 1.0, 0.0) },
-    Vertex { pos: glm::vec2(-0.5, 0.5), color: glm::vec3(0.0, 0.0, 1.0) },
+const VERTICES: [Vertex; 4] = [
+    Vertex { pos: glm::vec2(-0.5, -0.5), color: glm::vec3(1., 0., 0.) },
+    Vertex { pos: glm::vec2(0.5, -0.5), color: glm::vec3(0., 1., 0.) },
+    Vertex { pos: glm::vec2(0.5, 0.5), color: glm::vec3(0., 0., 1.) },
+    Vertex { pos: glm::vec2(-0.5, 0.5), color: glm::vec3(1., 1., 1.) },
 ];
+const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
 pub struct GalaxyEngine {
     _entry: ash::Entry,
@@ -189,6 +191,7 @@ pub struct GalaxyEngine {
     device: Device,
     swapchain: Swapchain,
     vertex_buffer: Buffer,
+    index_buffer: Buffer,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
     graphics_cmd_pool: vk::CommandPool,
@@ -303,21 +306,16 @@ impl GalaxyEngine {
         let fragment_shader_stage_info = fragment_shader_module.get_stage_info();
         let shader_stages = [vertex_shader_stage_info, fragment_shader_stage_info];
 
+        // Vertex binding.
         let binding_description = Vertex::get_binding_description();
         let attribute_descriptions = Vertex::get_attribute_descriptions();
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
             .vertex_binding_descriptions(slice::from_ref(&binding_description))
             .vertex_attribute_descriptions(&attribute_descriptions);
+
+        let transfer_cmd_pool = device.create_transient_command_pool(QueueFamily::Transfer)?;
         
-        let mut staging_vertex_buffer = Buffer::new_for_typed_data(
-            &device,
-            &VERTICES,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::SharingMode::EXCLUSIVE,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
-        )?;
-        staging_vertex_buffer.copy_into_buffer(&device, &VERTICES)?;
-        
+        // Vertex buffer.
         let vertex_buffer = Buffer::new_for_typed_data(
             &device,
             &VERTICES,
@@ -325,11 +323,39 @@ impl GalaxyEngine {
             vk::SharingMode::EXCLUSIVE,
             vk::MemoryPropertyFlags::DEVICE_LOCAL
         )?;
-        
-        let transfer_cmd_pool = device.create_transient_command_pool(QueueFamily::Transfer)?;
-        buffer::copy_buffer(transfer_cmd_pool, &device, &staging_vertex_buffer, &vertex_buffer, staging_vertex_buffer.size())?;
+        {
+            let mut staging_vertex_buffer = Buffer::new_for_typed_data(
+                &device,
+                &VERTICES,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                vk::SharingMode::EXCLUSIVE,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
+            )?;
+            staging_vertex_buffer.copy_into_buffer(&device, &VERTICES)?;
+            buffer::copy_buffer(transfer_cmd_pool, &device, &staging_vertex_buffer, &vertex_buffer, staging_vertex_buffer.size())?;
+            unsafe { staging_vertex_buffer.destroy(&device) };
+        }
 
-        unsafe { staging_vertex_buffer.destroy(&device) };
+        // Index buffer.
+        let index_buffer = Buffer::new_for_typed_data(
+            &device,
+            &INDICES,
+            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            vk::SharingMode::EXCLUSIVE,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL
+        )?;
+        {
+            let mut staging_index_buffer = Buffer::new_for_typed_data(
+                &device,
+                &INDICES,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                vk::SharingMode::EXCLUSIVE,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
+            )?;
+            staging_index_buffer.copy_into_buffer(&device, &INDICES)?;
+            buffer::copy_buffer(transfer_cmd_pool, &device, &staging_index_buffer, &index_buffer, staging_index_buffer.size())?;
+            unsafe { staging_index_buffer.destroy(&device) };
+        }
         
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
@@ -423,6 +449,7 @@ impl GalaxyEngine {
             device,
             swapchain,
             vertex_buffer,
+            index_buffer,
             pipeline_layout,
             pipeline,
             graphics_cmd_pool,
@@ -506,9 +533,10 @@ impl GalaxyEngine {
         unsafe { dyn_cmd.cmd_begin_rendering(command_buffer, &rendering_info) }
         unsafe { device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline) };
         unsafe { device.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.vertex_buffer.handle()), slice::from_ref(&0)) };
+        unsafe { device.cmd_bind_index_buffer(command_buffer, self.index_buffer.handle(), 0, vk::IndexType::UINT16) };
         unsafe { device.cmd_set_viewport(command_buffer, 0, &[viewport]) };
         unsafe { device.cmd_set_scissor(command_buffer, 0, &[scissor]) };
-        unsafe { device.cmd_draw(command_buffer, self.vertex_buffer.len() as u32, 1, 0, 0) };
+        unsafe { device.cmd_draw_indexed(command_buffer, self.index_buffer.len(), 1, 0, 0, 0) };
         unsafe { dyn_cmd.cmd_end_rendering(command_buffer) };
 
         let color_optimal_to_present_src_transition = vk::ImageMemoryBarrier2::default()
@@ -658,6 +686,8 @@ impl Drop for GalaxyEngine {
         
         // Drop vertex buffer.
         unsafe { self.vertex_buffer.destroy(&self.device) };
+        // Drop index buffer.
+        unsafe { self.index_buffer.destroy(&self.device) };
 
         // Drop swapchain.
         unsafe { self.swapchain.destroy(&self.device) };
