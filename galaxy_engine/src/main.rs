@@ -5,6 +5,7 @@ mod device;
 mod swapchain;
 mod surface;
 mod buffer;
+mod maths;
 
 use winit::error::EventLoopError;
 use winit::event_loop::{ControlFlow, EventLoop};

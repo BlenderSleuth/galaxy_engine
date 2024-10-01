@@ -1,36 +1,19 @@
 use ash::prelude::VkResult;
 use ash::{ext, khr, vk};
+use nalgebra as na;
 use raw_window_handle::{DisplayHandle, WindowHandle};
 use std::ffi::{c_char, CStr};
 use std::slice;
 
 use crate::buffer::Buffer;
 use crate::device::QueueFamily;
-use crate::{app, buffer, device, surface, swapchain, utils};
+use crate::{app, buffer, device, maths, surface, swapchain, utils};
+
 use app::AppInfo;
 use device::Device;
+use maths::VkPerspective;
 use surface::Surface;
 use swapchain::Swapchain;
-
-// Const versions of nalgebra-glm functions. TODO: pull request to nalgebra-glm.
-mod glm {
-    pub use nalgebra_glm::{Mat4, Vec2, Vec3};
-    use nalgebra_glm::{Scalar, TVec2, TVec3, TVec4};
-
-    pub const fn vec2<T: Scalar>(x: T, y: T) -> TVec2<T> {
-        TVec2::new(x, y)
-    }
-
-    /// Creates a new 3D vector.
-    pub const fn vec3<T: Scalar>(x: T, y: T, z: T) -> TVec3<T> {
-        TVec3::new(x, y, z)
-    }
-
-    /// Creates a new 4D vector.
-    pub const fn _vec4<T: Scalar>(x: T, y: T, z: T, w: T) -> TVec4<T> {
-        TVec4::new(x, y, z, w)
-    }
-}
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
@@ -146,8 +129,8 @@ impl LoadedExtensions {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
 struct Vertex {
-    pos: glm::Vec2,
-    color: glm::Vec3,
+    pos: na::Vector2<f32>,
+    color: na::Vector3<f32>,
 }
 
 impl Vertex {
@@ -175,19 +158,19 @@ impl Vertex {
 }
 
 const VERTICES: [Vertex; 4] = [
-    Vertex { pos: glm::vec2(-0.5, -0.5), color: glm::vec3(1., 0., 0.) },
-    Vertex { pos: glm::vec2(0.5, -0.5), color: glm::vec3(0., 1., 0.) },
-    Vertex { pos: glm::vec2(0.5, 0.5), color: glm::vec3(0., 0., 1.) },
-    Vertex { pos: glm::vec2(-0.5, 0.5), color: glm::vec3(1., 1., 1.) },
+    Vertex { pos: maths::Vec2::new(-0.5, -0.5), color: maths::Vec3::new(1., 0., 0.) },
+    Vertex { pos: maths::Vec2::new(0.5, -0.5), color: maths::Vec3::new(0., 1., 0.) },
+    Vertex { pos: maths::Vec2::new(0.5, 0.5), color: maths::Vec3::new(0., 0., 1.) },
+    Vertex { pos: maths::Vec2::new(-0.5, 0.5), color: maths::Vec3::new(1., 1., 1.) },
 ];
 const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
 struct UniformBufferObject {
-    model: glm::Mat4,
-    view: glm::Mat4,
-    proj: glm::Mat4,
+    model: maths::Mat4,
+    view: maths::Mat4,
+    proj: maths::Mat4,
 }
 
 pub struct GalaxyEngine {
@@ -312,9 +295,9 @@ impl GalaxyEngine {
             .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .samples(vk::SampleCountFlags::TYPE_1);
-        
+
         let texture_image = unsafe { device.device().create_image(&texture_image_info, None) }?;
-        
+
         // Allocate memory for texture image.
         let texture_memory_requirements = unsafe { device.device().get_image_memory_requirements(texture_image) };
         let texture_memory_type_index = device.find_memory_type(
@@ -326,8 +309,8 @@ impl GalaxyEngine {
             .memory_type_index(texture_memory_type_index);
         let texture_image_memory = unsafe { device.device().allocate_memory(&texture_alloc_info, None) }?;
         unsafe { device.device().bind_image_memory(texture_image, texture_image_memory, 0) }?;
-        
-        
+
+
         unsafe { image_buffer.destroy(&device) };
 
         // Create graphics pipeline.
@@ -585,12 +568,11 @@ impl GalaxyEngine {
 
         // Update uniform buffer.
         let time = self.start_time.elapsed().as_secs_f32();
-        let mut ubo = UniformBufferObject {
-            model: nalgebra_glm::rotate(&glm::Mat4::identity(), time * 90f32.to_radians(), &glm::vec3(0., 0., 1.)),
-            view: nalgebra_glm::look_at(&glm::vec3(2., 2., 2.), &glm::vec3(0., 0., 0.), &glm::vec3(0., 0., 1.)),
-            proj: nalgebra_glm::perspective(self.window_size.width as f32 / self.window_size.height as f32, 45f32.to_radians(), 0.1, 10.0),
+        let ubo = UniformBufferObject {
+            model: na::Rotation3::from_axis_angle(&na::UnitVector3::new_normalize(na::Vector3::new(0., 0., 1.)), time * 90_f32.to_radians()).to_homogeneous(),
+            view: na::Isometry3::look_at_rh(&na::Point3::new(2., 2., 2.), &na::Point3::new(0., 0., 0.), &na::Vector3::new(0., 0., 1.)).to_homogeneous(),
+            proj: na::Perspective3::vk_new(self.window_size.width as f32 / self.window_size.height as f32, 45_f32.to_radians(), 0.1, 10.0).to_homogeneous(),
         };
-        ubo.proj[(1, 1)] *= -1.0;
 
         // Copy UBO to uniform buffer.
         let ubo_size = std::mem::size_of::<UniformBufferObject>();
