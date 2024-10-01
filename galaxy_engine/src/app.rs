@@ -6,6 +6,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
+use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::engine::GalaxyEngine;
@@ -85,6 +86,17 @@ impl ApplicationHandler for GalaxyApp {
             WindowEvent::Resized(size) => {
                 if let Some(engine) = self.engine.as_mut() {
                     engine.notify_window_resize(size.width, size.height);
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                match event.logical_key {
+                    Key::Named(key) => match key {
+                        NamedKey::Escape => {
+                            event_loop.exit();
+                        }
+                        _ => {}
+                    }
+                    _ => {}
                 }
             }
             _ => {}

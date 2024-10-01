@@ -1,8 +1,35 @@
 use std::slice;
+use std::sync::Arc;
 use ash::prelude::VkResult;
 use ash::vk;
-
 use crate::device::{Device, QueueFamily};
+
+pub struct MappedMemoryGuard<'a> {
+    device: Arc<ash::Device>,
+    handle: vk::DeviceMemory,
+    memory: &'a mut [u8],
+}
+
+impl<'a> MappedMemoryGuard<'a> {
+    fn new(device: &Device, handle: vk::DeviceMemory, offset: vk::DeviceSize, size: vk::DeviceSize) -> VkResult<Self> {
+        let memory = unsafe { device.device().map_memory(handle, offset, size, vk::MemoryMapFlags::empty()) }.map(|ptr| ptr as *mut u8)?;
+        let memory = unsafe { slice::from_raw_parts_mut(memory, size as usize) };
+        Ok(Self {
+            device: Arc::clone(device.device()),
+            handle,
+            memory,
+        })
+    }
+    pub fn copy_data(&mut self, data: &[u8]) {
+        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), self.memory.as_mut_ptr(), std::mem::size_of_val(data)) };
+    }
+}
+
+impl<'a> Drop for MappedMemoryGuard<'a> {
+    fn drop(&mut self) {
+        unsafe { self.device.unmap_memory(self.handle) };
+    }
+}
 
 pub fn copy_buffer(cmd_pool: vk::CommandPool, device: &Device, src_buffer: &Buffer, dst_buffer: &Buffer, size: vk::DeviceSize) -> VkResult<()> {
     let cmd_buffer = unsafe { device.allocate_command_buffer(cmd_pool, vk::CommandBufferLevel::PRIMARY) }?;
@@ -50,9 +77,6 @@ pub struct Buffer {
 }
 
 impl Buffer {
-}
-
-impl Buffer {
     pub fn new_for_typed_data<T: bytemuck::Pod>(device: &Device, data: &[T], usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode, memory_properties: vk::MemoryPropertyFlags) -> Result<Self, vk::Result> {
         Self::new_for_data(device, bytemuck::cast_slice(data), data.len() as u32, usage, sharing_mode, memory_properties)
     }
@@ -82,7 +106,6 @@ impl Buffer {
 
         // Bind buffer memory.
         unsafe { device.device().bind_buffer_memory(handle, memory, 0) }?;
-
 
         Ok(Self { handle, mem_requirements, memory, length })
     }
@@ -116,15 +139,19 @@ impl Buffer {
     pub fn len(&self) -> u32 {
         self.length
     }
-    
-    // TODO: offset and size should be optional together.
+
     pub fn map(&self, device: &Device, offset: vk::DeviceSize, size: Option<vk::DeviceSize>) -> VkResult<*mut u8> {
         unsafe { device.device().map_memory(self.memory, offset, size.unwrap_or(vk::WHOLE_SIZE), vk::MemoryMapFlags::empty()) }.map(|ptr| ptr as *mut u8)
     }
-    
-    pub fn unmap(&self, device: &Device) {
-        unsafe { device.device().unmap_memory(self.memory) };
+
+    // If size is none, will map entire allocation.
+    pub fn map_guard(&self, device: &Device, offset: vk::DeviceSize, size: Option<vk::DeviceSize>) -> VkResult<MappedMemoryGuard> {
+        MappedMemoryGuard::new(device, self.memory, offset, size.unwrap_or(self.mem_requirements.size))
     }
+
+    //pub fn unmap(&self, device: &Device) {
+    //    unsafe { device.device().unmap_memory(self.memory) };
+    //}
 
     pub unsafe fn destroy(&self, device: &Device) {
         device.device().destroy_buffer(self.handle, None);

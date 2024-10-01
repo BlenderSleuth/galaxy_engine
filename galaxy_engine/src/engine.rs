@@ -298,9 +298,8 @@ impl GalaxyEngine {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         )?;
         {
-            let image_mapped = image_buffer.map(&device, 0, Some(image.len() as vk::DeviceSize))?;
-            unsafe { std::ptr::copy_nonoverlapping(image.as_ptr(), image_mapped, image.len()) };
-            image_buffer.unmap(&device);
+            let mut image_mapped = image_buffer.map_guard(&device, 0, Some(image.len() as vk::DeviceSize))?;
+            image_mapped.copy_data(&image);
         }
         let texture_image_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)

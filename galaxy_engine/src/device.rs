@@ -1,4 +1,5 @@
 use std::mem::MaybeUninit;
+use std::sync::Arc;
 use ash::{khr, vk};
 use ash::prelude::VkResult;
 use crate::surface::Surface;
@@ -43,7 +44,7 @@ impl PhysicalDeviceProperties {
 }
 
 pub struct Device {
-    device: ash::Device,
+    device: Arc<ash::Device>,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
     transfer_queue: vk::Queue,
@@ -220,10 +221,10 @@ impl Device {
         let present_queue = unsafe { device.get_device_queue(current_device_properties.present_queue_family_idx, 0) };
         let transfer_queue = unsafe { device.get_device_queue(current_device_properties.transfer_queue_family_idx, 0) };
 
-        Ok(Self { device, graphics_queue, present_queue, transfer_queue, properties: current_device_properties })
+        Ok(Self { device: Arc::new(device), graphics_queue, present_queue, transfer_queue, properties: current_device_properties })
     }
 
-    pub fn device(&self) -> &ash::Device {
+    pub fn device(&self) -> &Arc<ash::Device> {
         &self.device
     }
 
