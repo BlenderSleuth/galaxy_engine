@@ -1,5 +1,7 @@
 use ash::prelude::VkResult;
 use ash::{ext, khr, vk};
+use gpu_allocator::vulkan::*;
+use gpu_allocator::MemoryLocation;
 use nalgebra as na;
 use raw_window_handle::{DisplayHandle, WindowHandle};
 use std::ffi::{c_char, CStr};
@@ -7,13 +9,28 @@ use std::slice;
 
 use crate::buffer::Buffer;
 use crate::device::QueueFamily;
-use crate::{app, buffer, device, maths, surface, swapchain, utils};
+use crate::{app, device, maths, surface, swapchain, utils};
 
+use crate::buffer::mem_location::{CpuToGpu, GpuOnly};
 use app::AppInfo;
 use device::Device;
 use maths::VkPerspective;
 use surface::Surface;
 use swapchain::Swapchain;
+use crate::engine::MainLoopError::VulkanError;
+
+#[derive(thiserror::Error, Debug)]
+pub enum MemoryError {
+    #[error("Vulkan error: {0}")]
+    VkResult(#[from] vk::Result),
+    #[error("Allocation error: {0}")]
+    AllocationError(#[from] gpu_allocator::AllocationError),
+    #[error("No allocation for object: {0}")]
+    NotAllocated(&'static str),
+    #[error("Insufficient memory for object: {0}")]
+    InsufficientMemory(&'static str),
+}
+pub type MemResult<T> = Result<T, MemoryError>;
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
@@ -36,8 +53,18 @@ pub enum EngineInitError {
     InstanceExtensionError(#[from] InstanceExtensionError),
     #[error("Device init error: {0}")]
     DeviceInitError(#[from] device::DeviceInitError),
+    #[error("Memory error: {0}")]
+    MemoryError(#[from] MemoryError),
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum MainLoopError {
+    #[error("Vulkan function failed with the error: {0}")]
+    VulkanError(#[from] vk::Result),
+    #[error("Memory error: {0}")]
+    MemoryError(#[from] MemoryError),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -181,10 +208,10 @@ pub struct GalaxyEngine {
     surface: Surface,
     device: Device,
     swapchain: Swapchain,
-    vertex_buffer: Buffer,
-    index_buffer: Buffer,
+    vertex_buffer: Buffer<GpuOnly>,
+    index_buffer: Buffer<GpuOnly>,
     texture_image: vk::Image,
-    texture_image_memory: vk::DeviceMemory,
+    texture_image_memory: Option<Allocation>,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: [vk::DescriptorSet; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
@@ -192,8 +219,7 @@ pub struct GalaxyEngine {
     pipeline: vk::Pipeline,
     graphics_cmd_pool: vk::CommandPool,
     transfer_cmd_pool: vk::CommandPool,
-    uniform_buffers: [Buffer; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
-    uniform_buffers_mapped: [*mut u8; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
+    uniform_buffers: [Buffer<CpuToGpu>; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     cmd_buffers: [vk::CommandBuffer; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     image_available_semaphores: [vk::Semaphore; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     render_finished_semaphores: [vk::Semaphore; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
@@ -231,7 +257,7 @@ impl GalaxyEngine {
             .application_version(app_info.version)
             .engine_name(Self::ENGINE_NAME)
             .engine_version(utils::parse_version(Self::ENGINE_VERSION_STR))
-            .api_version(api_version);
+            .api_version(Self::MIN_VK_VERSION);
 
         let create_flags = if cfg!(any(target_os = "macos", target_os = "ios")) {
             vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
@@ -273,17 +299,14 @@ impl GalaxyEngine {
         // Load texture.
         let image = image::open("galaxy_engine/textures/texture.jpg").unwrap().to_rgba8();
 
-        let image_buffer = Buffer::new_for_typed_data(
+        let mut image_buffer = Buffer::<CpuToGpu>::new_for_typed_data(
             &device,
             &image,
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::SharingMode::EXCLUSIVE,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         )?;
-        {
-            let mut image_mapped = image_buffer.map_guard(&device, 0, Some(image.len() as vk::DeviceSize))?;
-            image_mapped.copy_data(&image);
-        }
+        image_buffer.copy_into_buffer(&image)?;
+
         let texture_image_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
             .extent(vk::Extent3D { width: image.width(), height: image.height(), depth: 1 })
@@ -300,18 +323,17 @@ impl GalaxyEngine {
 
         // Allocate memory for texture image.
         let texture_memory_requirements = unsafe { device.device().get_image_memory_requirements(texture_image) };
-        let texture_memory_type_index = device.find_memory_type(
-            texture_memory_requirements.memory_type_bits,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        ).unwrap();
-        let texture_alloc_info = vk::MemoryAllocateInfo::default()
-            .allocation_size(texture_memory_requirements.size)
-            .memory_type_index(texture_memory_type_index);
-        let texture_image_memory = unsafe { device.device().allocate_memory(&texture_alloc_info, None) }?;
-        unsafe { device.device().bind_image_memory(texture_image, texture_image_memory, 0) }?;
 
-
-        unsafe { image_buffer.destroy(&device) };
+        let alloc_desc = AllocationCreateDesc {
+            name: "Texture Image",
+            requirements: texture_memory_requirements,
+            location: MemoryLocation::GpuOnly,
+            linear: false,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        };
+        let texture_image_memory = device.allocate_memory(&alloc_desc)?;
+        unsafe { device.device().bind_image_memory(texture_image, texture_image_memory.memory(), 0) }?;
+        unsafe { image_buffer.destroy(&device) }?;
 
         // Create graphics pipeline.
 
@@ -358,24 +380,22 @@ impl GalaxyEngine {
             .vertex_attribute_descriptions(&attribute_descriptions);
 
         // Vertex buffer.
-        let vertex_buffer = Buffer::new_for_typed_data(
+        let mut vertex_buffer = Buffer::<GpuOnly>::new_for_typed_data(
             &device,
             &VERTICES,
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
             vk::SharingMode::EXCLUSIVE,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
-        buffer::copy_via_staging_buffer(&device, transfer_cmd_pool, &VERTICES, &vertex_buffer)?;
+        vertex_buffer.copy_via_staging_buffer(&device, transfer_cmd_pool, bytemuck::bytes_of(&VERTICES))?;
 
         // Index buffer.
-        let index_buffer = Buffer::new_for_typed_data(
+        let mut index_buffer = Buffer::<GpuOnly>::new_for_typed_data(
             &device,
             &INDICES,
-            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
             vk::SharingMode::EXCLUSIVE,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
-        buffer::copy_via_staging_buffer(&device, transfer_cmd_pool, &INDICES, &index_buffer)?;
+        index_buffer.copy_via_staging_buffer(&device, transfer_cmd_pool, bytemuck::bytes_of(&INDICES))?;
 
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
@@ -393,18 +413,14 @@ impl GalaxyEngine {
         let descriptor_set_layout = unsafe { device.device().create_descriptor_set_layout(&descriptor_set_layout_info, None) }?;
 
         // Create uniform buffers.
-        let uniform_buffers: [Buffer; Self::MAX_FRAMES_IN_FLIGHT] = core::array::from_fn(|_| {
+        let uniform_buffers: [Buffer<CpuToGpu>; Self::MAX_FRAMES_IN_FLIGHT] = core::array::from_fn(|_| {
             Buffer::new(
                 &device,
-                std::mem::size_of::<UniformBufferObject>() as vk::DeviceSize,
                 1,
+                std::mem::size_of::<UniformBufferObject>(),
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
                 vk::SharingMode::EXCLUSIVE,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             ).unwrap()
-        });
-        let uniform_buffers_mapped = core::array::from_fn(|i| {
-            uniform_buffers[i].map(&device, 0, Some(std::mem::size_of::<UniformBufferObject>() as vk::DeviceSize)).unwrap()
         });
 
         // Create descriptor pool.
@@ -532,7 +548,7 @@ impl GalaxyEngine {
             vertex_buffer,
             index_buffer,
             texture_image,
-            texture_image_memory,
+            texture_image_memory: Some(texture_image_memory),
             descriptor_set_layout,
             descriptor_pool,
             descriptor_sets: descriptor_sets.try_into().unwrap(),
@@ -541,7 +557,6 @@ impl GalaxyEngine {
             graphics_cmd_pool,
             transfer_cmd_pool,
             uniform_buffers,
-            uniform_buffers_mapped,
             cmd_buffers: command_buffers.try_into().unwrap(),
             image_available_semaphores,
             render_finished_semaphores,
@@ -553,7 +568,7 @@ impl GalaxyEngine {
         })
     }
 
-    pub fn main_loop(&mut self) -> VkResult<()> {
+    pub fn main_loop(&mut self) -> Result<(), MainLoopError> {
         if self.window_resized {
             self.window_resized = false;
             self.recreate_swapchain()?;
@@ -575,8 +590,7 @@ impl GalaxyEngine {
         };
 
         // Copy UBO to uniform buffer.
-        let ubo_size = std::mem::size_of::<UniformBufferObject>();
-        unsafe { std::ptr::copy_nonoverlapping(bytemuck::bytes_of(&ubo).as_ptr(), self.uniform_buffers_mapped[current_frame], ubo_size) };
+        self.uniform_buffers[current_frame].copy_into_buffer(bytemuck::bytes_of(&ubo))?;
 
         // Wait for fence.
         unsafe { device.wait_for_fences(&[self.in_flight_fences[current_frame]], true, u64::MAX) }?;
@@ -585,9 +599,10 @@ impl GalaxyEngine {
         let (image_idx, _is_suboptimal) = match self.swapchain.acquire_next_image(self.image_available_semaphores[current_frame], vk::Fence::null()) {
             Ok(x) => x,
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                return self.recreate_swapchain();
+                self.recreate_swapchain()?;
+                return Ok(());
             }
-            Err(_) => return Err(vk::Result::ERROR_UNKNOWN),
+            Err(err) => Err(err)?,
         };
 
         unsafe { device.reset_fences(&[self.in_flight_fences[current_frame]]) }?;
@@ -675,7 +690,7 @@ impl GalaxyEngine {
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
                 self.recreate_swapchain()?;
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(VulkanError(e)),
         }
 
         self.current_frame = (self.current_frame + 1) % Self::MAX_FRAMES_IN_FLIGHT as u32;
@@ -792,17 +807,17 @@ impl Drop for GalaxyEngine {
         unsafe { device.destroy_descriptor_pool(self.descriptor_pool, None) };
 
         // Drop vertex buffer.
-        unsafe { self.vertex_buffer.destroy(&self.device) };
+        unsafe { self.vertex_buffer.destroy(&self.device) }.unwrap_or_else(|e| log::error!("Failed to destroy vertex buffer: {:?}", e));
         // Drop index buffer.
-        unsafe { self.index_buffer.destroy(&self.device) };
+        unsafe { self.index_buffer.destroy(&self.device) }.unwrap_or_else(|e| log::error!("Failed to destroy index buffer: {:?}", e));
         // Drop uniform buffers.
         for uniform_buffer in self.uniform_buffers.iter_mut() {
-            unsafe { uniform_buffer.destroy(&self.device) };
+            unsafe { uniform_buffer.destroy(&self.device) }.unwrap_or_else(|e| log::error!("Failed to destroy uniform buffer: {:?}", e));
         }
         // Drop texture image.
         unsafe { device.destroy_image(self.texture_image, None) };
         // Drop texture image memory.
-        unsafe { device.free_memory(self.texture_image_memory, None) };
+        self.device.free_memory(self.texture_image_memory.take().unwrap()).unwrap_or_else(|e| log::error!("Failed to free texture image memory: {:?}", e));
 
         // Drop swapchain.
         unsafe { self.swapchain.destroy(&self.device) };

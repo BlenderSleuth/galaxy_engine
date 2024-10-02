@@ -1,129 +1,78 @@
 use std::slice;
-use std::sync::Arc;
-use ash::prelude::VkResult;
+
 use ash::vk;
+use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
+
+use crate::buffer::mem_location::*;
 use crate::device::{Device, QueueFamily};
+use crate::engine::{MemResult, MemoryError};
 
-pub struct MappedMemoryGuard<'a> {
-    device: Arc<ash::Device>,
-    handle: vk::DeviceMemory,
-    memory: &'a mut [u8],
-}
+pub mod mem_location {
+    use gpu_allocator::MemoryLocation;
 
-impl<'a> MappedMemoryGuard<'a> {
-    fn new(device: &Device, handle: vk::DeviceMemory, offset: vk::DeviceSize, size: vk::DeviceSize) -> VkResult<Self> {
-        let memory = unsafe { device.device().map_memory(handle, offset, size, vk::MemoryMapFlags::empty()) }.map(|ptr| ptr as *mut u8)?;
-        let memory = unsafe { slice::from_raw_parts_mut(memory, size as usize) };
-        Ok(Self {
-            device: Arc::clone(device.device()),
-            handle,
-            memory,
-        })
+    // Type-state trait encoding of gpu_allocator::MemoryLocation for use in generic parameters.
+    pub trait MemLocationTrait {
+        fn location() -> MemoryLocation;
     }
-    pub fn copy_data(&mut self, data: &[u8]) {
-        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), self.memory.as_mut_ptr(), std::mem::size_of_val(data)) };
+    pub enum Unknown {}
+    impl MemLocationTrait for Unknown {
+        fn location() -> MemoryLocation { MemoryLocation::Unknown }
+    }
+    pub enum GpuOnly {}
+    impl MemLocationTrait for GpuOnly {
+        fn location() -> MemoryLocation { MemoryLocation::GpuOnly }
+    }
+    pub enum CpuToGpu {}
+    impl MemLocationTrait for CpuToGpu {
+        fn location() -> MemoryLocation { MemoryLocation::CpuToGpu }
+    }
+    pub enum GpuToCpu {}
+    impl MemLocationTrait for GpuToCpu {
+        fn location() -> MemoryLocation { MemoryLocation::GpuToCpu }
     }
 }
 
-impl<'a> Drop for MappedMemoryGuard<'a> {
-    fn drop(&mut self) {
-        unsafe { self.device.unmap_memory(self.handle) };
-    }
-}
-
-pub fn copy_buffer(cmd_pool: vk::CommandPool, device: &Device, src_buffer: &Buffer, dst_buffer: &Buffer, size: vk::DeviceSize) -> VkResult<()> {
-    let cmd_buffer = unsafe { device.allocate_command_buffer(cmd_pool, vk::CommandBufferLevel::PRIMARY) }?;
-
-    let begin_info = vk::CommandBufferBeginInfo::default()
-        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-    unsafe { device.device().begin_command_buffer(cmd_buffer, &begin_info) }?;
-
-    let copy_region = vk::BufferCopy::default()
-        .size(size);
-    unsafe { device.device().cmd_copy_buffer(cmd_buffer, src_buffer.handle(), dst_buffer.handle(), &[copy_region]) };
-
-    unsafe { device.device().end_command_buffer(cmd_buffer) }?;
-
-    let transfer_queue = device.get_queue(QueueFamily::Transfer);
-    let submit_info = vk::SubmitInfo::default()
-        .command_buffers(slice::from_ref(&cmd_buffer));
-    unsafe { device.device().queue_submit(transfer_queue, &[submit_info], vk::Fence::null()) }?;
-    unsafe { device.device().queue_wait_idle(transfer_queue) }?;
-
-    unsafe { device.device().free_command_buffers(cmd_pool, slice::from_ref(&cmd_buffer)) };
-
-    Ok(())
-}
-
-pub fn copy_via_staging_buffer<T: bytemuck::Pod>(device: &Device, transfer_cmd_pool: vk::CommandPool, src_data: &[T], dst_buffer: &Buffer) -> VkResult<()> {
-    let mut staging_buffer = Buffer::new_for_typed_data(
-        &device,
-        &src_data,
-        vk::BufferUsageFlags::TRANSFER_SRC,
-        vk::SharingMode::EXCLUSIVE,
-        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-    )?;
-    staging_buffer.copy_into_buffer(&device, &src_data)?;
-    copy_buffer(transfer_cmd_pool, &device, &staging_buffer, &dst_buffer, staging_buffer.size())?;
-    unsafe { staging_buffer.destroy(&device) };
-    Ok(())
-}
-
-pub struct Buffer {
+pub struct Buffer<L: MemLocationTrait> {
     handle: vk::Buffer,
-    mem_requirements: vk::MemoryRequirements,
-    memory: vk::DeviceMemory,
+    allocation: Option<Allocation>,
     length: u32,
+    element_size: vk::DeviceSize,
+    _mem_location: std::marker::PhantomData<L>,
 }
 
-impl Buffer {
-    pub fn new_for_typed_data<T: bytemuck::Pod>(device: &Device, data: &[T], usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode, memory_properties: vk::MemoryPropertyFlags) -> Result<Self, vk::Result> {
-        Self::new_for_data(device, bytemuck::cast_slice(data), data.len() as u32, usage, sharing_mode, memory_properties)
+impl<L: MemLocationTrait> Buffer<L> {
+    pub fn new_for_typed_data<T: bytemuck::Pod>(device: &Device, data: &[T], usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode) -> MemResult<Self> {
+        Self::new(device, data.len() as u32, std::mem::size_of::<T>(), usage, sharing_mode)
     }
 
-    pub fn new_for_data(device: &Device, data: &[u8], length: u32, usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode, memory_properties: vk::MemoryPropertyFlags) -> Result<Self, vk::Result> {
-        Self::new(device, std::mem::size_of_val(data) as vk::DeviceSize, length, usage, sharing_mode, memory_properties)
-    }
-
-    pub fn new(device: &Device, size: vk::DeviceSize, length: u32, usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode, memory_properties: vk::MemoryPropertyFlags) -> Result<Self, vk::Result> {
+    pub fn new(device: &Device, length: u32, element_size: usize, usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode) -> MemResult<Self> {
         let device_properties = device.get_properties();
         let queue_indices = [device.get_properties().graphics_queue_family_idx, device_properties.transfer_queue_family_idx];
 
+        let element_size = element_size as vk::DeviceSize;
+        let size = element_size * length as vk::DeviceSize;
         let buffer_info = vk::BufferCreateInfo::default()
-            .size(size as vk::DeviceSize)
+            .size(size)
             .usage(usage)
             .sharing_mode(sharing_mode)
             .queue_family_indices(if sharing_mode == vk::SharingMode::CONCURRENT { &queue_indices } else { &[] });
         let handle = unsafe { device.device().create_buffer(&buffer_info, None) }?;
 
         // Allocate memory for buffer.
-        let mem_requirements = unsafe { device.device().get_buffer_memory_requirements(handle) };
-        let memory_type = device.find_memory_type(mem_requirements.memory_type_bits, memory_properties);
-        let alloc_info = vk::MemoryAllocateInfo::default()
-            .allocation_size(mem_requirements.size)
-            .memory_type_index(memory_type.unwrap());
-        let memory = unsafe { device.device().allocate_memory(&alloc_info, None) }?;
+        let requirements = unsafe { device.device().get_buffer_memory_requirements(handle) };
+        let desc = AllocationCreateDesc {
+            name: "Buffer Allocation",
+            requirements,
+            location: L::location(),
+            linear: true,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        };
+        let allocation = device.allocate_memory(&desc)?;
 
         // Bind buffer memory.
-        unsafe { device.device().bind_buffer_memory(handle, memory, 0) }?;
+        unsafe { device.device().bind_buffer_memory(handle, allocation.memory(), allocation.offset()) }?;
 
-        Ok(Self { handle, mem_requirements, memory, length })
-    }
-
-    pub fn copy_into_buffer<T: bytemuck::Pod>(&mut self, device: &Device, typed_data: &[T]) -> VkResult<()> {
-        let data_size = std::mem::size_of_val(typed_data);
-        assert_eq!(data_size, self.size() as usize);
-        let data = bytemuck::cast_slice(typed_data);
-        {
-            // Map memory.
-            let mem_ptr = unsafe { device.device().map_memory(self.memory, 0, data_size as vk::DeviceSize, vk::MemoryMapFlags::empty()) }?;
-            // Copy data to buffer.
-            unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), mem_ptr as *mut u8, data_size) };
-            // Unmap memory.
-            unsafe { device.device().unmap_memory(self.memory) };
-        }
-
-        Ok(())
+        Ok(Self { handle, allocation: Some(allocation), length, element_size, _mem_location: std::marker::PhantomData })
     }
 
     pub fn handle(&self) -> vk::Buffer {
@@ -132,29 +81,86 @@ impl Buffer {
 
     // The size of the buffer in bytes.
     pub fn size(&self) -> vk::DeviceSize {
-        self.mem_requirements.size
+        self.element_size * self.length as vk::DeviceSize
     }
 
-    // The number of elements in the buffer.
+    // The number of elements that can be stored in the buffer.
     pub fn len(&self) -> u32 {
         self.length
     }
 
-    pub fn map(&self, device: &Device, offset: vk::DeviceSize, size: Option<vk::DeviceSize>) -> VkResult<*mut u8> {
-        unsafe { device.device().map_memory(self.memory, offset, size.unwrap_or(vk::WHOLE_SIZE), vk::MemoryMapFlags::empty()) }.map(|ptr| ptr as *mut u8)
-    }
+    //pub fn map(&self, device: &Device, offset: vk::DeviceSize, size: Option<vk::DeviceSize>) -> VkResult<*mut u8> {
+    //    unsafe { device.device().map_memory(self.memory, offset, size.unwrap_or(vk::WHOLE_SIZE), vk::MemoryMapFlags::empty()) }.map(|ptr| ptr as *mut u8)
+    //}
 
     // If size is none, will map entire allocation.
-    pub fn map_guard(&self, device: &Device, offset: vk::DeviceSize, size: Option<vk::DeviceSize>) -> VkResult<MappedMemoryGuard> {
-        MappedMemoryGuard::new(device, self.memory, offset, size.unwrap_or(self.mem_requirements.size))
-    }
+    //pub fn map_guard(&self, device: &Device, offset: vk::DeviceSize, size: Option<vk::DeviceSize>) -> VkResult<MappedMemoryGuard> {
+    //    MappedMemoryGuard::new(device, self.memory, offset, size.unwrap_or(self.mem_requirements.size))
+    //}
 
     //pub fn unmap(&self, device: &Device) {
     //    unsafe { device.device().unmap_memory(self.memory) };
     //}
 
-    pub unsafe fn destroy(&self, device: &Device) {
+    pub unsafe fn destroy(&mut self, device: &Device) -> MemResult<()> {
         device.device().destroy_buffer(self.handle, None);
-        device.device().free_memory(self.memory, None);
+        if let Some(allocation) = self.allocation.take() {
+            device.free_memory(allocation)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn copy_to_buffer<L2: MemLocationTrait>(&self, cmd_pool: vk::CommandPool, device: &Device, dst_buffer: &mut Buffer<L2>, size: vk::DeviceSize) -> MemResult<()> {
+        let cmd_buffer = unsafe { device.allocate_command_buffer(cmd_pool, vk::CommandBufferLevel::PRIMARY) }?;
+
+        let begin_info = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        unsafe { device.device().begin_command_buffer(cmd_buffer, &begin_info) }?;
+
+        let copy_region = vk::BufferCopy::default()
+            .size(size);
+        unsafe { device.device().cmd_copy_buffer(cmd_buffer, self.handle(), dst_buffer.handle(), &[copy_region]) };
+
+        unsafe { device.device().end_command_buffer(cmd_buffer) }?;
+
+        let transfer_queue = device.get_queue(QueueFamily::Transfer);
+        let submit_info = vk::SubmitInfo::default()
+            .command_buffers(slice::from_ref(&cmd_buffer));
+        unsafe { device.device().queue_submit(transfer_queue, &[submit_info], vk::Fence::null()) }?;
+        unsafe { device.device().queue_wait_idle(transfer_queue) }?;
+
+        unsafe { device.device().free_command_buffers(cmd_pool, slice::from_ref(&cmd_buffer)) };
+
+        Ok(())
+    }
+}
+
+impl Buffer<GpuOnly> {
+    pub fn copy_via_staging_buffer(&mut self, device: &Device, transfer_cmd_pool: vk::CommandPool, src_data: &[u8]) -> MemResult<()> {
+        let mut staging_buffer = Buffer::<CpuToGpu>::new(
+            &device,
+            src_data.len() as u32,
+            std::mem::size_of::<u8>(),
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::SharingMode::EXCLUSIVE,
+        )?;
+        staging_buffer.copy_into_buffer(&src_data)?;
+        staging_buffer.copy_to_buffer(transfer_cmd_pool, &device, self, staging_buffer.size())?;
+        unsafe { staging_buffer.destroy(&device) }?;
+        Ok(())
+    }
+}
+
+impl Buffer<CpuToGpu> {
+    pub fn copy_into_buffer(&mut self, data: &[u8]) -> MemResult<()> {
+        let allocation = self.allocation.as_mut().ok_or(MemoryError::NotAllocated("Buffer"))?;
+        let memory = allocation.mapped_slice_mut().unwrap();
+        if memory.len() < data.len() {
+            return Err(MemoryError::InsufficientMemory("Buffer"));
+        }
+        // CPU to GPU memory is always mappable.
+        memory[..data.len()].copy_from_slice(data);
+        Ok(())
     }
 }

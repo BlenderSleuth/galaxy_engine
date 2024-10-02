@@ -1,7 +1,10 @@
+use std::cell::RefCell;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 use ash::{khr, vk};
 use ash::prelude::VkResult;
+use gpu_allocator::vulkan::{AllocationCreateDesc, Allocator, AllocatorCreateDesc};
+use crate::engine::MemResult;
 use crate::surface::Surface;
 use crate::utils;
 
@@ -11,6 +14,8 @@ pub enum DeviceInitError {
     NoPhysicalDevices,
     #[error("Vulkan function failed with the error: {0}")]
     VulkanError(#[from] vk::Result),
+    #[error("Allocator error: {0}")]
+    AllocatorError(#[from] gpu_allocator::AllocationError),
 }
 
 pub enum QueueFamily {
@@ -25,7 +30,6 @@ pub struct PhysicalDeviceProperties {
     pub graphics_queue_family_idx: u32,
     pub present_queue_family_idx: u32,
     pub transfer_queue_family_idx: u32,
-    pub memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub is_discrete: bool,
     pub swapchain_format: vk::SurfaceFormatKHR,
     pub presentation_mode: vk::PresentModeKHR,
@@ -45,6 +49,8 @@ impl PhysicalDeviceProperties {
 
 pub struct Device {
     device: Arc<ash::Device>,
+    // TODO: These options everywhere to handle custom drop orders needs a better solution.
+    allocator: RefCell<Option<Allocator>>,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
     transfer_queue: vk::Queue,
@@ -152,7 +158,6 @@ impl Device {
             }
 
             let physical_device_properties = unsafe { instance.get_physical_device_properties(*physical_device) };
-            let memory_properties = unsafe { instance.get_physical_device_memory_properties(*physical_device) };
 
             let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default();
             let mut physical_device_features = vk::PhysicalDeviceFeatures2::default()
@@ -169,7 +174,6 @@ impl Device {
                 graphics_queue_family_idx,
                 present_queue_family_idx,
                 transfer_queue_family_idx,
-                memory_properties,
                 is_discrete: physical_device_properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU,
                 swapchain_format,
                 presentation_mode,
@@ -206,11 +210,15 @@ impl Device {
             .synchronization2(true);
 
         let device_features = vk::PhysicalDeviceFeatures::default();
+        let mut device_features_12 = vk::PhysicalDeviceVulkan12Features::default()
+            .buffer_device_address(true);
+
         let device_extensions = utils::cstr_to_ptrs(required_device_extensions);
         let device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_infos)
             .enabled_features(&device_features)
             .enabled_extension_names(&device_extensions)
+            .push_next(&mut device_features_12)
             .push_next(&mut dynamic_rendering_features)
             .push_next(&mut synchronization2_features);
 
@@ -221,20 +229,21 @@ impl Device {
         let present_queue = unsafe { device.get_device_queue(current_device_properties.present_queue_family_idx, 0) };
         let transfer_queue = unsafe { device.get_device_queue(current_device_properties.transfer_queue_family_idx, 0) };
 
-        Ok(Self { device: Arc::new(device), graphics_queue, present_queue, transfer_queue, properties: current_device_properties })
+        // TODO: This allocator keeps a copy of the device and instance, which is not ideal.
+        let allocator = RefCell::new(Some(Allocator::new(&AllocatorCreateDesc {
+            instance: instance.clone(),
+            device: device.clone(),
+            physical_device: current_device_properties.physical_device,
+            debug_settings: Default::default(),
+            buffer_device_address: true,  // Ideally, check the BufferDeviceAddressFeatures struct.
+            allocation_sizes: Default::default(),
+        })?));
+
+        Ok(Self { device: Arc::new(device), allocator, graphics_queue, present_queue, transfer_queue, properties: current_device_properties })
     }
 
     pub fn device(&self) -> &Arc<ash::Device> {
         &self.device
-    }
-
-    pub fn find_memory_type(&self, memory_type_bits: u32, properties: vk::MemoryPropertyFlags) -> Option<u32> {
-        for i in 0..self.properties.memory_properties.memory_type_count {
-            if (memory_type_bits & (1 << i)) != 0 && self.properties.memory_properties.memory_types[i as usize].property_flags.contains(properties) {
-                return Some(i);
-            }
-        }
-        None
     }
 
     pub fn get_properties(&self) -> &PhysicalDeviceProperties {
@@ -254,6 +263,14 @@ impl Device {
             QueueFamily::Present => self.properties.present_queue_family_idx,
             QueueFamily::Transfer => self.properties.transfer_queue_family_idx,
         }
+    }
+
+    pub fn allocate_memory(&self, desc: &AllocationCreateDesc) -> MemResult<gpu_allocator::vulkan::Allocation> {
+        Ok(self.allocator.borrow_mut().as_mut().unwrap().allocate(desc)?)
+    }
+
+    pub fn free_memory(&self, allocation: gpu_allocator::vulkan::Allocation) -> MemResult<()> {
+        Ok(self.allocator.borrow_mut().as_mut().unwrap().free(allocation)?)
     }
 
     // Doesn't allocate a vec for the single buffer case.
@@ -279,7 +296,10 @@ impl Device {
         unsafe { self.device.create_command_pool(&command_pool_info, None) }
     }
 
-    pub unsafe fn destroy(&self) {
+    pub unsafe fn destroy(&mut self) {
+        // Drop allocator.
+        *self.allocator.borrow_mut() = None;
+        // Drop device.
         unsafe { self.device.destroy_device(None) };
     }
 }
