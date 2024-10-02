@@ -155,12 +155,9 @@ impl Buffer<GpuOnly> {
 impl Buffer<CpuToGpu> {
     pub fn copy_into_buffer(&mut self, data: &[u8]) -> MemResult<()> {
         let allocation = self.allocation.as_mut().ok_or(MemoryError::NotAllocated("Buffer"))?;
-        let memory = allocation.mapped_slice_mut().unwrap();
-        if memory.len() < data.len() {
-            return Err(MemoryError::InsufficientMemory("Buffer"));
-        }
         // CPU to GPU memory is always mappable.
-        memory[..data.len()].copy_from_slice(data);
+        let mut memory = allocation.try_as_mapped_slab().unwrap();
+        presser::copy_from_slice_to_offset_with_align(data, &mut memory, 0, 1)?;
         Ok(())
     }
 }

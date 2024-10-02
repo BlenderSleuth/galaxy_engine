@@ -1,9 +1,11 @@
 use std::cell::RefCell;
-use std::mem::MaybeUninit;
+use std::mem::{ManuallyDrop, MaybeUninit};
 use std::sync::Arc;
-use ash::{khr, vk};
+
 use ash::prelude::VkResult;
+use ash::{khr, vk};
 use gpu_allocator::vulkan::{AllocationCreateDesc, Allocator, AllocatorCreateDesc};
+
 use crate::engine::MemResult;
 use crate::surface::Surface;
 use crate::utils;
@@ -49,8 +51,7 @@ impl PhysicalDeviceProperties {
 
 pub struct Device {
     device: Arc<ash::Device>,
-    // TODO: These options everywhere to handle custom drop orders needs a better solution.
-    allocator: RefCell<Option<Allocator>>,
+    allocator: RefCell<ManuallyDrop<Allocator>>,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
     transfer_queue: vk::Queue,
@@ -230,16 +231,23 @@ impl Device {
         let transfer_queue = unsafe { device.get_device_queue(current_device_properties.transfer_queue_family_idx, 0) };
 
         // TODO: This allocator keeps a copy of the device and instance, which is not ideal.
-        let allocator = RefCell::new(Some(Allocator::new(&AllocatorCreateDesc {
+        let allocator = Allocator::new(&AllocatorCreateDesc {
             instance: instance.clone(),
             device: device.clone(),
             physical_device: current_device_properties.physical_device,
             debug_settings: Default::default(),
             buffer_device_address: true,  // Ideally, check the BufferDeviceAddressFeatures struct.
             allocation_sizes: Default::default(),
-        })?));
+        })?;
 
-        Ok(Self { device: Arc::new(device), allocator, graphics_queue, present_queue, transfer_queue, properties: current_device_properties })
+        Ok(Self {
+            device: Arc::new(device),
+            allocator: RefCell::new(ManuallyDrop::new(allocator)),
+            graphics_queue,
+            present_queue,
+            transfer_queue,
+            properties: current_device_properties,
+        })
     }
 
     pub fn device(&self) -> &Arc<ash::Device> {
@@ -266,11 +274,11 @@ impl Device {
     }
 
     pub fn allocate_memory(&self, desc: &AllocationCreateDesc) -> MemResult<gpu_allocator::vulkan::Allocation> {
-        Ok(self.allocator.borrow_mut().as_mut().unwrap().allocate(desc)?)
+        Ok(self.allocator.borrow_mut().allocate(desc)?)
     }
 
     pub fn free_memory(&self, allocation: gpu_allocator::vulkan::Allocation) -> MemResult<()> {
-        Ok(self.allocator.borrow_mut().as_mut().unwrap().free(allocation)?)
+        Ok(self.allocator.borrow_mut().free(allocation)?)
     }
 
     // Doesn't allocate a vec for the single buffer case.
@@ -295,10 +303,12 @@ impl Device {
             .queue_family_index(self.get_queue_family_idx(queue_family));
         unsafe { self.device.create_command_pool(&command_pool_info, None) }
     }
+}
 
-    pub unsafe fn destroy(&mut self) {
+impl Drop for Device {
+    fn drop(&mut self) {
         // Drop allocator.
-        *self.allocator.borrow_mut() = None;
+        unsafe { ManuallyDrop::drop(self.allocator.get_mut()) };
         // Drop device.
         unsafe { self.device.destroy_device(None) };
     }

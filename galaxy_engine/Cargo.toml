@@ -22,3 +22,4 @@ nalgebra = { version = "0.33.0", features = ["bytemuck"] }
 bytemuck = { version = "1.18.0", features = ["derive"] }
 image = "0.25.2"
 gpu-allocator =  { version = "0.27.0", default-features = false, features = ["vulkan"] }
+presser = "0.3.1"

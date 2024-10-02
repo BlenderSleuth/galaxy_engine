@@ -5,6 +5,7 @@ use gpu_allocator::MemoryLocation;
 use nalgebra as na;
 use raw_window_handle::{DisplayHandle, WindowHandle};
 use std::ffi::{c_char, CStr};
+use std::mem::ManuallyDrop;
 use std::slice;
 
 use crate::buffer::Buffer;
@@ -27,8 +28,8 @@ pub enum MemoryError {
     AllocationError(#[from] gpu_allocator::AllocationError),
     #[error("No allocation for object: {0}")]
     NotAllocated(&'static str),
-    #[error("Insufficient memory for object: {0}")]
-    InsufficientMemory(&'static str),
+    #[error("Copy error: {0}")]
+    CopyError(#[from] presser::CopyError),
 }
 pub type MemResult<T> = Result<T, MemoryError>;
 
@@ -206,7 +207,7 @@ pub struct GalaxyEngine {
     loaded_extensions: LoadedExtensions,
     debug_messenger: Option<DebugMessenger>,
     surface: Surface,
-    device: Device,
+    device: ManuallyDrop<Device>,
     swapchain: Swapchain,
     vertex_buffer: Buffer<GpuOnly>,
     index_buffer: Buffer<GpuOnly>,
@@ -543,7 +544,7 @@ impl GalaxyEngine {
             loaded_extensions,
             debug_messenger,
             surface,
-            device,
+            device: ManuallyDrop::new(device),
             swapchain,
             vertex_buffer,
             index_buffer,
@@ -823,7 +824,7 @@ impl Drop for GalaxyEngine {
         unsafe { self.swapchain.destroy(&self.device) };
 
         // Drop device.
-        unsafe { self.device.destroy() };
+        unsafe { ManuallyDrop::drop(&mut self.device) };
 
         // Drop surface.
         unsafe { self.surface.destroy() };
