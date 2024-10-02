@@ -2,9 +2,11 @@ use std::cell::RefCell;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::sync::Arc;
 
+use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::{khr, vk};
 use gpu_allocator::vulkan::{AllocationCreateDesc, Allocator, AllocatorCreateDesc};
+use itertools::Itertools;
 
 use crate::engine::MemResult;
 use crate::surface::Surface;
@@ -38,14 +40,18 @@ pub struct PhysicalDeviceProperties {
     pub image_count: u32,
 }
 
+//noinspection RsUnresolvedPath
+pub type PropertyQueueList = ArrayVec<u32, { PhysicalDeviceProperties::MAX_QUEUE_FAMILIES }>;
 impl PhysicalDeviceProperties {
     const DEPTH_STENCIL_FORMAT: vk::Format = vk::Format::D32_SFLOAT_S8_UINT;
+    const MAX_QUEUE_FAMILIES: usize = 3;
 
-    pub fn get_unique_queue_families(&self) -> Vec<u32> {
-        let mut unique_queue_families = vec![self.graphics_queue_family_idx, self.present_queue_family_idx, self.transfer_queue_family_idx];
+    pub fn get_unique_queue_families(&self) -> PropertyQueueList {
+        let mut unique_queue_families = PropertyQueueList::from([self.graphics_queue_family_idx, self.present_queue_family_idx, self.transfer_queue_family_idx]);
         unique_queue_families.sort_unstable();
-        unique_queue_families.dedup();
-        unique_queue_families
+        let mut result = PropertyQueueList::new();
+        result.extend(unique_queue_families.into_iter().dedup());
+        result
     }
 }
 

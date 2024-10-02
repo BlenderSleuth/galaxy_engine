@@ -2,7 +2,7 @@ use std::slice;
 use ash::{khr, vk};
 use ash::prelude::VkResult;
 
-use crate::device::Device;
+use crate::device::{Device, PropertyQueueList};
 use crate::surface::Surface;
 
 pub struct Swapchain {
@@ -22,7 +22,7 @@ impl Swapchain {
         let (image_sharing_mode, queue_family_indices) = if unique_queue_families.len() > 1 {
             (vk::SharingMode::CONCURRENT, unique_queue_families)
         } else {
-            (vk::SharingMode::EXCLUSIVE, Vec::new())
+            (vk::SharingMode::EXCLUSIVE, PropertyQueueList::new())
         };
         
         let surface_capabilities = surface.get_capabilities(device.get_properties().physical_device)?;
