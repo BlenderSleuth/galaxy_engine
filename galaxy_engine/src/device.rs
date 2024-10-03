@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::mem::{ManuallyDrop, MaybeUninit};
+use std::slice;
 use std::sync::Arc;
 
 use arrayvec::ArrayVec;
@@ -8,6 +9,9 @@ use ash::{khr, vk};
 use gpu_allocator::vulkan::{AllocationCreateDesc, Allocator, AllocatorCreateDesc};
 use itertools::Itertools;
 
+use crate::buffer::Buffer;
+use crate::buffer::mem_location::MemLocation;
+use crate::command_buffer::CommandBuffer;
 use crate::engine::MemResult;
 use crate::surface::Surface;
 use crate::utils;
@@ -20,6 +24,19 @@ pub enum DeviceInitError {
     VulkanError(#[from] vk::Result),
     #[error("Allocator error: {0}")]
     AllocatorError(#[from] gpu_allocator::AllocationError),
+}
+
+pub struct LoadedExtensions {
+    pub sync2: khr::synchronization2::Device,
+    pub dyn_cmd: khr::dynamic_rendering::Device,
+}
+
+impl LoadedExtensions {
+    fn new(instance: &ash::Instance, device: &ash::Device) -> Self {
+        let sync2 = khr::synchronization2::Device::new(&instance, &device);
+        let dyn_cmd = khr::dynamic_rendering::Device::new(&instance, &device);
+        Self { sync2, dyn_cmd }
+    }
 }
 
 pub enum QueueFamily {
@@ -57,6 +74,7 @@ impl PhysicalDeviceProperties {
 
 pub struct Device {
     device: Arc<ash::Device>,
+    ext: LoadedExtensions,
     allocator: RefCell<ManuallyDrop<Allocator>>,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
@@ -246,8 +264,12 @@ impl Device {
             allocation_sizes: Default::default(),
         })?;
 
+        // Load extensions.
+        let ext = LoadedExtensions::new(&instance, &device);
+
         Ok(Self {
             device: Arc::new(device),
+            ext,
             allocator: RefCell::new(ManuallyDrop::new(allocator)),
             graphics_queue,
             present_queue,
@@ -258,6 +280,10 @@ impl Device {
 
     pub fn device(&self) -> &Arc<ash::Device> {
         &self.device
+    }
+
+    pub fn ext(&self) -> &LoadedExtensions {
+        &self.ext
     }
 
     pub fn get_properties(&self) -> &PhysicalDeviceProperties {
@@ -287,6 +313,10 @@ impl Device {
         Ok(self.allocator.borrow_mut().free(allocation)?)
     }
 
+    pub fn print_allocator_report(&self) {
+        log::info!("{:?}", self.allocator.borrow().generate_report());
+    }
+
     // Doesn't allocate a vec for the single buffer case.
     pub unsafe fn allocate_command_buffer(&self, cmd_pool: vk::CommandPool, level: vk::CommandBufferLevel) -> VkResult<vk::CommandBuffer> {
         let allocate_info = vk::CommandBufferAllocateInfo::default()
@@ -309,6 +339,70 @@ impl Device {
             .queue_family_index(self.get_queue_family_idx(queue_family));
         unsafe { self.device.create_command_pool(&command_pool_info, None) }
     }
+
+    // TODO: Move to image object.
+    pub fn transition_layout(&self, cmd_pool: vk::CommandPool, image: vk::Image, _format: vk::Format, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout) -> VkResult<()> {
+        let cmd_buffer = CommandBuffer::begin_one_time(self, cmd_pool)?;
+
+        let mut image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(old_layout)
+            .new_layout(new_layout)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_mip_level(0)
+                .layer_count(1)
+                .base_array_layer(0)
+                .level_count(1)
+            );
+
+        if old_layout == vk::ImageLayout::UNDEFINED && new_layout == vk::ImageLayout::TRANSFER_DST_OPTIMAL {
+            image_barrier.src_access_mask = vk::AccessFlags2KHR::empty(); // Not waiting on any access.
+            image_barrier.dst_access_mask = vk::AccessFlags2KHR::TRANSFER_WRITE;
+
+            image_barrier.src_stage_mask = vk::PipelineStageFlags2::TOP_OF_PIPE; // Earliest possible stage.
+            image_barrier.dst_stage_mask = vk::PipelineStageFlags2::TRANSFER;
+        } else if old_layout == vk::ImageLayout::TRANSFER_DST_OPTIMAL && new_layout == vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL {
+            image_barrier.src_access_mask = vk::AccessFlags2KHR::TRANSFER_WRITE; // Wait for transfer to finish.
+            image_barrier.dst_access_mask = vk::AccessFlags2KHR::SHADER_READ; // Required for fragment shader.
+
+            image_barrier.src_stage_mask = vk::PipelineStageFlags2::TRANSFER;
+            image_barrier.dst_stage_mask = vk::PipelineStageFlags2::FRAGMENT_SHADER;
+        } else {
+            panic!("Unsupported layout transition.");
+        }
+
+        let dependency_info = vk::DependencyInfo::default()
+            .dependency_flags(vk::DependencyFlags::BY_REGION)
+            .image_memory_barriers(slice::from_ref(&image_barrier));
+
+        unsafe { self.ext.sync2.cmd_pipeline_barrier2(cmd_buffer.handle(), &dependency_info) };
+
+        cmd_buffer.end_and_submit(self.get_queue(QueueFamily::Graphics))
+    }
+
+    pub fn copy_buffer_to_image<L: MemLocation>(&self, cmd_pool: vk::CommandPool, buffer: &Buffer<L>, image: vk::Image, width: u32, height: u32, queue: QueueFamily) -> VkResult<()> {
+        let cmd_buffer = CommandBuffer::begin_one_time(self, cmd_pool)?;
+
+        let region = vk::BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(vk::ImageSubresourceLayers::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .mip_level(0)
+                .base_array_layer(0)
+                .layer_count(1)
+            )
+            .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+            .image_extent(vk::Extent3D { width, height, depth: 1 });
+
+        unsafe { self.device.cmd_copy_buffer_to_image(cmd_buffer.handle(), buffer.handle(), image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]) };
+
+        cmd_buffer.end_and_submit(self.get_queue(queue))
+    }
 }
 
 impl Drop for Device {
@@ -319,3 +413,23 @@ impl Drop for Device {
         unsafe { self.device.destroy_device(None) };
     }
 }
+
+//pub struct SharedDevice(Arc<ManuallyDrop<Device>>);
+//
+//impl SharedDevice {
+//    pub fn new(device: Device) -> Self {
+//        Self(Arc::new(ManuallyDrop::new(device)))
+//    }
+//
+//    pub fn destroy(&mut self) {
+//        unsafe { ManuallyDrop::drop(&mut Arc::into_inner(self.0)) };
+//    }
+//}
+//
+//impl std::ops::Deref for SharedDevice {
+//    type Target = Device;
+//
+//    fn deref(&self) -> &Self::Target {
+//        &self.0
+//    }
+//}

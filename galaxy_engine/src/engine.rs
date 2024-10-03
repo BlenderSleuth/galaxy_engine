@@ -1,24 +1,24 @@
-use ash::prelude::VkResult;
-use ash::{ext, khr, vk};
-use gpu_allocator::vulkan::*;
-use gpu_allocator::MemoryLocation;
-use nalgebra as na;
-use raw_window_handle::{DisplayHandle, WindowHandle};
 use std::ffi::{c_char, CStr};
 use std::mem::ManuallyDrop;
 use std::slice;
 
-use crate::buffer::Buffer;
-use crate::device::QueueFamily;
-use crate::{app, device, maths, surface, swapchain, utils};
+use ash::prelude::VkResult;
+use ash::{ext, vk};
+use gpu_allocator::vulkan::*;
+use gpu_allocator::MemoryLocation;
+use nalgebra as na;
+use raw_window_handle::{DisplayHandle, WindowHandle};
 
-use crate::buffer::mem_location::{CpuToGpu, GpuOnly};
+use crate::{app, buffer, engine, device, maths, surface, swapchain, utils};
+use buffer::Buffer;
+use buffer::mem_location::{CpuToGpu, GpuOnly};
+use device::QueueFamily;
+use engine::MainLoopError::VulkanError;
 use app::AppInfo;
 use device::Device;
 use maths::VkPerspective;
 use surface::Surface;
 use swapchain::Swapchain;
-use crate::engine::MainLoopError::VulkanError;
 
 #[derive(thiserror::Error, Debug)]
 pub enum MemoryError {
@@ -141,19 +141,6 @@ impl DebugMessenger {
     }
 }
 
-struct LoadedExtensions {
-    synchronisation2: khr::synchronization2::Device,
-    dynamic_rendering: khr::dynamic_rendering::Device,
-}
-
-impl LoadedExtensions {
-    fn new(instance: &ash::Instance, device: &ash::Device) -> Self {
-        let synchronisation2 = khr::synchronization2::Device::new(&instance, &device);
-        let dynamic_rendering = khr::dynamic_rendering::Device::new(&instance, &device);
-        Self { synchronisation2, dynamic_rendering }
-    }
-}
-
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
 struct Vertex {
@@ -204,7 +191,6 @@ struct UniformBufferObject {
 pub struct GalaxyEngine {
     _entry: ash::Entry,
     instance: ash::Instance,
-    loaded_extensions: LoadedExtensions,
     debug_messenger: Option<DebugMessenger>,
     surface: Surface,
     device: ManuallyDrop<Device>,
@@ -288,13 +274,16 @@ impl GalaxyEngine {
         let device = Device::new(&instance, &surface)?;
         let device_properties = device.get_properties();
 
-        // Load extensions.
-        let loaded_extensions = LoadedExtensions::new(&instance, device.device());
 
         // Create swapchain.
         let window_size = vk::Extent2D { width, height };
         let swapchain = Swapchain::new(&instance, &device, &surface, window_size, None)?;
 
+        // Create command pools.
+        let command_pool_info = vk::CommandPoolCreateInfo::default()
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+            .queue_family_index(device_properties.graphics_queue_family_idx);
+        let graphics_cmd_pool = unsafe { device.device().create_command_pool(&command_pool_info, None) }?;
         let transfer_cmd_pool = device.create_transient_command_pool(QueueFamily::Transfer)?;
 
         // Load texture.
@@ -302,6 +291,7 @@ impl GalaxyEngine {
 
         let mut image_buffer = Buffer::<CpuToGpu>::new_for_typed_data(
             &device,
+            "Image Buffer",
             &image,
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::SharingMode::EXCLUSIVE,
@@ -334,6 +324,11 @@ impl GalaxyEngine {
         };
         let texture_image_memory = device.allocate_memory(&alloc_desc)?;
         unsafe { device.device().bind_image_memory(texture_image, texture_image_memory.memory(), 0) }?;
+
+        device.transition_layout(graphics_cmd_pool, texture_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL)?;
+        device.copy_buffer_to_image(graphics_cmd_pool, &image_buffer, texture_image, image.width(), image.height(), QueueFamily::Graphics)?;
+        device.transition_layout(graphics_cmd_pool, texture_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)?;
+
         unsafe { image_buffer.destroy(&device) }?;
 
         // Create graphics pipeline.
@@ -383,6 +378,7 @@ impl GalaxyEngine {
         // Vertex buffer.
         let mut vertex_buffer = Buffer::<GpuOnly>::new_for_typed_data(
             &device,
+            "Vertex Buffer",
             &VERTICES,
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
             vk::SharingMode::EXCLUSIVE,
@@ -392,6 +388,7 @@ impl GalaxyEngine {
         // Index buffer.
         let mut index_buffer = Buffer::<GpuOnly>::new_for_typed_data(
             &device,
+            "Index Buffer",
             &INDICES,
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
             vk::SharingMode::EXCLUSIVE,
@@ -417,6 +414,7 @@ impl GalaxyEngine {
         let uniform_buffers: [Buffer<CpuToGpu>; Self::MAX_FRAMES_IN_FLIGHT] = core::array::from_fn(|_| {
             Buffer::new(
                 &device,
+                "Uniform Buffer",
                 1,
                 std::mem::size_of::<UniformBufferObject>(),
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
@@ -514,11 +512,6 @@ impl GalaxyEngine {
         unsafe { vertex_shader_module.destroy(&device) };
         unsafe { fragment_shader_module.destroy(&device) };
 
-        // Create command pool.
-        let command_pool_info = vk::CommandPoolCreateInfo::default()
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-            .queue_family_index(device_properties.graphics_queue_family_idx);
-        let graphics_cmd_pool = unsafe { device.device().create_command_pool(&command_pool_info, None) }?;
 
         // Create command buffer.
         let command_buffer_info = vk::CommandBufferAllocateInfo::default()
@@ -538,10 +531,11 @@ impl GalaxyEngine {
             in_flight_fences[i] = unsafe { device.device().create_fence(&fence_info, None) }?;
         }
 
+        device.print_allocator_report();
+
         Ok(Self {
             _entry: entry,
             instance,
-            loaded_extensions,
             debug_messenger,
             surface,
             device: ManuallyDrop::new(device),
@@ -577,8 +571,7 @@ impl GalaxyEngine {
 
         let device = self.device.device();
 
-        let sync2 = &self.loaded_extensions.synchronisation2;
-        let dyn_cmd = &self.loaded_extensions.dynamic_rendering;
+        let ext = self.device.ext();
 
         let current_frame = self.current_frame as usize;
 
@@ -639,7 +632,7 @@ impl GalaxyEngine {
 
         let dependency_info = vk::DependencyInfo::default()
             .image_memory_barriers(slice::from_ref(&color_optimal_transition));
-        unsafe { sync2.cmd_pipeline_barrier2(command_buffer, &dependency_info) };
+        unsafe { ext.sync2.cmd_pipeline_barrier2(command_buffer, &dependency_info) };
 
         let color_attachment_info = vk::RenderingAttachmentInfo::default()
             .image_view(self.swapchain.get_image_views()[image_idx as usize])
@@ -652,7 +645,7 @@ impl GalaxyEngine {
             .layer_count(1)
             .color_attachments(slice::from_ref(&color_attachment_info));
 
-        unsafe { dyn_cmd.cmd_begin_rendering(command_buffer, &rendering_info) }
+        unsafe { ext.dyn_cmd.cmd_begin_rendering(command_buffer, &rendering_info) }
         unsafe { device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline) };
         unsafe { device.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.vertex_buffer.handle()), slice::from_ref(&0)) };
         unsafe { device.cmd_bind_index_buffer(command_buffer, self.index_buffer.handle(), 0, vk::IndexType::UINT16) };
@@ -660,7 +653,7 @@ impl GalaxyEngine {
         unsafe { device.cmd_set_viewport(command_buffer, 0, &[viewport]) };
         unsafe { device.cmd_set_scissor(command_buffer, 0, &[scissor]) };
         unsafe { device.cmd_draw_indexed(command_buffer, self.index_buffer.len(), 1, 0, 0, 0) };
-        unsafe { dyn_cmd.cmd_end_rendering(command_buffer) };
+        unsafe { ext.dyn_cmd.cmd_end_rendering(command_buffer) };
 
         let color_optimal_to_present_src_transition = vk::ImageMemoryBarrier2::default()
             .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
@@ -673,7 +666,7 @@ impl GalaxyEngine {
 
         let dependency_info = vk::DependencyInfo::default()
             .image_memory_barriers(slice::from_ref(&color_optimal_to_present_src_transition));
-        unsafe { sync2.cmd_pipeline_barrier2(command_buffer, &dependency_info) };
+        unsafe { ext.sync2.cmd_pipeline_barrier2(command_buffer, &dependency_info) };
 
         unsafe { device.end_command_buffer(command_buffer) }?;
 

@@ -1,9 +1,8 @@
-use std::slice;
-
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
 
 use crate::buffer::mem_location::*;
+use crate::command_buffer::CommandBuffer;
 use crate::device::{Device, QueueFamily};
 use crate::engine::{MemResult, MemoryError};
 
@@ -11,28 +10,28 @@ pub mod mem_location {
     use gpu_allocator::MemoryLocation;
 
     // Type-state trait encoding of gpu_allocator::MemoryLocation for use in generic parameters.
-    pub trait MemLocationTrait {
+    pub trait MemLocation {
         fn location() -> MemoryLocation;
     }
     pub enum Unknown {}
-    impl MemLocationTrait for Unknown {
+    impl MemLocation for Unknown {
         fn location() -> MemoryLocation { MemoryLocation::Unknown }
     }
     pub enum GpuOnly {}
-    impl MemLocationTrait for GpuOnly {
+    impl MemLocation for GpuOnly {
         fn location() -> MemoryLocation { MemoryLocation::GpuOnly }
     }
     pub enum CpuToGpu {}
-    impl MemLocationTrait for CpuToGpu {
+    impl MemLocation for CpuToGpu {
         fn location() -> MemoryLocation { MemoryLocation::CpuToGpu }
     }
     pub enum GpuToCpu {}
-    impl MemLocationTrait for GpuToCpu {
+    impl MemLocation for GpuToCpu {
         fn location() -> MemoryLocation { MemoryLocation::GpuToCpu }
     }
 }
 
-pub struct Buffer<L: MemLocationTrait> {
+pub struct Buffer<L: MemLocation> {
     handle: vk::Buffer,
     allocation: Option<Allocation>,
     length: u32,
@@ -40,12 +39,13 @@ pub struct Buffer<L: MemLocationTrait> {
     _mem_location: std::marker::PhantomData<L>,
 }
 
-impl<L: MemLocationTrait> Buffer<L> {
-    pub fn new_for_typed_data<T: bytemuck::Pod>(device: &Device, data: &[T], usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode) -> MemResult<Self> {
-        Self::new(device, data.len() as u32, std::mem::size_of::<T>(), usage, sharing_mode)
+impl<L: MemLocation> Buffer<L> {
+    // NOTE: When buffers are being used for multiple resources, should we remove the length and element size fields?
+    pub fn new_for_typed_data<T: bytemuck::Pod>(device: &Device, name: &str, data: &[T], usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode) -> MemResult<Self> {
+        Self::new(device, name, data.len() as u32, std::mem::size_of::<T>(), usage, sharing_mode)
     }
 
-    pub fn new(device: &Device, length: u32, element_size: usize, usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode) -> MemResult<Self> {
+    pub fn new(device: &Device, name: &str, length: u32, element_size: usize, usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode) -> MemResult<Self> {
         let device_properties = device.get_properties();
         let queue_indices = [device.get_properties().graphics_queue_family_idx, device_properties.transfer_queue_family_idx];
 
@@ -61,7 +61,7 @@ impl<L: MemLocationTrait> Buffer<L> {
         // Allocate memory for buffer.
         let requirements = unsafe { device.device().get_buffer_memory_requirements(handle) };
         let desc = AllocationCreateDesc {
-            name: "Buffer Allocation",
+            name,
             requirements,
             location: L::location(),
             linear: true,
@@ -111,28 +111,14 @@ impl<L: MemLocationTrait> Buffer<L> {
         }
     }
 
-    pub fn copy_to_buffer<L2: MemLocationTrait>(&self, cmd_pool: vk::CommandPool, device: &Device, dst_buffer: &mut Buffer<L2>, size: vk::DeviceSize) -> MemResult<()> {
-        let cmd_buffer = unsafe { device.allocate_command_buffer(cmd_pool, vk::CommandBufferLevel::PRIMARY) }?;
-
-        let begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        unsafe { device.device().begin_command_buffer(cmd_buffer, &begin_info) }?;
+    pub fn copy_to_buffer<L2: MemLocation>(&self, cmd_pool: vk::CommandPool, device: &Device, dst_buffer: &mut Buffer<L2>, size: vk::DeviceSize, queue_family: QueueFamily) -> MemResult<()> {
+        let cmd_buffer = CommandBuffer::begin_one_time(device, cmd_pool)?;
 
         let copy_region = vk::BufferCopy::default()
             .size(size);
-        unsafe { device.device().cmd_copy_buffer(cmd_buffer, self.handle(), dst_buffer.handle(), &[copy_region]) };
+        unsafe { device.device().cmd_copy_buffer(cmd_buffer.handle(), self.handle(), dst_buffer.handle(), &[copy_region]) };
 
-        unsafe { device.device().end_command_buffer(cmd_buffer) }?;
-
-        let transfer_queue = device.get_queue(QueueFamily::Transfer);
-        let submit_info = vk::SubmitInfo::default()
-            .command_buffers(slice::from_ref(&cmd_buffer));
-        unsafe { device.device().queue_submit(transfer_queue, &[submit_info], vk::Fence::null()) }?;
-        unsafe { device.device().queue_wait_idle(transfer_queue) }?;
-
-        unsafe { device.device().free_command_buffers(cmd_pool, slice::from_ref(&cmd_buffer)) };
-
-        Ok(())
+        Ok(cmd_buffer.end_and_submit(device.get_queue(queue_family))?)
     }
 }
 
@@ -140,13 +126,14 @@ impl Buffer<GpuOnly> {
     pub fn copy_via_staging_buffer(&mut self, device: &Device, transfer_cmd_pool: vk::CommandPool, src_data: &[u8]) -> MemResult<()> {
         let mut staging_buffer = Buffer::<CpuToGpu>::new(
             &device,
+            "Staging Buffer",
             src_data.len() as u32,
             std::mem::size_of::<u8>(),
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::SharingMode::EXCLUSIVE,
         )?;
         staging_buffer.copy_into_buffer(&src_data)?;
-        staging_buffer.copy_to_buffer(transfer_cmd_pool, &device, self, staging_buffer.size())?;
+        staging_buffer.copy_to_buffer(transfer_cmd_pool, &device, self, staging_buffer.size(), QueueFamily::Transfer)?;
         unsafe { staging_buffer.destroy(&device) }?;
         Ok(())
     }

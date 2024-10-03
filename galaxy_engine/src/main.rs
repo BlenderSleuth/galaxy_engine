@@ -6,6 +6,7 @@ mod swapchain;
 mod surface;
 mod buffer;
 mod maths;
+mod command_buffer;
 
 use winit::error::EventLoopError;
 use winit::event_loop::{ControlFlow, EventLoop};
