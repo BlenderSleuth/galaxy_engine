@@ -4,8 +4,6 @@ use std::slice;
 
 use ash::prelude::VkResult;
 use ash::{ext, vk};
-use gpu_allocator::vulkan::*;
-use gpu_allocator::MemoryLocation;
 use nalgebra as na;
 use raw_window_handle::{DisplayHandle, WindowHandle};
 
@@ -19,6 +17,7 @@ use device::Device;
 use maths::VkPerspective;
 use surface::Surface;
 use swapchain::Swapchain;
+use crate::image::Image;
 
 #[derive(thiserror::Error, Debug)]
 pub enum MemoryError {
@@ -197,8 +196,7 @@ pub struct GalaxyEngine {
     swapchain: Swapchain,
     vertex_buffer: Buffer<GpuOnly>,
     index_buffer: Buffer<GpuOnly>,
-    texture_image: vk::Image,
-    texture_image_memory: Option<Allocation>,
+    texture_image: Image,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: [vk::DescriptorSet; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
@@ -310,24 +308,11 @@ impl GalaxyEngine {
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .samples(vk::SampleCountFlags::TYPE_1);
 
-        let texture_image = unsafe { device.device().create_image(&texture_image_info, None) }?;
+        let texture_image = Image::new(&device, &texture_image_info)?;
 
-        // Allocate memory for texture image.
-        let texture_memory_requirements = unsafe { device.device().get_image_memory_requirements(texture_image) };
-
-        let alloc_desc = AllocationCreateDesc {
-            name: "Texture Image",
-            requirements: texture_memory_requirements,
-            location: MemoryLocation::GpuOnly,
-            linear: false,
-            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-        };
-        let texture_image_memory = device.allocate_memory(&alloc_desc)?;
-        unsafe { device.device().bind_image_memory(texture_image, texture_image_memory.memory(), 0) }?;
-
-        device.transition_layout(graphics_cmd_pool, texture_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL)?;
-        device.copy_buffer_to_image(graphics_cmd_pool, &image_buffer, texture_image, image.width(), image.height(), QueueFamily::Graphics)?;
-        device.transition_layout(graphics_cmd_pool, texture_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)?;
+        texture_image.transition_layout(&device, graphics_cmd_pool, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL)?;
+        device.copy_buffer_to_image(graphics_cmd_pool, &image_buffer, texture_image.handle(), image.width(), image.height(), QueueFamily::Graphics)?;
+        texture_image.transition_layout(&device, graphics_cmd_pool, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)?;
 
         unsafe { image_buffer.destroy(&device) }?;
 
@@ -512,7 +497,6 @@ impl GalaxyEngine {
         unsafe { vertex_shader_module.destroy(&device) };
         unsafe { fragment_shader_module.destroy(&device) };
 
-
         // Create command buffer.
         let command_buffer_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(graphics_cmd_pool)
@@ -543,7 +527,6 @@ impl GalaxyEngine {
             vertex_buffer,
             index_buffer,
             texture_image,
-            texture_image_memory: Some(texture_image_memory),
             descriptor_set_layout,
             descriptor_pool,
             descriptor_sets: descriptor_sets.try_into().unwrap(),
@@ -809,9 +792,7 @@ impl Drop for GalaxyEngine {
             unsafe { uniform_buffer.destroy(&self.device) }.unwrap_or_else(|e| log::error!("Failed to destroy uniform buffer: {:?}", e));
         }
         // Drop texture image.
-        unsafe { device.destroy_image(self.texture_image, None) };
-        // Drop texture image memory.
-        self.device.free_memory(self.texture_image_memory.take().unwrap()).unwrap_or_else(|e| log::error!("Failed to free texture image memory: {:?}", e));
+        unsafe { self.texture_image.destroy(&self.device) };
 
         // Drop swapchain.
         unsafe { self.swapchain.destroy(&self.device) };

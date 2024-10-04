@@ -7,10 +7,10 @@ use crate::surface::Surface;
 
 pub struct Swapchain {
     loader: khr::swapchain::Device,
-    pub(crate) handle: vk::SwapchainKHR,
+    handle: vk::SwapchainKHR,
     images: Vec<vk::Image>,
     image_views: Vec<vk::ImageView>,
-    extent: vk::Extent2D, 
+    extent: vk::Extent2D,
 }
 
 impl Swapchain {
@@ -24,7 +24,7 @@ impl Swapchain {
         } else {
             (vk::SharingMode::EXCLUSIVE, PropertyQueueList::new())
         };
-        
+
         let surface_capabilities = surface.get_capabilities(device.get_properties().physical_device)?;
 
         // Choose swap extent.
@@ -36,7 +36,7 @@ impl Swapchain {
                 height: window_size.height.clamp(surface_capabilities.min_image_extent.height, surface_capabilities.max_image_extent.height),
             }
         };
-        
+
         let loader = khr::swapchain::Device::new(&instance, &device.device());
         let swapchain_info = vk::SwapchainCreateInfoKHR::default()
             .surface(surface.handle())
@@ -54,10 +54,10 @@ impl Swapchain {
             .clipped(true)
             .old_swapchain(old_swapchain.map_or(vk::SwapchainKHR::null(), |swapchain| swapchain.handle));
 
-        let swapchain = unsafe { loader.create_swapchain(&swapchain_info, None) }?;
+        let handle = unsafe { loader.create_swapchain(&swapchain_info, None) }?;
 
         // Get swapchain images.
-        let images = unsafe { loader.get_swapchain_images(swapchain) }?;
+        let images = unsafe { loader.get_swapchain_images(handle) }?;
 
         // Create image views.
         let mut image_view_info = vk::ImageViewCreateInfo::default()
@@ -76,21 +76,21 @@ impl Swapchain {
             unsafe { device.device().create_image_view(&image_view_info, None) }
         }).collect::<VkResult<Vec<_>>>()?;
 
-        Ok(Self { loader, handle: swapchain, images, image_views, extent: swapchain_extent })
+        Ok(Self { loader, handle, images, image_views, extent: swapchain_extent })
     }
-    
+
     pub fn get_extent(&self) -> vk::Extent2D {
         self.extent
     }
-    
+
     pub fn get_images(&self) -> &[vk::Image] {
         &self.images
     }
-    
+
     pub fn get_image_views(&self) -> &[vk::ImageView] {
         &self.image_views
     }
-    
+
     pub fn get_subresource_range(&self) -> vk::ImageSubresourceRange {
         vk::ImageSubresourceRange {
             aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -100,11 +100,11 @@ impl Swapchain {
             layer_count: 1,
         }
     }
-    
+
     pub fn acquire_next_image(&self, semaphore: vk::Semaphore, fence: vk::Fence) -> VkResult<(u32, bool)> {
         unsafe { self.loader.acquire_next_image(self.handle, u64::MAX, semaphore, fence) }
     }
-    
+
     pub fn queue_present(&self, queue: vk::Queue, image_index: u32, wait_semaphores: &[vk::Semaphore]) -> VkResult<bool> {
         let present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(wait_semaphores)
@@ -112,7 +112,7 @@ impl Swapchain {
             .image_indices(slice::from_ref(&image_index));
         unsafe { self.loader.queue_present(queue, &present_info) }
     }
-    
+
     pub unsafe fn destroy(&mut self, device: &Device) {
         // Drop image views.
         for image_view in self.image_views.iter() {

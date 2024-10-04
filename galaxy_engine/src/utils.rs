@@ -1,6 +1,12 @@
 use std::ffi::{c_char, CStr};
 use std::str::from_utf8;
 
+pub(crate) fn drop_fail<T, E: std::error::Error>(result: Result<T, E>, message: &str) {
+    if let Err(err) = result {
+        log::error!("{message}: {err}.");
+    }
+}
+
 pub(crate) fn cstr_to_ptrs(c_strs: &[&'static CStr]) -> Vec<*const c_char> {
     c_strs.iter().map(|cstr| cstr.as_ptr()).collect()
 }
