@@ -253,13 +253,14 @@ impl Model {
         let header = image.header();
         let mip_levels = image.levels().collect::<Vec<_>>();
         let extent = vk::Extent3D { width: header.pixel_width, height: header.pixel_height, depth: 1 };
-        let texture_image = Image::new_from_levels(
+        let texture_image = Image::new_from_mip_levels(
             device,
             gfx_cmd_pool,
             &mip_levels,
             vk::ImageType::TYPE_2D,
             extent,
             header.format.map(utils::ktx_to_vulkan_format).unwrap_or(vk::Format::R8G8B8A8_SRGB),
+            "Model texture",
         )?;
 
         // Create texture image view.
@@ -316,7 +317,7 @@ impl Model {
         // Vertex buffer.
         let mut vertex_buffer = Buffer::<GpuOnly>::new_for_typed_data(
             &device,
-            "Vertex Buffer",
+            "Model vertex buffer",
             &vertices,
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
             vk::SharingMode::EXCLUSIVE,
@@ -326,7 +327,7 @@ impl Model {
         // Index buffer.
         let mut index_buffer = Buffer::<GpuOnly>::new_for_typed_data(
             &device,
-            "Index Buffer",
+            "Model index buffer",
             &indices,
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
             vk::SharingMode::EXCLUSIVE,
@@ -462,6 +463,7 @@ impl GalaxyEngine {
         let window_size = vk::Extent2D { width, height };
         let swapchain = Swapchain::new(&instance, &device, graphics_cmd_pool, &surface, window_size, None)?;
 
+        // Load model.
         let model = Model::new(&device, graphics_cmd_pool)?;
 
         // Create uniform buffers.
@@ -567,8 +569,8 @@ impl GalaxyEngine {
             .depth_bias_enable(false);
 
         let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
-            .sample_shading_enable(false)
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+            .sample_shading_enable(false) // Sample shading adds extra samples to
+            .rasterization_samples(swapchain.samples());
 
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
@@ -597,6 +599,7 @@ impl GalaxyEngine {
             .depth_attachment_format(PhysicalDeviceProperties::DEPTH_STENCIL_FORMAT);
 
         let shader_stages = model.shader_stages();
+
         // Vertex binding.
         let binding_description = Vertex::binding_description();
         let attribute_descriptions = Vertex::attribute_descriptions();
@@ -731,18 +734,21 @@ impl GalaxyEngine {
             .old_layout(vk::ImageLayout::UNDEFINED)
             .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .image(self.swapchain.get_images()[image_idx as usize])
-            .subresource_range(self.swapchain.get_subresource_range());
+            .subresource_range(Swapchain::get_subresource_range());
 
         let dependency_info = vk::DependencyInfo::default()
             .image_memory_barriers(slice::from_ref(&color_optimal_transition));
         unsafe { ext.sync2.cmd_pipeline_barrier2(command_buffer, &dependency_info) };
 
         let color_attachment_info = vk::RenderingAttachmentInfo::default()
-            .image_view(*self.swapchain.get_image_views()[image_idx as usize].handle())
+            .image_view(*self.swapchain.get_colour_resolve_view().borrow_view().handle())
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::STORE)
-            .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } });
+            .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } })
+            .resolve_mode(vk::ResolveModeFlags::AVERAGE)
+            .resolve_image_view(*self.swapchain.get_image_views()[image_idx as usize].handle())
+            .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
         let depth_attachment_info = vk::RenderingAttachmentInfo::default()
             .image_view(*self.swapchain.get_depth_view().handle())
@@ -774,7 +780,7 @@ impl GalaxyEngine {
             .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
             .image(self.swapchain.get_images()[image_idx as usize])
-            .subresource_range(self.swapchain.get_subresource_range());
+            .subresource_range(Swapchain::get_subresource_range());
 
         let dependency_info = vk::DependencyInfo::default()
             .image_memory_barriers(slice::from_ref(&color_optimal_to_present_src_transition));

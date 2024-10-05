@@ -67,8 +67,9 @@ impl<'a> ImageView<'a> {
         let handle = unsafe { device.device().create_image_view(&view_info, None) }?;
         Ok(Self { handle, image: ImageRef::Image(image) })
     }
-    pub fn new_external(image: vk::Image, image_view: vk::ImageView) -> VkResult<Self> {
-        Ok(Self { handle: image_view, image: ImageRef::External(image) })
+    pub fn new_external(device: &Device, image: vk::Image, view_info: &vk::ImageViewCreateInfo) -> VkResult<Self> {
+        let handle = unsafe { device.device().create_image_view(view_info, None) }?;
+        Ok(Self { handle, image: ImageRef::External(image) })
     }
     pub fn handle(&self) -> &vk::ImageView {
         &self.handle
@@ -89,7 +90,8 @@ pub struct Image {
 }
 
 impl Image {
-    pub fn new(device: &Device, info: &vk::ImageCreateInfo, subresource: vk::ImageSubresourceRange) -> MemResult<Self> {
+    // New with an image create info.
+    pub fn new(device: &Device, info: &vk::ImageCreateInfo, subresource: vk::ImageSubresourceRange, name: &str) -> MemResult<Self> {
         let handle = unsafe { device.device().create_image(&info, None) }?;
 
         // Allocate memory for image.
@@ -108,7 +110,7 @@ impl Image {
         };
 
         let alloc_desc = AllocationCreateDesc {
-            name: "Texture Image",
+            name,
             requirements,
             location: MemoryLocation::GpuOnly,
             linear: false,
@@ -128,10 +130,15 @@ impl Image {
         })
     }
 
-    pub fn new_from_data(device: &Device, gfx_cmd_pool: vk::CommandPool, data: &[u8], num_dimensions: vk::ImageType, extent: vk::Extent3D, format: vk::Format) -> MemResult<Self> {
-        Self::new_from_levels(device, gfx_cmd_pool, &[data], num_dimensions, extent, format)
-    }
-    pub fn new_from_levels(device: &Device, gfx_cmd_pool: vk::CommandPool, levels: &[&[u8]], num_dimensions: vk::ImageType, extent: vk::Extent3D, format: vk::Format) -> MemResult<Self> {
+    pub fn new_from_mip_levels(
+        device: &Device,
+        gfx_cmd_pool: vk::CommandPool,
+        levels: &[&[u8]],
+        num_dimensions: vk::ImageType,
+        extent: vk::Extent3D,
+        format: vk::Format,
+        name: &str,
+    ) -> MemResult<Self> {
         let num_mips = levels.len() as u32;
         let total_mip_size: u32 = levels.iter().fold(0, |acc, level| acc + level.len()).try_into().unwrap();
         let image_info = vk::ImageCreateInfo::default()
@@ -151,11 +158,11 @@ impl Image {
             level_count: num_mips,
             ..utils::DEFAULT_SUBRESOURCE_RANGE
         };
-        let mut image = Image::new(device, &image_info, subresource)?;
+        let mut image = Image::new(device, &image_info, subresource, name)?;
 
         let mut image_buffer = Buffer::<CpuToGpu>::new(
             &device,
-            "Image Buffer",
+            &format!("{name} staging buffer"), // TODO: Resource names only in debug.
             total_mip_size,
             std::mem::size_of::<u8>(),
             vk::BufferUsageFlags::TRANSFER_SRC,

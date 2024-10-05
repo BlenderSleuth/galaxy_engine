@@ -59,6 +59,7 @@ pub struct PhysicalDeviceProperties {
 pub type PropertyQueueList = ArrayVec<u32, { PhysicalDeviceProperties::MAX_QUEUE_FAMILIES }>;
 impl PhysicalDeviceProperties {
     pub(crate) const DEPTH_STENCIL_FORMAT: vk::Format = vk::Format::D32_SFLOAT_S8_UINT;
+    pub(crate) const MSAA_SAMPLES: vk::SampleCountFlags = vk::SampleCountFlags::TYPE_8;
     const MAX_QUEUE_FAMILIES: usize = 3;
 
     pub fn get_unique_queue_families(&self) -> PropertyQueueList {
@@ -175,6 +176,7 @@ impl Device {
                 continue;
             };
 
+            // Calculate swapchain image count.
             let mut image_count = surface_capabilities.min_image_count + 1;
             if surface_capabilities.max_image_count > 0 && image_count > surface_capabilities.max_image_count {
                 image_count = surface_capabilities.max_image_count;
@@ -183,6 +185,11 @@ impl Device {
             let mut physical_device_properties = vk::PhysicalDeviceProperties2::default();
             unsafe { instance.get_physical_device_properties2(*physical_device, &mut physical_device_properties) };
             let physical_device_properties = physical_device_properties.properties;
+
+            // Require 8 MSAA samples.
+            if !physical_device_properties.limits.framebuffer_color_sample_counts.contains(PhysicalDeviceProperties::MSAA_SAMPLES) {
+                continue;
+            }
 
             let mut buffer_device_address_features = vk::PhysicalDeviceVulkan12Features::default();
             let mut physical_device_features = vk::PhysicalDeviceFeatures2::default()
