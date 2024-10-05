@@ -47,10 +47,46 @@ macro_rules! unwrap_or_exit {
         };
     }
 
+struct FrameTimeAverage {
+    frame_times: Vec<std::time::Duration>,
+    frame_time_index: usize,
+    ready: bool,
+}
+
+impl FrameTimeAverage {
+    pub fn new(frame_time_count: usize) -> Self {
+        Self {
+            frame_times: vec![std::time::Duration::from_secs(0); frame_time_count],
+            frame_time_index: 0,
+            ready: false,
+        }
+    }
+
+    pub fn ready(&self) -> bool {
+        self.ready
+    }
+
+    pub fn push(&mut self, frame_time: std::time::Duration) {
+        self.frame_times[self.frame_time_index] = frame_time;
+        self.frame_time_index = (self.frame_time_index + 1) % self.frame_times.len();
+        self.ready |= self.frame_time_index == 0;
+    }
+
+    pub fn average(&self) -> std::time::Duration {
+        let mut total = std::time::Duration::from_secs(0);
+        for frame_time in &self.frame_times {
+            total += *frame_time;
+        }
+        total / self.frame_times.len() as u32
+    }
+}
+
 pub struct GalaxyApp {
     app_info: AppInfo,
     window: Option<Window>,
     engine: Option<GalaxyEngine>,
+    last_frame_time: std::time::Instant,
+    frame_time_average: FrameTimeAverage,
 }
 
 impl GalaxyApp {
@@ -59,6 +95,8 @@ impl GalaxyApp {
             app_info,
             window: None,
             engine: None,
+            last_frame_time: std::time::Instant::now(),
+            frame_time_average: FrameTimeAverage::new(60),
         }
     }
 }
@@ -76,6 +114,7 @@ impl ApplicationHandler for GalaxyApp {
         
         self.engine = Some(unwrap_or_exit!(GalaxyEngine::new(&self.app_info, display_handle, window_handle, width, height), "Failed to create engine: {}\nExiting.", event_loop));
         self.window = Some(window);
+        self.last_frame_time = std::time::Instant::now();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
@@ -111,5 +150,7 @@ impl ApplicationHandler for GalaxyApp {
         if let Some(engine) = self.engine.as_mut() {
             unwrap_or_exit!(engine.main_loop(), "Main loop error: {}\nExiting.", event_loop);
         }
+        self.frame_time_average.push(self.last_frame_time.elapsed());
+        self.last_frame_time = std::time::Instant::now();
     }
 }

@@ -124,7 +124,7 @@ impl<L: MemLocation> Buffer<L> {
 }
 
 impl Buffer<GpuOnly> {
-    pub fn copy_via_staging_buffer(&mut self, device: &Device, transfer_cmd_pool: vk::CommandPool, src_data: &[u8]) -> MemResult<()> {
+    pub fn copy_via_staging_buffer(&mut self, device: &Device, transfer_cmd_pool: vk::CommandPool, src_data: &[u8], queue_family: QueueFamily) -> MemResult<()> {
         let mut staging_buffer = Buffer::<CpuToGpu>::new(
             &device,
             "Staging Buffer",
@@ -134,7 +134,7 @@ impl Buffer<GpuOnly> {
             vk::SharingMode::EXCLUSIVE,
         )?;
         staging_buffer.copy_into_buffer(&src_data)?;
-        staging_buffer.copy_to_buffer(transfer_cmd_pool, &device, self, staging_buffer.size(), QueueFamily::Transfer)?;
+        staging_buffer.copy_to_buffer(transfer_cmd_pool, &device, self, staging_buffer.size(), queue_family)?;
         unsafe { staging_buffer.destroy(&device) }?;
         Ok(())
     }

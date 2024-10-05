@@ -1,9 +1,12 @@
 use std::ffi::{c_char, CStr};
+use std::fs::File;
+use std::io::BufReader;
 use std::mem::ManuallyDrop;
 use std::slice;
 
 use ash::prelude::VkResult;
 use ash::{ext, vk};
+use meshopt::VertexDataAdapter;
 use nalgebra as na;
 use raw_window_handle::{DisplayHandle, WindowHandle};
 
@@ -22,7 +25,7 @@ use crate::image::{Image, ImageWithView};
 
 #[derive(thiserror::Error, Debug)]
 pub enum MemoryError {
-    #[error("Vulkan error: {0}")]
+    #[error("Memory vulkan error: {0}")]
     VkResult(#[from] vk::Result),
     #[error("Allocation error: {0}")]
     AllocationError(#[from] gpu_allocator::AllocationError),
@@ -56,8 +59,8 @@ pub enum EngineInitError {
     DeviceInitError(#[from] device::DeviceInitError),
     #[error("Memory error: {0}")]
     MemoryError(#[from] MemoryError),
-    #[error("I/O error: {0}")]
-    IoError(#[from] std::io::Error),
+    #[error("Model error: {0}")]
+    ModelError(#[from] ModelError),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -142,7 +145,7 @@ impl DebugMessenger {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
+#[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
 struct Vertex {
     pos: na::Vector3<f32>,
     color: na::Vector3<f32>,
@@ -178,29 +181,227 @@ impl Vertex {
     }
 }
 
-const VERTICES: [Vertex; 8] = [
-    // Top square:
-    Vertex { pos: maths::Vec3::new(-0.5, -0.5, 0.), color: maths::Vec3::new(1., 0., 0.), tex_coord: maths::Vec2::new(1., 0.) },
-    Vertex { pos: maths::Vec3::new(0.5, -0.5, 0.), color: maths::Vec3::new(0., 1., 0.), tex_coord: maths::Vec2::new(0., 0.) },
-    Vertex { pos: maths::Vec3::new(0.5, 0.5, 0.), color: maths::Vec3::new(0., 0., 1.), tex_coord: maths::Vec2::new(0., 1.) },
-    Vertex { pos: maths::Vec3::new(-0.5, 0.5, 0.), color: maths::Vec3::new(1., 1., 1.), tex_coord: maths::Vec2::new(1., 1.) },
-    // Bottom square:
-    Vertex { pos: maths::Vec3::new(-0.5, -0.5, -0.5), color: maths::Vec3::new(1., 0., 0.), tex_coord: maths::Vec2::new(1., 0.) },
-    Vertex { pos: maths::Vec3::new(0.5, -0.5, -0.5), color: maths::Vec3::new(0., 1., 0.), tex_coord: maths::Vec2::new(0., 0.) },
-    Vertex { pos: maths::Vec3::new(0.5, 0.5, -0.5), color: maths::Vec3::new(0., 0., 1.), tex_coord: maths::Vec2::new(0., 1.) },
-    Vertex { pos: maths::Vec3::new(-0.5, 0.5, -0.5), color: maths::Vec3::new(1., 1., 1.), tex_coord: maths::Vec2::new(1., 1.) },
-];
-const INDICES: [u16; 12] = [
-    0, 1, 2, 2, 3, 0,
-    4, 5, 6, 6, 7, 4
-];
-
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
 struct UniformBufferObject {
     model: maths::Mat4,
     view: maths::Mat4,
     proj: maths::Mat4,
+}
+
+struct ShaderModule {
+    module: vk::ShaderModule,
+    stage: vk::ShaderStageFlags,
+}
+
+impl ShaderModule {
+    fn new(device: &Device, code: &[u8], stage: vk::ShaderStageFlags) -> VkResult<Self> {
+        let (prefix, code, suffix) = unsafe { code.align_to::<u32>() };
+        assert!(prefix.is_empty());
+        assert!(suffix.is_empty());
+        let create_info = vk::ShaderModuleCreateInfo::default().code(code);
+        Ok(Self {
+            module: unsafe { device.device().create_shader_module(&create_info, None) }?,
+            stage,
+        })
+    }
+
+    fn stage_info(&self) -> vk::PipelineShaderStageCreateInfo {
+        vk::PipelineShaderStageCreateInfo::default()
+            .stage(self.stage)
+            .module(self.module)
+            .name(match self.stage {
+                vk::ShaderStageFlags::VERTEX => c"mainVS",
+                vk::ShaderStageFlags::FRAGMENT => c"mainFS",
+                _ => panic!("Unsupported shader stage: {:?}", self.stage),
+            })
+    }
+
+    unsafe fn destroy(&mut self, device: &Device) {
+        unsafe { device.device().destroy_shader_module(self.module, None) };
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ModelError {
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+    #[error("Obj error: {0}")]
+    ObjError(#[from] obj::ObjError),
+    #[error("Image error: {0}")]
+    ImageError(#[from] image::ImageError),
+    #[error("Model vulkan error: {0}")]
+    VulkanError(#[from] vk::Result),
+    #[error("Memory error: {0}")]
+    MemoryError(#[from] MemoryError),
+}
+
+struct Model {
+    vertex_buffer: Buffer<GpuOnly>,
+    index_buffer: Buffer<GpuOnly>,
+    texture_image: Option<ImageWithView>,
+    sampler: vk::Sampler,
+    vertex_shader_module: ShaderModule,
+    fragment_shader_module: ShaderModule,
+}
+
+impl Model {
+    pub const MODEL_PATH: &'static str = "assets/viking_room.obj";
+    pub const TEXTURE_PATH: &'static str = "assets/viking_room.png";
+
+    pub fn new(device: &Device, gfx_cmd_pool: vk::CommandPool) -> Result<Self, ModelError> {
+        // Load texture.
+        let image = image::open(Model::TEXTURE_PATH)?.to_rgba8();
+
+        let mut image_buffer = Buffer::<CpuToGpu>::new_for_typed_data(
+            &device,
+            "Image Buffer",
+            &image,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::SharingMode::EXCLUSIVE,
+        )?;
+        image_buffer.copy_into_buffer(&image)?;
+
+        let texture_image_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .extent(vk::Extent3D { width: image.width(), height: image.height(), depth: 1 })
+            .mip_levels(1)
+            .array_layers(1)
+            .format(vk::Format::R8G8B8A8_SRGB)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .samples(vk::SampleCountFlags::TYPE_1);
+
+        let texture_image = Image::new(&device, &texture_image_info)?;
+
+        texture_image.transition_layout(
+            &device,
+            gfx_cmd_pool,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageAspectFlags::COLOR,
+            None,
+            None,
+        )?;
+        device.copy_buffer_to_image(gfx_cmd_pool, &image_buffer, texture_image.handle(), image.width(), image.height(), QueueFamily::Graphics)?;
+        texture_image.transition_layout(
+            &device,
+            gfx_cmd_pool,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::ImageAspectFlags::COLOR,
+            None,
+            None,
+        )?;
+
+        unsafe { image_buffer.destroy(&device) }?;
+
+        // Create texture image view.
+        let texture_image_view = ImageWithView::from_image(&device, texture_image, vk::ImageAspectFlags::COLOR)?;
+
+        // Create texture sampler.
+        let max_anisotropy = device.get_properties().properties.limits.max_sampler_anisotropy;
+        let sampler_info = vk::SamplerCreateInfo::default()
+            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(vk::Filter::LINEAR)
+            .address_mode_u(vk::SamplerAddressMode::REPEAT)
+            .address_mode_v(vk::SamplerAddressMode::REPEAT)
+            .address_mode_w(vk::SamplerAddressMode::REPEAT)
+            .anisotropy_enable(true)
+            .max_anisotropy(max_anisotropy)
+            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
+            .unnormalized_coordinates(false)
+            .compare_enable(false)
+            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+            .mip_lod_bias(0.)
+            .min_lod(0.)
+            .max_lod(0.);
+        let sampler = unsafe { device.device().create_sampler(&sampler_info, None) }?;
+
+        // Load shaders.
+        let vertex_shader_code = std::fs::read("shaders/shader.vert.spv")?;
+        let fragment_shader_code = std::fs::read("shaders/shader.frag.spv")?;
+
+        let vertex_shader_module = ShaderModule::new(&device, &vertex_shader_code, vk::ShaderStageFlags::VERTEX)?;
+        let fragment_shader_module = ShaderModule::new(&device, &fragment_shader_code, vk::ShaderStageFlags::FRAGMENT)?;
+
+        // Load model. The obj crate already does indexing for us.
+        let obj_model: obj::Obj<obj::TexturedVertex, u32> = obj::load_obj(BufReader::new(File::open(Model::MODEL_PATH)?))?;
+
+        let vertices = obj_model
+            .vertices
+            .iter()
+            .map(|v| Vertex {
+                pos: na::Vector3::new(v.position[0], v.position[1], v.position[2]),
+                color: na::Vector3::new(1.0, 1.0, 1.0),
+                tex_coord: na::Vector2::new(v.texture[0], 1.0 - v.texture[1]),
+            })
+            .collect::<Vec<Vertex>>();
+
+        // Optimize model.
+        let (vertex_count, vert_remap) = meshopt::generate_vertex_remap(&vertices, Some(&obj_model.indices));
+        let mut vertices = meshopt::remap_vertex_buffer(&vertices, vertex_count, &vert_remap);
+        let mut indices = meshopt::remap_index_buffer(Some(&obj_model.indices), vertex_count, &vert_remap);
+        meshopt::optimize_vertex_cache_in_place(&mut indices, vertex_count);
+        let vertex_data_adapter = VertexDataAdapter::new(bytemuck::must_cast_slice(&vertices), std::mem::size_of::<Vertex>(), std::mem::offset_of!(Vertex, pos)).unwrap();
+        meshopt::optimize_overdraw_in_place(&mut indices, &vertex_data_adapter, 1.05);
+        meshopt::optimize_vertex_fetch_in_place(&mut indices, &mut vertices);
+
+        // Vertex buffer.
+        let mut vertex_buffer = Buffer::<GpuOnly>::new_for_typed_data(
+            &device,
+            "Vertex Buffer",
+            &vertices,
+            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
+            vk::SharingMode::EXCLUSIVE,
+        )?;
+        vertex_buffer.copy_via_staging_buffer(&device, gfx_cmd_pool, bytemuck::must_cast_slice(vertices.as_slice()), QueueFamily::Graphics)?;
+
+        // Index buffer.
+        let mut index_buffer = Buffer::<GpuOnly>::new_for_typed_data(
+            &device,
+            "Index Buffer",
+            &indices,
+            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
+            vk::SharingMode::EXCLUSIVE,
+        )?;
+        index_buffer.copy_via_staging_buffer(&device, gfx_cmd_pool, bytemuck::must_cast_slice(indices.as_slice()), QueueFamily::Graphics)?;
+
+        Ok(Self {
+            vertex_buffer,
+            index_buffer,
+            texture_image: Some(texture_image_view),
+            sampler,
+            vertex_shader_module,
+            fragment_shader_module,
+        })
+    }
+
+    pub fn shader_stages(&self) -> [vk::PipelineShaderStageCreateInfo; 2] {
+        [self.vertex_shader_module.stage_info(), self.fragment_shader_module.stage_info()]
+    }
+
+    pub unsafe fn destroy(&mut self, device: &Device) -> MemResult<()> {
+        // Drop vertex buffer.
+        unsafe { self.vertex_buffer.destroy(device) }?;
+        // Drop index buffer.
+        unsafe { self.index_buffer.destroy(device) }?;
+        // Drop shader modules after pipeline creation.
+        unsafe { self.vertex_shader_module.destroy(device) };
+        unsafe { self.fragment_shader_module.destroy(device) };
+
+        // Drop texture image and view.
+        if let Some(image) = self.texture_image.take() {
+            unsafe { image.destroy(device) };
+        }
+
+        // Drop sampler.
+        unsafe { device.device().destroy_sampler(self.sampler, None) };
+
+        Ok(())
+    }
 }
 
 pub struct GalaxyEngine {
@@ -210,10 +411,7 @@ pub struct GalaxyEngine {
     surface: Surface,
     device: ManuallyDrop<Device>,
     swapchain: Swapchain,
-    vertex_buffer: Buffer<GpuOnly>,
-    index_buffer: Buffer<GpuOnly>,
-    texture_image: Option<ImageWithView>,
-    sampler: vk::Sampler,
+    model: Model,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: [vk::DescriptorSet; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
@@ -289,7 +487,6 @@ impl GalaxyEngine {
         let device = Device::new(&instance, &surface)?;
         let device_properties = device.get_properties();
 
-
         // Create command pools.
         let command_pool_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
@@ -301,146 +498,7 @@ impl GalaxyEngine {
         let window_size = vk::Extent2D { width, height };
         let swapchain = Swapchain::new(&instance, &device, graphics_cmd_pool, &surface, window_size, None)?;
 
-        // Load texture.
-        let image = image::open("textures/texture.jpg").unwrap().to_rgba8();
-
-        let mut image_buffer = Buffer::<CpuToGpu>::new_for_typed_data(
-            &device,
-            "Image Buffer",
-            &image,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::SharingMode::EXCLUSIVE,
-        )?;
-        image_buffer.copy_into_buffer(&image)?;
-
-        let texture_image_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .extent(vk::Extent3D { width: image.width(), height: image.height(), depth: 1 })
-            .mip_levels(1)
-            .array_layers(1)
-            .format(vk::Format::R8G8B8A8_SRGB)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .samples(vk::SampleCountFlags::TYPE_1);
-
-        let texture_image = Image::new(&device, &texture_image_info)?;
-
-        texture_image.transition_layout(
-            &device,
-            graphics_cmd_pool,
-            vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            vk::ImageAspectFlags::COLOR,
-            None,
-            None,
-        )?;
-        device.copy_buffer_to_image(graphics_cmd_pool, &image_buffer, texture_image.handle(), image.width(), image.height(), QueueFamily::Graphics)?;
-        texture_image.transition_layout(
-            &device,
-            graphics_cmd_pool,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            vk::ImageAspectFlags::COLOR,
-            None,
-            None,
-        )?;
-
-        unsafe { image_buffer.destroy(&device) }?;
-
-        // Create texture image view.
-        let texture_image_view = ImageWithView::from_image(&device, texture_image, vk::ImageAspectFlags::COLOR)?;
-
-        // Create texture sampler.
-        let max_anisotropy = device.get_properties().properties.limits.max_sampler_anisotropy;
-        let sampler_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::LINEAR)
-            .min_filter(vk::Filter::LINEAR)
-            .address_mode_u(vk::SamplerAddressMode::REPEAT)
-            .address_mode_v(vk::SamplerAddressMode::REPEAT)
-            .address_mode_w(vk::SamplerAddressMode::REPEAT)
-            .anisotropy_enable(true)
-            .max_anisotropy(max_anisotropy)
-            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
-            .unnormalized_coordinates(false)
-            .compare_enable(false)
-            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
-            .mip_lod_bias(0.)
-            .min_lod(0.)
-            .max_lod(0.);
-        let sampler = unsafe { device.device().create_sampler(&sampler_info, None) }?;
-
-        // Create graphics pipeline.
-
-        let vertex_shader_code = std::fs::read("shaders/shader.vert.spv")?;
-        let fragment_shader_code = std::fs::read("shaders/shader.frag.spv")?;
-
-        struct ShaderModule<'a> {
-            module: vk::ShaderModule,
-            stage: vk::ShaderStageFlags,
-            _marker: std::marker::PhantomData<&'a ()>,
-        }
-        impl<'a> ShaderModule<'a> {
-            fn new(device: &Device, code: &'a [u8], stage: vk::ShaderStageFlags) -> VkResult<Self> {
-                let (prefix, code, suffix) = unsafe { code.align_to::<u32>() };
-                assert!(prefix.is_empty());
-                assert!(suffix.is_empty());
-                let create_info = vk::ShaderModuleCreateInfo::default().code(code);
-                Ok(Self { module: unsafe { device.device().create_shader_module(&create_info, None) }?, stage, _marker: std::marker::PhantomData })
-            }
-            fn get_stage_info(&self) -> vk::PipelineShaderStageCreateInfo {
-                vk::PipelineShaderStageCreateInfo::default()
-                    .stage(self.stage)
-                    .module(self.module)
-                    .name(match self.stage {
-                        vk::ShaderStageFlags::VERTEX => c"mainVS",
-                        vk::ShaderStageFlags::FRAGMENT => c"mainFS",
-                        _ => panic!("Unsupported shader stage: {:?}", self.stage),
-                    })
-            }
-            unsafe fn destroy(&mut self, device: &Device) {
-                unsafe { device.device().destroy_shader_module(self.module, None) };
-            }
-        }
-
-        let mut vertex_shader_module = ShaderModule::new(&device, &vertex_shader_code, vk::ShaderStageFlags::VERTEX)?;
-        let mut fragment_shader_module = ShaderModule::new(&device, &fragment_shader_code, vk::ShaderStageFlags::FRAGMENT)?;
-
-        let vertex_shader_stage_info = vertex_shader_module.get_stage_info();
-        let fragment_shader_stage_info = fragment_shader_module.get_stage_info();
-        let shader_stages = [vertex_shader_stage_info, fragment_shader_stage_info];
-
-        // Vertex binding.
-        let binding_description = Vertex::binding_description();
-        let attribute_descriptions = Vertex::attribute_descriptions();
-        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
-            .vertex_binding_descriptions(slice::from_ref(&binding_description))
-            .vertex_attribute_descriptions(&attribute_descriptions);
-
-        // Vertex buffer.
-        let mut vertex_buffer = Buffer::<GpuOnly>::new_for_typed_data(
-            &device,
-            "Vertex Buffer",
-            &VERTICES,
-            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
-            vk::SharingMode::EXCLUSIVE,
-        )?;
-        vertex_buffer.copy_via_staging_buffer(&device, transfer_cmd_pool, bytemuck::bytes_of(&VERTICES))?;
-
-        // Index buffer.
-        let mut index_buffer = Buffer::<GpuOnly>::new_for_typed_data(
-            &device,
-            "Index Buffer",
-            &INDICES,
-            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
-            vk::SharingMode::EXCLUSIVE,
-        )?;
-        index_buffer.copy_via_staging_buffer(&device, transfer_cmd_pool, bytemuck::bytes_of(&INDICES))?;
-
-        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .primitive_restart_enable(false);
+        let model = Model::new(&device, graphics_cmd_pool)?;
 
         // Create uniform buffers.
         let uniform_buffers: [Buffer<CpuToGpu>; Self::MAX_FRAMES_IN_FLIGHT] = core::array::from_fn(|_| {
@@ -502,8 +560,8 @@ impl GalaxyEngine {
 
             let image_info = vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(*texture_image_view.borrow_view().handle())
-                .sampler(sampler);
+                .image_view(*model.texture_image.as_ref().unwrap().borrow_view().handle())
+                .sampler(model.sampler);
 
             let descriptor_writes = [
                 vk::WriteDescriptorSet::default()
@@ -522,6 +580,11 @@ impl GalaxyEngine {
 
             unsafe { device.device().update_descriptor_sets(&descriptor_writes, &[]) };
         }
+
+        // Create graphics pipeline.
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .primitive_restart_enable(false);
 
         let pipeline_dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
             .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
@@ -569,6 +632,14 @@ impl GalaxyEngine {
             .color_attachment_formats(slice::from_ref(&device_properties.swapchain_format.format))
             .depth_attachment_format(PhysicalDeviceProperties::DEPTH_STENCIL_FORMAT);
 
+        let shader_stages = model.shader_stages();
+        // Vertex binding.
+        let binding_description = Vertex::binding_description();
+        let attribute_descriptions = Vertex::attribute_descriptions();
+        let vertex_input_info =
+        vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(slice::from_ref(&binding_description))
+            .vertex_attribute_descriptions(&attribute_descriptions);
         let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
             .vertex_input_state(&vertex_input_info)
@@ -583,10 +654,6 @@ impl GalaxyEngine {
             .push_next(&mut dynamic_pipeline_info);
 
         let pipeline = unsafe { device.device().create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None) }.map_err(|(_, e)| e)?[0];
-
-        // Drop shader modules after pipeline creation.
-        unsafe { vertex_shader_module.destroy(&device) };
-        unsafe { fragment_shader_module.destroy(&device) };
 
         // Create command buffer.
         let command_buffer_info = vk::CommandBufferAllocateInfo::default()
@@ -615,10 +682,7 @@ impl GalaxyEngine {
             surface,
             device: ManuallyDrop::new(device),
             swapchain,
-            vertex_buffer,
-            index_buffer,
-            texture_image: Some(texture_image_view),
-            sampler,
+            model,
             descriptor_set_layout,
             descriptor_pool,
             descriptor_sets: descriptor_sets.try_into().unwrap(),
@@ -731,12 +795,12 @@ impl GalaxyEngine {
 
         unsafe { ext.dyn_cmd.cmd_begin_rendering(command_buffer, &rendering_info) }
         unsafe { device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline) };
-        unsafe { device.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.vertex_buffer.handle()), slice::from_ref(&0)) };
-        unsafe { device.cmd_bind_index_buffer(command_buffer, self.index_buffer.handle(), 0, vk::IndexType::UINT16) };
+        unsafe { device.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.model.vertex_buffer.handle()), slice::from_ref(&0)) };
+        unsafe { device.cmd_bind_index_buffer(command_buffer, self.model.index_buffer.handle(), 0, vk::IndexType::UINT32) };
         unsafe { device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline_layout, 0, slice::from_ref(&self.descriptor_sets[current_frame]), &[]) };
         unsafe { device.cmd_set_viewport(command_buffer, 0, &[viewport]) };
         unsafe { device.cmd_set_scissor(command_buffer, 0, &[scissor]) };
-        unsafe { device.cmd_draw_indexed(command_buffer, self.index_buffer.len(), 1, 0, 0, 0) };
+        unsafe { device.cmd_draw_indexed(command_buffer, self.model.index_buffer.len(), 1, 0, 0, 0) };
         unsafe { ext.dyn_cmd.cmd_end_rendering(command_buffer) };
 
         let color_optimal_to_present_src_transition = vk::ImageMemoryBarrier2::default()
@@ -855,7 +919,6 @@ impl GalaxyEngine {
 
 impl Drop for GalaxyEngine {
     fn drop(&mut self) {
-
         self.device.print_allocator_report();
 
         let device = self.device.device();
@@ -887,20 +950,13 @@ impl Drop for GalaxyEngine {
         // Drop descriptor pool.
         unsafe { device.destroy_descriptor_pool(self.descriptor_pool, None) };
 
-        // Drop vertex buffer.
-        unsafe { self.vertex_buffer.destroy(&self.device) }.unwrap_or_else(|e| log::error!("Failed to destroy vertex buffer: {:?}", e));
-        // Drop index buffer.
-        unsafe { self.index_buffer.destroy(&self.device) }.unwrap_or_else(|e| log::error!("Failed to destroy index buffer: {:?}", e));
         // Drop uniform buffers.
         for uniform_buffer in self.uniform_buffers.iter_mut() {
             unsafe { uniform_buffer.destroy(&self.device) }.unwrap_or_else(|e| log::error!("Failed to destroy uniform buffer: {:?}", e));
         }
-        // Drop texture image and view.
-        if let Some(image) = self.texture_image.take() {
-            unsafe { image.destroy(&self.device) };
-        }
-        // Drop sampler.
-        unsafe { device.destroy_sampler(self.sampler, None) };
+
+        // Drop model.
+        unsafe { self.model.destroy(&self.device) }.unwrap_or_else(|e| log::error!("Failed to destroy model: {:?}", e));
 
         // Drop swapchain.
         unsafe { self.swapchain.destroy(&self.device) };
