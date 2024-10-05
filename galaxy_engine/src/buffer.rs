@@ -119,7 +119,7 @@ impl<L: MemLocation> Buffer<L> {
             .size(size);
         unsafe { device.device().cmd_copy_buffer(cmd_buffer.handle(), self.handle(), dst_buffer.handle(), &[copy_region]) };
 
-        Ok(cmd_buffer.end_and_submit(device.get_queue(queue_family))?)
+        Ok(cmd_buffer.end_submit_and_wait(device.get_queue(queue_family))?)
     }
 }
 

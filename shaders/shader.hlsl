@@ -5,12 +5,12 @@ struct UBO {
 };
 
 [[vk::binding(0)]]
-cbuffer UBOBuffer {
+cbuffer CBuffer {
    UBO ubo;
 };
 
 struct VSInput {
-    [[vk::location(0)]] float2 position: POSITION;
+    [[vk::location(0)]] float3 position: POSITION;
     [[vk::location(1)]] float3 color: COLOR;
     [[vk::location(2)]] float2 tex_coord: TEXCOORD0;
 };
@@ -23,7 +23,7 @@ struct VSToFS {
 
 VSToFS mainVS(VSInput input) {
     VSToFS output;
-    output.position = mul(ubo.proj, mul(ubo.view, mul(ubo.model, float4(input.position.xy, 0.0, 1.0))));
+    output.position = mul(ubo.proj, mul(ubo.view, mul(ubo.model, float4(input.position, 1.0))));
     output.color = input.color;
     output.tex_coord = input.tex_coord;
     return output;

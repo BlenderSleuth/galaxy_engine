@@ -2,21 +2,22 @@ use std::slice;
 use ash::{khr, vk};
 use ash::prelude::VkResult;
 
-use crate::device::{Device, PropertyQueueList};
-use crate::image::ImageView;
+use crate::device::{Device, PhysicalDeviceProperties, PropertyQueueList};
+use crate::engine::MemResult;
+use crate::image::{Image, ImageView, ImageWithView};
 use crate::surface::Surface;
 
-//#[ouroboros::self_referencing]
 pub struct Swapchain {
     loader: khr::swapchain::Device,
     handle: vk::SwapchainKHR,
     images: Vec<vk::Image>,
     image_views: Vec<ImageView<'static>>,
+    depth_image_view: Option<ImageWithView>,
     extent: vk::Extent2D,
 }
 
 impl Swapchain {
-    pub fn new(instance: &ash::Instance, device: &Device, surface: &Surface, window_size: vk::Extent2D, old_swapchain: Option<&Swapchain>) -> VkResult<Self> {
+    pub fn new(instance: &ash::Instance, device: &Device, gfx_cmd_pool: vk::CommandPool, surface: &Surface, window_size: vk::Extent2D, old_swapchain: Option<&Swapchain>) -> MemResult<Self> {
         let device_properties = device.get_properties();
         let unique_queue_families = device_properties.get_unique_queue_families();
 
@@ -79,7 +80,32 @@ impl Swapchain {
             ImageView::new_external(*swapchain_image, image_view)
         }).collect::<VkResult<Vec<_>>>()?;
 
-        Ok(Self { loader, handle, images, image_views, extent: swapchain_extent })
+        // Create depth image.
+        let depth_image_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .extent(vk::Extent3D { width: swapchain_extent.width, height: swapchain_extent.height, depth: 1 })
+            .mip_levels(1)
+            .array_layers(1)
+            .format(PhysicalDeviceProperties::DEPTH_STENCIL_FORMAT)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .samples(vk::SampleCountFlags::TYPE_1);
+        let depth_image = Image::new(&device, &depth_image_info)?;
+        depth_image.transition_layout(
+            &device,
+            gfx_cmd_pool,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL,
+            None,
+            None,
+        )?;
+
+        let depth_image_view = Some(ImageWithView::from_image(&device, depth_image, vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL)?);
+
+        Ok(Self { loader, handle, images, image_views, depth_image_view, extent: swapchain_extent })
     }
 
     pub fn get_extent(&self) -> vk::Extent2D {
@@ -92,6 +118,10 @@ impl Swapchain {
 
     pub fn get_image_views(&self) -> &[ImageView] {
         &self.image_views
+    }
+
+    pub fn get_depth_view(&self) -> &ImageView {
+        self.depth_image_view.as_ref().unwrap().borrow_view()
     }
 
     pub fn get_subresource_range(&self) -> vk::ImageSubresourceRange {
@@ -117,6 +147,11 @@ impl Swapchain {
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {
+        // Drop depth image and view.
+        if let Some(depth_image) = self.depth_image_view.take() {
+            unsafe { depth_image.destroy(device) };
+        }
+
         // Drop image views.
         for image_view in self.image_views.iter() {
             unsafe { device.device().destroy_image_view(*image_view.handle(), None) };

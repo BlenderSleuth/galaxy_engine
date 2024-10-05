@@ -61,7 +61,7 @@ pub struct PhysicalDeviceProperties {
 //noinspection RsUnresolvedPath
 pub type PropertyQueueList = ArrayVec<u32, { PhysicalDeviceProperties::MAX_QUEUE_FAMILIES }>;
 impl PhysicalDeviceProperties {
-    const DEPTH_STENCIL_FORMAT: vk::Format = vk::Format::D32_SFLOAT_S8_UINT;
+    pub(crate) const DEPTH_STENCIL_FORMAT: vk::Format = vk::Format::D32_SFLOAT_S8_UINT;
     const MAX_QUEUE_FAMILIES: usize = 3;
 
     pub fn get_unique_queue_families(&self) -> PropertyQueueList {
@@ -368,7 +368,7 @@ impl Device {
 
         unsafe { self.device.cmd_copy_buffer_to_image(cmd_buffer.handle(), buffer.handle(), image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]) };
 
-        cmd_buffer.end_and_submit(self.get_queue(queue))
+        cmd_buffer.end_submit_and_wait(self.get_queue(queue))
     }
 }
 

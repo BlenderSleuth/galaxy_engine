@@ -17,6 +17,7 @@ use device::Device;
 use maths::VkPerspective;
 use surface::Surface;
 use swapchain::Swapchain;
+use crate::device::PhysicalDeviceProperties;
 use crate::image::{Image, ImageWithView};
 
 #[derive(thiserror::Error, Debug)]
@@ -143,7 +144,7 @@ impl DebugMessenger {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
 struct Vertex {
-    pos: na::Vector2<f32>,
+    pos: na::Vector3<f32>,
     color: na::Vector3<f32>,
     tex_coord: na::Vector2<f32>,
 }
@@ -161,7 +162,7 @@ impl Vertex {
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .location(0)
-                .format(vk::Format::R32G32_SFLOAT)
+                .format(vk::Format::R32G32B32_SFLOAT)
                 .offset(std::mem::offset_of!(Vertex, pos) as u32),
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
@@ -177,13 +178,22 @@ impl Vertex {
     }
 }
 
-const VERTICES: [Vertex; 4] = [
-    Vertex { pos: maths::Vec2::new(-0.5, -0.5), color: maths::Vec3::new(1., 0., 0.), tex_coord: maths::Vec2::new(1., 0.) },
-    Vertex { pos: maths::Vec2::new(0.5, -0.5), color: maths::Vec3::new(0., 1., 0.), tex_coord: maths::Vec2::new(0., 0.) },
-    Vertex { pos: maths::Vec2::new(0.5, 0.5), color: maths::Vec3::new(0., 0., 1.), tex_coord: maths::Vec2::new(0., 1.) },
-    Vertex { pos: maths::Vec2::new(-0.5, 0.5), color: maths::Vec3::new(1., 1., 1.), tex_coord: maths::Vec2::new(1., 1.) },
+const VERTICES: [Vertex; 8] = [
+    // Top square:
+    Vertex { pos: maths::Vec3::new(-0.5, -0.5, 0.), color: maths::Vec3::new(1., 0., 0.), tex_coord: maths::Vec2::new(1., 0.) },
+    Vertex { pos: maths::Vec3::new(0.5, -0.5, 0.), color: maths::Vec3::new(0., 1., 0.), tex_coord: maths::Vec2::new(0., 0.) },
+    Vertex { pos: maths::Vec3::new(0.5, 0.5, 0.), color: maths::Vec3::new(0., 0., 1.), tex_coord: maths::Vec2::new(0., 1.) },
+    Vertex { pos: maths::Vec3::new(-0.5, 0.5, 0.), color: maths::Vec3::new(1., 1., 1.), tex_coord: maths::Vec2::new(1., 1.) },
+    // Bottom square:
+    Vertex { pos: maths::Vec3::new(-0.5, -0.5, -0.5), color: maths::Vec3::new(1., 0., 0.), tex_coord: maths::Vec2::new(1., 0.) },
+    Vertex { pos: maths::Vec3::new(0.5, -0.5, -0.5), color: maths::Vec3::new(0., 1., 0.), tex_coord: maths::Vec2::new(0., 0.) },
+    Vertex { pos: maths::Vec3::new(0.5, 0.5, -0.5), color: maths::Vec3::new(0., 0., 1.), tex_coord: maths::Vec2::new(0., 1.) },
+    Vertex { pos: maths::Vec3::new(-0.5, 0.5, -0.5), color: maths::Vec3::new(1., 1., 1.), tex_coord: maths::Vec2::new(1., 1.) },
 ];
-const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
+const INDICES: [u16; 12] = [
+    0, 1, 2, 2, 3, 0,
+    4, 5, 6, 6, 7, 4
+];
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
@@ -279,9 +289,6 @@ impl GalaxyEngine {
         let device = Device::new(&instance, &surface)?;
         let device_properties = device.get_properties();
 
-        // Create swapchain.
-        let window_size = vk::Extent2D { width, height };
-        let swapchain = Swapchain::new(&instance, &device, &surface, window_size, None)?;
 
         // Create command pools.
         let command_pool_info = vk::CommandPoolCreateInfo::default()
@@ -289,6 +296,10 @@ impl GalaxyEngine {
             .queue_family_index(device_properties.graphics_queue_family_idx);
         let graphics_cmd_pool = unsafe { device.device().create_command_pool(&command_pool_info, None) }?;
         let transfer_cmd_pool = device.create_transient_command_pool(QueueFamily::Transfer)?;
+
+        // Create swapchain.
+        let window_size = vk::Extent2D { width, height };
+        let swapchain = Swapchain::new(&instance, &device, graphics_cmd_pool, &surface, window_size, None)?;
 
         // Load texture.
         let image = image::open("textures/texture.jpg").unwrap().to_rgba8();
@@ -316,14 +327,30 @@ impl GalaxyEngine {
 
         let texture_image = Image::new(&device, &texture_image_info)?;
 
-        texture_image.transition_layout(&device, graphics_cmd_pool, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL)?;
+        texture_image.transition_layout(
+            &device,
+            graphics_cmd_pool,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageAspectFlags::COLOR,
+            None,
+            None,
+        )?;
         device.copy_buffer_to_image(graphics_cmd_pool, &image_buffer, texture_image.handle(), image.width(), image.height(), QueueFamily::Graphics)?;
-        texture_image.transition_layout(&device, graphics_cmd_pool, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)?;
+        texture_image.transition_layout(
+            &device,
+            graphics_cmd_pool,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::ImageAspectFlags::COLOR,
+            None,
+            None,
+        )?;
 
         unsafe { image_buffer.destroy(&device) }?;
 
         // Create texture image view.
-        let texture_image_pair = ImageWithView::from_image(&device, texture_image, vk::ImageAspectFlags::COLOR)?;
+        let texture_image_view = ImageWithView::from_image(&device, texture_image, vk::ImageAspectFlags::COLOR)?;
 
         // Create texture sampler.
         let max_anisotropy = device.get_properties().properties.limits.max_sampler_anisotropy;
@@ -475,7 +502,7 @@ impl GalaxyEngine {
 
             let image_info = vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(*texture_image_pair.borrow_view().handle())
+                .image_view(*texture_image_view.borrow_view().handle())
                 .sampler(sampler);
 
             let descriptor_writes = [
@@ -516,23 +543,31 @@ impl GalaxyEngine {
             .sample_shading_enable(false)
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
-        let color_format = device_properties.swapchain_format.format;
-
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
             .blend_enable(false);
-        let color_blend_attachments = [color_blend_attachment];
 
         let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
             .logic_op_enable(false)
-            .attachments(&color_blend_attachments);
+            .attachments(slice::from_ref(&color_blend_attachment));
+
+        let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(true)
+            .depth_compare_op(vk::CompareOp::LESS)
+            .min_depth_bounds(0.0)
+            .max_depth_bounds(1.0)
+            .stencil_test_enable(false)
+            .front(Default::default())
+            .back(Default::default());
 
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(slice::from_ref(&descriptor_set_layout));
         let pipeline_layout = unsafe { device.device().create_pipeline_layout(&pipeline_layout_info, None) }?;
 
         let mut dynamic_pipeline_info = vk::PipelineRenderingCreateInfo::default()
-            .color_attachment_formats(slice::from_ref(&color_format));
+            .color_attachment_formats(slice::from_ref(&device_properties.swapchain_format.format))
+            .depth_attachment_format(PhysicalDeviceProperties::DEPTH_STENCIL_FORMAT);
 
         let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
@@ -542,6 +577,7 @@ impl GalaxyEngine {
             .rasterization_state(&rasterizer)
             .multisample_state(&multisampling)
             .color_blend_state(&color_blend_state)
+            .depth_stencil_state(&depth_stencil_state)
             .dynamic_state(&pipeline_dynamic_state)
             .layout(pipeline_layout)
             .push_next(&mut dynamic_pipeline_info);
@@ -581,7 +617,7 @@ impl GalaxyEngine {
             swapchain,
             vertex_buffer,
             index_buffer,
-            texture_image: Some(texture_image_pair),
+            texture_image: Some(texture_image_view),
             sampler,
             descriptor_set_layout,
             descriptor_pool,
@@ -679,10 +715,19 @@ impl GalaxyEngine {
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::STORE)
             .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } });
+
+        let depth_attachment_info = vk::RenderingAttachmentInfo::default()
+            .image_view(*self.swapchain.get_depth_view().handle())
+            .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .clear_value(vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 } });
+
         let rendering_info = vk::RenderingInfo::default()
             .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent: swapchain_extent })
             .layer_count(1)
-            .color_attachments(slice::from_ref(&color_attachment_info));
+            .color_attachments(slice::from_ref(&color_attachment_info))
+            .depth_attachment(&depth_attachment_info);
 
         unsafe { ext.dyn_cmd.cmd_begin_rendering(command_buffer, &rendering_info) }
         unsafe { device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline) };
@@ -731,9 +776,9 @@ impl GalaxyEngine {
         Ok(())
     }
 
-    fn recreate_swapchain(&mut self) -> VkResult<()> {
+    fn recreate_swapchain(&mut self) -> MemResult<()> {
         unsafe { self.device.device().device_wait_idle() }?;
-        let new_swapchain = Swapchain::new(&self.instance, &self.device, &self.surface, self.window_size, Some(&self.swapchain))?;
+        let new_swapchain = Swapchain::new(&self.instance, &self.device, self.graphics_cmd_pool, &self.surface, self.window_size, Some(&self.swapchain))?;
         unsafe { self.swapchain.destroy(&self.device) };
         self.swapchain = new_swapchain;
         Ok(())
@@ -810,6 +855,9 @@ impl GalaxyEngine {
 
 impl Drop for GalaxyEngine {
     fn drop(&mut self) {
+
+        self.device.print_allocator_report();
+
         let device = self.device.device();
 
         unsafe { device.device_wait_idle() }.unwrap_or_else(|e| log::error!("Failed to wait for device idle: {:?}", e));

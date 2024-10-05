@@ -139,24 +139,30 @@ impl Image {
         self.handle
     }
 
-    pub fn transition_layout(&self, device: &Device, cmd_pool: vk::CommandPool, _format: vk::Format, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout) -> VkResult<()> {
+    pub fn transition_layout(&self, device: &Device, cmd_pool: vk::CommandPool, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout, aspect: vk::ImageAspectFlags, src_queue: Option<QueueFamily>, dst_queue: Option<QueueFamily>) -> VkResult<()> {
         let cmd_buffer = CommandBuffer::begin_one_time(device, cmd_pool)?;
 
         let mut image_barrier = vk::ImageMemoryBarrier2::default()
             .old_layout(old_layout)
             .new_layout(new_layout)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .src_queue_family_index(src_queue.map(|q| device.get_queue_family_idx(q)).unwrap_or(vk::QUEUE_FAMILY_IGNORED))
+            .dst_queue_family_index(dst_queue.map(|q| device.get_queue_family_idx(q)).unwrap_or(vk::QUEUE_FAMILY_IGNORED))
             .image(self.handle)
             .subresource_range(vk::ImageSubresourceRange::default()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .aspect_mask(aspect)
                 .base_mip_level(0)
-                .layer_count(1)
-                .base_array_layer(0)
                 .level_count(1)
+                .base_array_layer(0)
+                .layer_count(1)
             );
 
-        if old_layout == vk::ImageLayout::UNDEFINED && new_layout == vk::ImageLayout::TRANSFER_DST_OPTIMAL {
+        if old_layout == vk::ImageLayout::UNDEFINED && new_layout == vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL {
+            image_barrier.src_access_mask = vk::AccessFlags2KHR::empty(); // Not waiting on any access.
+            image_barrier.dst_access_mask = vk::AccessFlags2KHR::DEPTH_STENCIL_ATTACHMENT_READ | vk::AccessFlags2KHR::DEPTH_STENCIL_ATTACHMENT_WRITE;
+
+            image_barrier.src_stage_mask = vk::PipelineStageFlags2::TOP_OF_PIPE; // Earliest possible stage.
+            image_barrier.dst_stage_mask = vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS;
+        } else if old_layout == vk::ImageLayout::UNDEFINED && new_layout == vk::ImageLayout::TRANSFER_DST_OPTIMAL {
             image_barrier.src_access_mask = vk::AccessFlags2KHR::empty(); // Not waiting on any access.
             image_barrier.dst_access_mask = vk::AccessFlags2KHR::TRANSFER_WRITE;
 
@@ -178,7 +184,7 @@ impl Image {
 
         unsafe { device.ext().sync2.cmd_pipeline_barrier2(cmd_buffer.handle(), &dependency_info) };
 
-        cmd_buffer.end_and_submit(device.get_queue(QueueFamily::Graphics))
+        cmd_buffer.end_submit_and_wait(device.get_queue(QueueFamily::Graphics))
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {

@@ -26,11 +26,16 @@ impl <'a> CommandBuffer<'a> {
         self.handle
     }
 
-    pub fn end_and_submit(self, queue: vk::Queue) -> VkResult<()> {
+    pub fn end_and_submit(&self, queue: vk::Queue) -> VkResult<()> {
         unsafe { self.device.device().end_command_buffer(self.handle) }?;
         let submit_info = vk::SubmitInfo::default()
             .command_buffers(slice::from_ref(&self.handle));
         unsafe { self.device.device().queue_submit(queue, &[submit_info], vk::Fence::null()) }?;
+        Ok(())
+    }
+
+    pub fn end_submit_and_wait(self, queue: vk::Queue) -> VkResult<()> {
+        self.end_and_submit(queue)?;
         unsafe { self.device.device().queue_wait_idle(queue) }?;
         // Command buffer is freed in Drop.
         Ok(())
