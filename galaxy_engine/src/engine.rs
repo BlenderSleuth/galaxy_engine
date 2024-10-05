@@ -3,7 +3,6 @@ use std::fs::File;
 use std::io::BufReader;
 use std::mem::ManuallyDrop;
 use std::slice;
-
 use ash::prelude::VkResult;
 use ash::{ext, vk};
 use meshopt::VertexDataAdapter;
@@ -228,8 +227,6 @@ pub enum ModelError {
     IoError(#[from] std::io::Error),
     #[error("Obj error: {0}")]
     ObjError(#[from] obj::ObjError),
-    #[error("Image error: {0}")]
-    ImageError(#[from] image::ImageError),
     #[error("Model vulkan error: {0}")]
     VulkanError(#[from] vk::Result),
     #[error("Memory error: {0}")]
@@ -247,59 +244,26 @@ struct Model {
 
 impl Model {
     pub const MODEL_PATH: &'static str = "assets/viking_room.obj";
-    pub const TEXTURE_PATH: &'static str = "assets/viking_room.png";
+    pub const TEXTURE_PATH: &'static str = "assets/viking_room.ktx2";
 
     pub fn new(device: &Device, gfx_cmd_pool: vk::CommandPool) -> Result<Self, ModelError> {
         // Load texture.
-        let image = image::open(Model::TEXTURE_PATH)?.to_rgba8();
-
-        let mut image_buffer = Buffer::<CpuToGpu>::new_for_typed_data(
-            &device,
-            "Image Buffer",
-            &image,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::SharingMode::EXCLUSIVE,
-        )?;
-        image_buffer.copy_into_buffer(&image)?;
-
-        let texture_image_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .extent(vk::Extent3D { width: image.width(), height: image.height(), depth: 1 })
-            .mip_levels(1)
-            .array_layers(1)
-            .format(vk::Format::R8G8B8A8_SRGB)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .samples(vk::SampleCountFlags::TYPE_1);
-
-        let texture_image = Image::new(&device, &texture_image_info)?;
-
-        texture_image.transition_layout(
-            &device,
+        let image_file = std::fs::read(Self::TEXTURE_PATH)?;
+        let image = ktx2::Reader::new(image_file).unwrap();
+        let header = image.header();
+        let mip_levels = image.levels().collect::<Vec<_>>();
+        let extent = vk::Extent3D { width: header.pixel_width, height: header.pixel_height, depth: 1 };
+        let texture_image = Image::new_from_levels(
+            device,
             gfx_cmd_pool,
-            vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            vk::ImageAspectFlags::COLOR,
-            None,
-            None,
+            &mip_levels,
+            vk::ImageType::TYPE_2D,
+            extent,
+            header.format.map(utils::ktx_to_vulkan_format).unwrap_or(vk::Format::R8G8B8A8_SRGB),
         )?;
-        device.copy_buffer_to_image(gfx_cmd_pool, &image_buffer, texture_image.handle(), image.width(), image.height(), QueueFamily::Graphics)?;
-        texture_image.transition_layout(
-            &device,
-            gfx_cmd_pool,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            vk::ImageAspectFlags::COLOR,
-            None,
-            None,
-        )?;
-
-        unsafe { image_buffer.destroy(&device) }?;
 
         // Create texture image view.
-        let texture_image_view = ImageWithView::from_image(&device, texture_image, vk::ImageAspectFlags::COLOR)?;
+        let texture_image_view = ImageWithView::from_image(&device, texture_image)?;
 
         // Create texture sampler.
         let max_anisotropy = device.get_properties().properties.limits.max_sampler_anisotropy;
@@ -357,7 +321,7 @@ impl Model {
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
             vk::SharingMode::EXCLUSIVE,
         )?;
-        vertex_buffer.copy_via_staging_buffer(&device, gfx_cmd_pool, bytemuck::must_cast_slice(vertices.as_slice()), QueueFamily::Graphics)?;
+        vertex_buffer.copy_via_staging_buffer(&device, bytemuck::must_cast_slice(vertices.as_slice()), gfx_cmd_pool, QueueFamily::Graphics)?;
 
         // Index buffer.
         let mut index_buffer = Buffer::<GpuOnly>::new_for_typed_data(
@@ -367,7 +331,7 @@ impl Model {
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
             vk::SharingMode::EXCLUSIVE,
         )?;
-        index_buffer.copy_via_staging_buffer(&device, gfx_cmd_pool, bytemuck::must_cast_slice(indices.as_slice()), QueueFamily::Graphics)?;
+        index_buffer.copy_via_staging_buffer(&device, bytemuck::must_cast_slice(indices.as_slice()), gfx_cmd_pool, QueueFamily::Graphics)?;
 
         Ok(Self {
             vertex_buffer,
@@ -723,7 +687,7 @@ impl GalaxyEngine {
         };
 
         // Copy UBO to uniform buffer.
-        self.uniform_buffers[current_frame].copy_into_buffer(bytemuck::bytes_of(&ubo))?;
+        self.uniform_buffers[current_frame].copy_into_buffer(bytemuck::bytes_of(&ubo), 0)?;
 
         // Wait for fence.
         unsafe { device.wait_for_fences(&[self.in_flight_fences[current_frame]], true, u64::MAX) }?;

@@ -1,11 +1,12 @@
 use std::slice;
 use ash::{khr, vk};
 use ash::prelude::VkResult;
-
+use crate::command_buffer::CommandBuffer;
 use crate::device::{Device, PhysicalDeviceProperties, PropertyQueueList};
 use crate::engine::MemResult;
 use crate::image::{Image, ImageView, ImageWithView};
 use crate::surface::Surface;
+use crate::utils;
 
 pub struct Swapchain {
     loader: khr::swapchain::Device,
@@ -92,18 +93,23 @@ impl Swapchain {
             .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .samples(vk::SampleCountFlags::TYPE_1);
-        let depth_image = Image::new(&device, &depth_image_info)?;
+        let depth_subresource = vk::ImageSubresourceRange {
+            aspect_mask: utils::get_aspect_for_format(PhysicalDeviceProperties::DEPTH_STENCIL_FORMAT),
+            ..utils::DEFAULT_SUBRESOURCE_RANGE
+        };
+
+        let mut depth_image = Image::new(&device, &depth_image_info, depth_subresource)?;
         depth_image.transition_layout(
             &device,
-            gfx_cmd_pool,
+            CommandBuffer::one_time_transient(&device, gfx_cmd_pool)?,
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL,
+            None,
             None,
             None,
         )?;
 
-        let depth_image_view = Some(ImageWithView::from_image(&device, depth_image, vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL)?);
+        let depth_image_view = Some(ImageWithView::from_image(&device, depth_image)?);
 
         Ok(Self { loader, handle, images, image_views, depth_image_view, extent: swapchain_extent })
     }

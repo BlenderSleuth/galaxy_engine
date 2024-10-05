@@ -2,7 +2,7 @@ use ash::vk;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
 
 use crate::buffer::mem_location::*;
-use crate::command_buffer::CommandBuffer;
+use crate::command_buffer::{CommandBuffer, TransientOrPersistentCommandBuffer};
 use crate::device::{Device, QueueFamily};
 use crate::engine::{MemResult, MemoryError};
 use crate::utils;
@@ -112,19 +112,19 @@ impl<L: MemLocation> Buffer<L> {
         }
     }
 
-    pub fn copy_to_buffer<L2: MemLocation>(&self, cmd_pool: vk::CommandPool, device: &Device, dst_buffer: &mut Buffer<L2>, size: vk::DeviceSize, queue_family: QueueFamily) -> MemResult<()> {
-        let cmd_buffer = CommandBuffer::begin_one_time(device, cmd_pool)?;
+    pub fn copy_to_buffer<L2: MemLocation>(&self, cmd: TransientOrPersistentCommandBuffer, device: &Device, dst_buffer: &mut Buffer<L2>, size: vk::DeviceSize, queue_family: QueueFamily) -> MemResult<()> {
+        let cmd_buffer = cmd.command_buffer();
 
         let copy_region = vk::BufferCopy::default()
             .size(size);
         unsafe { device.device().cmd_copy_buffer(cmd_buffer.handle(), self.handle(), dst_buffer.handle(), &[copy_region]) };
 
-        Ok(cmd_buffer.end_submit_and_wait(device.get_queue(queue_family))?)
+        Ok(cmd.maybe_end_submit_and_wait(device, device.get_queue(queue_family))?)
     }
 }
 
 impl Buffer<GpuOnly> {
-    pub fn copy_via_staging_buffer(&mut self, device: &Device, transfer_cmd_pool: vk::CommandPool, src_data: &[u8], queue_family: QueueFamily) -> MemResult<()> {
+    pub fn copy_via_staging_buffer(&mut self, device: &Device, src_data: &[u8], cmd_pool: vk::CommandPool, queue_family: QueueFamily) -> MemResult<()> {
         let mut staging_buffer = Buffer::<CpuToGpu>::new(
             &device,
             "Staging Buffer",
@@ -133,19 +133,19 @@ impl Buffer<GpuOnly> {
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::SharingMode::EXCLUSIVE,
         )?;
-        staging_buffer.copy_into_buffer(&src_data)?;
-        staging_buffer.copy_to_buffer(transfer_cmd_pool, &device, self, staging_buffer.size(), queue_family)?;
+        staging_buffer.copy_into_buffer(&src_data, 0)?;
+        staging_buffer.copy_to_buffer(CommandBuffer::one_time_transient(device, cmd_pool)?, &device, self, staging_buffer.size(), queue_family)?;
         unsafe { staging_buffer.destroy(&device) }?;
         Ok(())
     }
 }
 
 impl Buffer<CpuToGpu> {
-    pub fn copy_into_buffer(&mut self, data: &[u8]) -> MemResult<()> {
+    pub fn copy_into_buffer(&mut self, data: &[u8], offset: usize) -> MemResult<()> {
         let allocation = self.allocation.as_mut().ok_or(MemoryError::NotAllocated("Buffer"))?;
         // CPU to GPU memory is always mappable.
         let mut memory = allocation.try_as_mapped_slab().unwrap();
-        presser::copy_from_slice_to_offset_with_align(data, &mut memory, 0, 1)?;
+        presser::copy_from_slice_to_offset_with_align(data, &mut memory, offset, 1)?;
         Ok(())
     }
 }

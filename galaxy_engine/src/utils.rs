@@ -2,6 +2,33 @@ use std::ffi::{c_char, CStr};
 use std::str::from_utf8;
 use ash::vk;
 
+pub(crate) const DEFAULT_SUBRESOURCE_RANGE: vk::ImageSubresourceRange =
+    vk::ImageSubresourceRange {
+        aspect_mask: vk::ImageAspectFlags::COLOR,
+        base_mip_level: 0,
+        level_count: 1,
+        base_array_layer: 0,
+        layer_count: 1,
+    };
+
+pub(crate) fn get_aspect_for_format(format: vk::Format) -> vk::ImageAspectFlags {
+    use vk::Format;
+    match format {
+        Format::D16_UNORM | Format::D32_SFLOAT => vk::ImageAspectFlags::DEPTH,
+        Format::S8_UINT => vk::ImageAspectFlags::STENCIL,
+        Format::D16_UNORM_S8_UINT | Format::D24_UNORM_S8_UINT | Format::D32_SFLOAT_S8_UINT => vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL,
+        _ => vk::ImageAspectFlags::COLOR,
+    }
+}
+
+pub(crate) fn ktx_to_vulkan_format(format: ktx2::Format) -> vk::Format {
+    use ktx2::Format;
+    match format {
+        Format::R8G8B8A8_SRGB => vk::Format::R8G8B8A8_SRGB,
+        _ => unimplemented!(),
+    }
+}
+
 pub(crate) fn use_dedicated_allocation(dedicated_requirements: vk::MemoryDedicatedRequirements) -> bool {
     dedicated_requirements.requires_dedicated_allocation == vk::TRUE
         || dedicated_requirements.prefers_dedicated_allocation == vk::TRUE

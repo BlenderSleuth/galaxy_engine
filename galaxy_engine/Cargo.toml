@@ -19,7 +19,6 @@ env_logger = "0.11.5"
 thiserror = "1.0.64"
 nalgebra = { version = "0.33.0", features = ["bytemuck"] }
 bytemuck = { version = "1.18.0", features = ["derive", "must_cast"] }
-image =  { version = "0.25.2", default-features = false, features = ["jpeg", "png"] }
 gpu-allocator =  { version = "0.27.0", default-features = false, features = ["vulkan"] }
 presser = "0.3.1"
 arrayvec = "0.7.6"
@@ -27,3 +26,4 @@ itertools = "0.13.0"
 ouroboros = "0.18.4"
 obj-rs = "0.7.4"
 meshopt = "0.3.0"
+ktx2 = "0.3.0"

@@ -1,15 +1,12 @@
 use std::cell::RefCell;
 use std::mem::{ManuallyDrop, MaybeUninit};
-
+use std::sync::Arc;
 use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::{khr, vk};
 use gpu_allocator::vulkan::{AllocationCreateDesc, Allocator, AllocatorCreateDesc};
 use itertools::Itertools;
 
-use crate::buffer::Buffer;
-use crate::buffer::mem_location::MemLocation;
-use crate::command_buffer::CommandBuffer;
 use crate::engine::MemResult;
 use crate::surface::Surface;
 use crate::utils;
@@ -74,7 +71,7 @@ impl PhysicalDeviceProperties {
 }
 
 pub struct Device {
-    device: ash::Device,
+    device: ManuallyDrop<Arc<ash::Device>>,
     ext: LoadedExtensions,
     allocator: RefCell<ManuallyDrop<Allocator>>,
     graphics_queue: vk::Queue,
@@ -278,7 +275,7 @@ impl Device {
         let ext = LoadedExtensions::new(&instance, &device);
 
         Ok(Self {
-            device,
+            device: ManuallyDrop::new(Arc::new(device)),
             ext,
             allocator: RefCell::new(ManuallyDrop::new(allocator)),
             graphics_queue,
@@ -288,7 +285,7 @@ impl Device {
         })
     }
 
-    pub fn device(&self) -> &ash::Device {
+    pub fn device(&self) -> &Arc<ash::Device> {
         &self.device
     }
 
@@ -350,34 +347,14 @@ impl Device {
         unsafe { self.device.create_command_pool(&command_pool_info, None) }
     }
 
-    pub fn copy_buffer_to_image<L: MemLocation>(&self, cmd_pool: vk::CommandPool, buffer: &Buffer<L>, image: vk::Image, width: u32, height: u32, queue: QueueFamily) -> VkResult<()> {
-        let cmd_buffer = CommandBuffer::begin_one_time(self, cmd_pool)?;
-
-        let region = vk::BufferImageCopy::default()
-            .buffer_offset(0)
-            .buffer_row_length(0)
-            .buffer_image_height(0)
-            .image_subresource(vk::ImageSubresourceLayers::default()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                .mip_level(0)
-                .base_array_layer(0)
-                .layer_count(1)
-            )
-            .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
-            .image_extent(vk::Extent3D { width, height, depth: 1 });
-
-        unsafe { self.device.cmd_copy_buffer_to_image(cmd_buffer.handle(), buffer.handle(), image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]) };
-
-        cmd_buffer.end_submit_and_wait(self.get_queue(queue))
-    }
 }
 
 impl Drop for Device {
     fn drop(&mut self) {
         // Drop allocator.
         unsafe { ManuallyDrop::drop(self.allocator.get_mut()) };
-        // Drop device.
-        unsafe { self.device.destroy_device(None) };
+        // Drop device. Ensures this is the last reference to the device.
+        unsafe { Arc::into_inner(ManuallyDrop::take(&mut self.device)).unwrap().destroy_device(None) };
     }
 }
 
