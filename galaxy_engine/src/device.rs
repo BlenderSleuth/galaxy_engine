@@ -18,6 +18,8 @@ use crate::utils;
 pub enum DeviceInitError {
     #[error("No physical devices found.")]
     NoPhysicalDevices,
+    #[error("No compatible physical devices found.")]
+    NoCompatiblePhysicalDevices,
     #[error("Vulkan function failed with the error: {0}")]
     VulkanError(#[from] vk::Result),
     #[error("Allocator error: {0}")]
@@ -53,6 +55,7 @@ pub struct PhysicalDeviceProperties {
     pub swapchain_format: vk::SurfaceFormatKHR,
     pub presentation_mode: vk::PresentModeKHR,
     pub image_count: u32,
+    pub properties: vk::PhysicalDeviceProperties,
 }
 
 //noinspection RsUnresolvedPath
@@ -180,15 +183,22 @@ impl Device {
                 image_count = surface_capabilities.max_image_count;
             }
 
-            let physical_device_properties = unsafe { instance.get_physical_device_properties(*physical_device) };
+            let mut physical_device_properties = vk::PhysicalDeviceProperties2::default();
+            unsafe { instance.get_physical_device_properties2(*physical_device, &mut physical_device_properties) };
+            let physical_device_properties = physical_device_properties.properties;
 
-            let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default();
+            let mut buffer_device_address_features = vk::PhysicalDeviceVulkan12Features::default();
             let mut physical_device_features = vk::PhysicalDeviceFeatures2::default()
-                .push_next(&mut dynamic_rendering_features);
+                .push_next(&mut buffer_device_address_features);
             unsafe { instance.get_physical_device_features2(*physical_device, &mut physical_device_features) };
 
-            // Require dynamic rendering support.
-            if dynamic_rendering_features.dynamic_rendering == vk::FALSE {
+            // Require anisotropic filtering support.
+            if physical_device_features.features.sampler_anisotropy == vk::FALSE {
+                continue;
+            }
+
+            // Require buffer_device_address support.
+            if buffer_device_address_features.buffer_device_address == vk::FALSE {
                 continue;
             }
 
@@ -201,6 +211,7 @@ impl Device {
                 swapchain_format,
                 presentation_mode,
                 image_count,
+                properties: physical_device_properties,
             };
 
             // Prefer discrete GPU.
@@ -210,7 +221,7 @@ impl Device {
         }
 
         let Some(current_device_properties) = current_device_properties else {
-            return Err(DeviceInitError::NoPhysicalDevices);
+            return Err(DeviceInitError::NoCompatiblePhysicalDevices);
         };
 
         let unique_queue_families = current_device_properties.get_unique_queue_families();
@@ -232,7 +243,8 @@ impl Device {
         let mut synchronization2_features = vk::PhysicalDeviceSynchronization2Features::default()
             .synchronization2(true);
 
-        let device_features = vk::PhysicalDeviceFeatures::default();
+        let device_features = vk::PhysicalDeviceFeatures::default()
+            .sampler_anisotropy(true);
         let mut device_features_12 = vk::PhysicalDeviceVulkan12Features::default()
             .buffer_device_address(true);
 
@@ -241,9 +253,9 @@ impl Device {
             .queue_create_infos(&queue_infos)
             .enabled_features(&device_features)
             .enabled_extension_names(&device_extensions)
-            .push_next(&mut device_features_12)
             .push_next(&mut dynamic_rendering_features)
-            .push_next(&mut synchronization2_features);
+            .push_next(&mut synchronization2_features)
+            .push_next(&mut device_features_12);
 
         let device = unsafe { instance.create_device(current_device_properties.physical_device, &device_info, None) }?;
 
@@ -337,7 +349,6 @@ impl Device {
             .queue_family_index(self.get_queue_family_idx(queue_family));
         unsafe { self.device.create_command_pool(&command_pool_info, None) }
     }
-
 
     pub fn copy_buffer_to_image<L: MemLocation>(&self, cmd_pool: vk::CommandPool, buffer: &Buffer<L>, image: vk::Image, width: u32, height: u32, queue: QueueFamily) -> VkResult<()> {
         let cmd_buffer = CommandBuffer::begin_one_time(self, cmd_pool)?;

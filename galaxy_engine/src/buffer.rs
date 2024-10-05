@@ -5,6 +5,7 @@ use crate::buffer::mem_location::*;
 use crate::command_buffer::CommandBuffer;
 use crate::device::{Device, QueueFamily};
 use crate::engine::{MemResult, MemoryError};
+use crate::utils;
 
 pub mod mem_location {
     use gpu_allocator::MemoryLocation;
@@ -58,14 +59,27 @@ impl<L: MemLocation> Buffer<L> {
             .queue_family_indices(if sharing_mode == vk::SharingMode::CONCURRENT { &queue_indices } else { &[] });
         let handle = unsafe { device.device().create_buffer(&buffer_info, None) }?;
 
-        // Allocate memory for buffer.
-        let requirements = unsafe { device.device().get_buffer_memory_requirements(handle) };
+        // Allocate memory for buffer. Check if the buffer requires dedicated allocation.
+        let mut dedicated_requirements = vk::MemoryDedicatedRequirements::default();
+        let mut requirements = vk::MemoryRequirements2::default()
+            .push_next(&mut dedicated_requirements);
+        let requirements_info = vk::BufferMemoryRequirementsInfo2::default()
+            .buffer(handle);
+        unsafe { device.device().get_buffer_memory_requirements2(&requirements_info, &mut requirements) };
+
+        let requirements = requirements.memory_requirements;
+        let allocation_scheme = if utils::use_dedicated_allocation(dedicated_requirements) {
+            AllocationScheme::DedicatedBuffer(handle)
+        } else {
+            AllocationScheme::GpuAllocatorManaged
+        };
+
         let desc = AllocationCreateDesc {
             name,
             requirements,
             location: L::location(),
             linear: true,
-            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            allocation_scheme,
         };
         let allocation = device.allocate_memory(&desc)?;
 
@@ -88,19 +102,6 @@ impl<L: MemLocation> Buffer<L> {
     pub fn len(&self) -> u32 {
         self.length
     }
-
-    //pub fn map(&self, device: &Device, offset: vk::DeviceSize, size: Option<vk::DeviceSize>) -> VkResult<*mut u8> {
-    //    unsafe { device.device().map_memory(self.memory, offset, size.unwrap_or(vk::WHOLE_SIZE), vk::MemoryMapFlags::empty()) }.map(|ptr| ptr as *mut u8)
-    //}
-
-    // If size is none, will map entire allocation.
-    //pub fn map_guard(&self, device: &Device, offset: vk::DeviceSize, size: Option<vk::DeviceSize>) -> VkResult<MappedMemoryGuard> {
-    //    MappedMemoryGuard::new(device, self.memory, offset, size.unwrap_or(self.mem_requirements.size))
-    //}
-
-    //pub fn unmap(&self, device: &Device) {
-    //    unsafe { device.device().unmap_memory(self.memory) };
-    //}
 
     pub unsafe fn destroy(&mut self, device: &Device) -> MemResult<()> {
         device.device().destroy_buffer(self.handle, None);

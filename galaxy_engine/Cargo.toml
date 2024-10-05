@@ -25,3 +25,4 @@ gpu-allocator =  { version = "0.27.0", default-features = false, features = ["vu
 presser = "0.3.1"
 arrayvec = "0.7.6"
 itertools = "0.13.0"
+ouroboros = "0.18.4"

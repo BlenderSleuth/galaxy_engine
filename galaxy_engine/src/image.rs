@@ -1,52 +1,143 @@
 use std::slice;
+
 use ash::prelude::VkResult;
 use ash::vk;
 use gpu_allocator::MemoryLocation;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
+
 use crate::command_buffer::CommandBuffer;
 use crate::device::{Device, QueueFamily};
 use crate::engine::MemResult;
+use crate::utils;
 use crate::utils::drop_fail;
 
-//pub struct ImageView<'a> {
-//    handle: vk::ImageView,
-//    image: &'a Image,
-//}
+#[ouroboros::self_referencing]
+pub struct ImageWithView {
+    pub image: Image,
+    #[borrows(image)]
+    #[covariant]
+    pub view: ImageView<'this>,
+}
+
+impl ImageWithView {
+    pub fn from_image(device: &Device, image: Image, aspect: vk::ImageAspectFlags) -> VkResult<Self> {
+         ImageWithViewTryBuilder {
+            image,
+            view_builder: |image| ImageView::new(device, image, aspect),
+        }.try_build()
+    }
+
+    pub unsafe fn destroy(mut self, device: &Device) {
+        self.with_view_mut(|view| view.destroy(&device));
+        let mut heads = self.into_heads();
+        heads.image.destroy(device);
+    }
+}
+
+pub enum ImageRef<'a> {
+    External(vk::Image),
+    Image(&'a Image),
+}
+
+pub struct ImageView<'a> {
+    handle: vk::ImageView,
+    image: ImageRef<'a>,
+}
+
+impl<'a> ImageView<'a> {
+    fn view_type_from_image_type(image_type: vk::ImageType, array_layers: u32) -> vk::ImageViewType {
+        // Currently doesn't support cube maps.
+        match (image_type, array_layers) {
+            (vk::ImageType::TYPE_1D, 1) => vk::ImageViewType::TYPE_1D,
+            (vk::ImageType::TYPE_1D, 2..) => vk::ImageViewType::TYPE_1D_ARRAY,
+            (vk::ImageType::TYPE_2D, 1) => vk::ImageViewType::TYPE_2D,
+            (vk::ImageType::TYPE_2D, 2..) => vk::ImageViewType::TYPE_2D_ARRAY,
+            (vk::ImageType::TYPE_3D, 1) => vk::ImageViewType::TYPE_3D,
+            _ => panic!("Unsupported image type."),
+        }
+    }
+
+    pub fn new(device: &Device, image: &'a Image, aspect_mask: vk::ImageAspectFlags) -> VkResult<Self> {
+        let view_info = vk::ImageViewCreateInfo::default()
+            .image(image.handle())
+            .view_type(Self::view_type_from_image_type(image.dimensions, image.array_layers))
+            .format(image.format)
+            .subresource_range(vk::ImageSubresourceRange::default()
+                .aspect_mask(aspect_mask)
+                .base_mip_level(0)
+                .level_count(image.mip_levels)
+                .base_array_layer(0)
+                .layer_count(image.array_layers)
+            );
+        let handle = unsafe { device.device().create_image_view(&view_info, None) }?;
+        Ok(Self { handle, image: ImageRef::Image(image) })
+    }
+    pub fn new_external(image: vk::Image, image_view: vk::ImageView) -> VkResult<Self> {
+        Ok(Self { handle: image_view, image: ImageRef::External(image) })
+    }
+    pub fn handle(&self) -> &vk::ImageView {
+        &self.handle
+    }
+    pub unsafe fn destroy(&self, device: &Device) {
+        unsafe { device.device().destroy_image_view(self.handle, None) };
+    }
+}
 
 pub struct Image {
     handle: vk::Image,
     allocation: Option<Allocation>,
+    format: vk::Format,
+    tiling: vk::ImageTiling,
+    dimensions: vk::ImageType,
+    extent: vk::Extent3D,
+    mip_levels: u32,
+    array_layers: u32,
 }
 
 impl Image {
     pub fn new(device: &Device, info: &vk::ImageCreateInfo) -> MemResult<Self> {
         let handle = unsafe { device.device().create_image(info, None) }?;
-        // Allocate memory for texture image.
-        let texture_memory_requirements = unsafe { device.device().get_image_memory_requirements(handle) };
+
+        // Allocate memory for image.
+        let mut dedicated_requirements = vk::MemoryDedicatedRequirements::default();
+        let mut requirements = vk::MemoryRequirements2::default()
+            .push_next(&mut dedicated_requirements);
+        let requirements_info = vk::ImageMemoryRequirementsInfo2::default()
+            .image(handle);
+        unsafe { device.device().get_image_memory_requirements2(&requirements_info, &mut requirements) };
+
+        let requirements = requirements.memory_requirements;
+        let allocation_scheme = if utils::use_dedicated_allocation(dedicated_requirements) {
+            AllocationScheme::DedicatedImage(handle)
+        } else {
+            AllocationScheme::GpuAllocatorManaged
+        };
 
         let alloc_desc = AllocationCreateDesc {
             name: "Texture Image",
-            requirements: texture_memory_requirements,
+            requirements,
             location: MemoryLocation::GpuOnly,
             linear: false,
-            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            allocation_scheme,
         };
         let allocation = device.allocate_memory(&alloc_desc)?;
         unsafe { device.device().bind_image_memory(handle, allocation.memory(), 0) }?;
-        Ok(Self { handle, allocation: Some(allocation) })
+
+        Ok(Self {
+            handle,
+            allocation: Some(allocation),
+            format: info.format,
+            tiling: info.tiling,
+            dimensions: info.image_type,
+            extent: info.extent,
+            mip_levels: info.mip_levels,
+            array_layers: info.array_layers,
+        })
     }
 
     pub fn handle(&self) -> vk::Image {
         self.handle
     }
-
-    //pub fn view(&self) -> ImageView {
-    //    ImageView {
-    //        handle: vk::ImageView::null(),
-    //        image: self,
-    //    };
-    //    todo!();
-    //}
 
     pub fn transition_layout(&self, device: &Device, cmd_pool: vk::CommandPool, _format: vk::Format, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout) -> VkResult<()> {
         let cmd_buffer = CommandBuffer::begin_one_time(device, cmd_pool)?;

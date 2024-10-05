@@ -4,6 +4,4 @@ resolver = "2"
 members = [
     "galaxy_engine",
 ]
-
-[profile.dev]
 #opt-level = 1

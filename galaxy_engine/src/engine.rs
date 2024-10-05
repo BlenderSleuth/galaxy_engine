@@ -17,7 +17,7 @@ use device::Device;
 use maths::VkPerspective;
 use surface::Surface;
 use swapchain::Swapchain;
-use crate::image::Image;
+use crate::image::{Image, ImageWithView};
 
 #[derive(thiserror::Error, Debug)]
 pub enum MemoryError {
@@ -145,17 +145,18 @@ impl DebugMessenger {
 struct Vertex {
     pos: na::Vector2<f32>,
     color: na::Vector3<f32>,
+    tex_coord: na::Vector2<f32>,
 }
 
 impl Vertex {
-    fn get_binding_description() -> vk::VertexInputBindingDescription {
+    fn binding_description() -> vk::VertexInputBindingDescription {
         vk::VertexInputBindingDescription::default()
             .binding(0)
             .stride(std::mem::size_of::<Vertex>() as u32)
             .input_rate(vk::VertexInputRate::VERTEX)
     }
 
-    fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
+    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
         [
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
@@ -167,15 +168,20 @@ impl Vertex {
                 .location(1)
                 .format(vk::Format::R32G32B32_SFLOAT)
                 .offset(std::mem::offset_of!(Vertex, color) as u32),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(2)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(std::mem::offset_of!(Vertex, tex_coord) as u32),
         ]
     }
 }
 
 const VERTICES: [Vertex; 4] = [
-    Vertex { pos: maths::Vec2::new(-0.5, -0.5), color: maths::Vec3::new(1., 0., 0.) },
-    Vertex { pos: maths::Vec2::new(0.5, -0.5), color: maths::Vec3::new(0., 1., 0.) },
-    Vertex { pos: maths::Vec2::new(0.5, 0.5), color: maths::Vec3::new(0., 0., 1.) },
-    Vertex { pos: maths::Vec2::new(-0.5, 0.5), color: maths::Vec3::new(1., 1., 1.) },
+    Vertex { pos: maths::Vec2::new(-0.5, -0.5), color: maths::Vec3::new(1., 0., 0.), tex_coord: maths::Vec2::new(1., 0.) },
+    Vertex { pos: maths::Vec2::new(0.5, -0.5), color: maths::Vec3::new(0., 1., 0.), tex_coord: maths::Vec2::new(0., 0.) },
+    Vertex { pos: maths::Vec2::new(0.5, 0.5), color: maths::Vec3::new(0., 0., 1.), tex_coord: maths::Vec2::new(0., 1.) },
+    Vertex { pos: maths::Vec2::new(-0.5, 0.5), color: maths::Vec3::new(1., 1., 1.), tex_coord: maths::Vec2::new(1., 1.) },
 ];
 const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
@@ -196,7 +202,8 @@ pub struct GalaxyEngine {
     swapchain: Swapchain,
     vertex_buffer: Buffer<GpuOnly>,
     index_buffer: Buffer<GpuOnly>,
-    texture_image: Image,
+    texture_image: Option<ImageWithView>,
+    sampler: vk::Sampler,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: [vk::DescriptorSet; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
@@ -272,7 +279,6 @@ impl GalaxyEngine {
         let device = Device::new(&instance, &surface)?;
         let device_properties = device.get_properties();
 
-
         // Create swapchain.
         let window_size = vk::Extent2D { width, height };
         let swapchain = Swapchain::new(&instance, &device, &surface, window_size, None)?;
@@ -285,7 +291,7 @@ impl GalaxyEngine {
         let transfer_cmd_pool = device.create_transient_command_pool(QueueFamily::Transfer)?;
 
         // Load texture.
-        let image = image::open("galaxy_engine/textures/texture.jpg").unwrap().to_rgba8();
+        let image = image::open("textures/texture.jpg").unwrap().to_rgba8();
 
         let mut image_buffer = Buffer::<CpuToGpu>::new_for_typed_data(
             &device,
@@ -316,11 +322,32 @@ impl GalaxyEngine {
 
         unsafe { image_buffer.destroy(&device) }?;
 
+        // Create texture image view.
+        let texture_image_pair = ImageWithView::from_image(&device, texture_image, vk::ImageAspectFlags::COLOR)?;
+
+        // Create texture sampler.
+        let max_anisotropy = device.get_properties().properties.limits.max_sampler_anisotropy;
+        let sampler_info = vk::SamplerCreateInfo::default()
+            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(vk::Filter::LINEAR)
+            .address_mode_u(vk::SamplerAddressMode::REPEAT)
+            .address_mode_v(vk::SamplerAddressMode::REPEAT)
+            .address_mode_w(vk::SamplerAddressMode::REPEAT)
+            .anisotropy_enable(true)
+            .max_anisotropy(max_anisotropy)
+            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
+            .unnormalized_coordinates(false)
+            .compare_enable(false)
+            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+            .mip_lod_bias(0.)
+            .min_lod(0.)
+            .max_lod(0.);
+        let sampler = unsafe { device.device().create_sampler(&sampler_info, None) }?;
+
         // Create graphics pipeline.
 
-        // TODO: More robust shader file resolution.
-        let vertex_shader_code = std::fs::read("galaxy_engine/shaders/shader.vert.spv")?;
-        let fragment_shader_code = std::fs::read("galaxy_engine/shaders/shader.frag.spv")?;
+        let vertex_shader_code = std::fs::read("shaders/shader.vert.spv")?;
+        let fragment_shader_code = std::fs::read("shaders/shader.frag.spv")?;
 
         struct ShaderModule<'a> {
             module: vk::ShaderModule,
@@ -354,8 +381,8 @@ impl GalaxyEngine {
         let shader_stages = [vertex_shader_stage_info, fragment_shader_stage_info];
 
         // Vertex binding.
-        let binding_description = Vertex::get_binding_description();
-        let attribute_descriptions = Vertex::get_attribute_descriptions();
+        let binding_description = Vertex::binding_description();
+        let attribute_descriptions = Vertex::attribute_descriptions();
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
             .vertex_binding_descriptions(slice::from_ref(&binding_description))
             .vertex_attribute_descriptions(&attribute_descriptions);
@@ -384,17 +411,6 @@ impl GalaxyEngine {
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
 
-        // Create descriptor sets.
-        let ubo_layout_binding = vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX);
-
-        let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::default()
-            .bindings(slice::from_ref(&ubo_layout_binding));
-        let descriptor_set_layout = unsafe { device.device().create_descriptor_set_layout(&descriptor_set_layout_info, None) }?;
-
         // Create uniform buffers.
         let uniform_buffers: [Buffer<CpuToGpu>; Self::MAX_FRAMES_IN_FLIGHT] = core::array::from_fn(|_| {
             Buffer::new(
@@ -407,13 +423,35 @@ impl GalaxyEngine {
             ).unwrap()
         });
 
+        // Create descriptor sets.
+        let ubo_layout_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_count(1)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .stage_flags(vk::ShaderStageFlags::VERTEX);
+
+        let sampler_layout_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(1)
+            .descriptor_count(1)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+        let layout_bindings = [ubo_layout_binding, sampler_layout_binding];
+        let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&layout_bindings);
+        let descriptor_set_layout = unsafe { device.device().create_descriptor_set_layout(&descriptor_set_layout_info, None) }?;
+
         // Create descriptor pool.
-        let pool_size = vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32);
+        let pool_sizes = [
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32)
+        ];
 
         let descriptor_pool_info = vk::DescriptorPoolCreateInfo::default()
-            .pool_sizes(slice::from_ref(&pool_size))
+            .pool_sizes(&pool_sizes)
             .max_sets(Self::MAX_FRAMES_IN_FLIGHT as u32);
 
         let descriptor_pool = unsafe { device.device().create_descriptor_pool(&descriptor_pool_info, None) }?;
@@ -431,14 +469,27 @@ impl GalaxyEngine {
                 .offset(0)
                 .range(std::mem::size_of::<UniformBufferObject>() as vk::DeviceSize);
 
-            let descriptor_write = vk::WriteDescriptorSet::default()
-                .dst_set(*descriptor_set)
-                .dst_binding(0)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(slice::from_ref(&buffer_info));
+            let image_info = vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(*texture_image_pair.borrow_view().handle())
+                .sampler(sampler);
 
-            unsafe { device.device().update_descriptor_sets(slice::from_ref(&descriptor_write), &[]) };
+            let descriptor_writes = [
+                vk::WriteDescriptorSet::default()
+                    .dst_set(*descriptor_set)
+                    .dst_binding(0)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(slice::from_ref(&buffer_info)),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(*descriptor_set)
+                    .dst_binding(1)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(slice::from_ref(&image_info)),
+            ];
+
+            unsafe { device.device().update_descriptor_sets(&descriptor_writes, &[]) };
         }
 
         let pipeline_dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
@@ -526,7 +577,8 @@ impl GalaxyEngine {
             swapchain,
             vertex_buffer,
             index_buffer,
-            texture_image,
+            texture_image: Some(texture_image_pair),
+            sampler,
             descriptor_set_layout,
             descriptor_pool,
             descriptor_sets: descriptor_sets.try_into().unwrap(),
@@ -618,7 +670,7 @@ impl GalaxyEngine {
         unsafe { ext.sync2.cmd_pipeline_barrier2(command_buffer, &dependency_info) };
 
         let color_attachment_info = vk::RenderingAttachmentInfo::default()
-            .image_view(self.swapchain.get_image_views()[image_idx as usize])
+            .image_view(*self.swapchain.get_image_views()[image_idx as usize].handle())
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::STORE)
@@ -791,8 +843,12 @@ impl Drop for GalaxyEngine {
         for uniform_buffer in self.uniform_buffers.iter_mut() {
             unsafe { uniform_buffer.destroy(&self.device) }.unwrap_or_else(|e| log::error!("Failed to destroy uniform buffer: {:?}", e));
         }
-        // Drop texture image.
-        unsafe { self.texture_image.destroy(&self.device) };
+        // Drop texture image and view.
+        if let Some(image) = self.texture_image.take() {
+            unsafe { image.destroy(&self.device) };
+        }
+        // Drop sampler.
+        unsafe { device.destroy_sampler(self.sampler, None) };
 
         // Drop swapchain.
         unsafe { self.swapchain.destroy(&self.device) };

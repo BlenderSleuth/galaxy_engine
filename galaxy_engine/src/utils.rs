@@ -1,5 +1,11 @@
 use std::ffi::{c_char, CStr};
 use std::str::from_utf8;
+use ash::vk;
+
+pub(crate) fn use_dedicated_allocation(dedicated_requirements: vk::MemoryDedicatedRequirements) -> bool {
+    dedicated_requirements.requires_dedicated_allocation == vk::TRUE
+        || dedicated_requirements.prefers_dedicated_allocation == vk::TRUE
+}
 
 pub(crate) fn drop_fail<T, E: std::error::Error>(result: Result<T, E>, message: &str) {
     if let Err(err) = result {

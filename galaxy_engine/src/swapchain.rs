@@ -3,13 +3,15 @@ use ash::{khr, vk};
 use ash::prelude::VkResult;
 
 use crate::device::{Device, PropertyQueueList};
+use crate::image::ImageView;
 use crate::surface::Surface;
 
+//#[ouroboros::self_referencing]
 pub struct Swapchain {
     loader: khr::swapchain::Device,
     handle: vk::SwapchainKHR,
     images: Vec<vk::Image>,
-    image_views: Vec<vk::ImageView>,
+    image_views: Vec<ImageView<'static>>,
     extent: vk::Extent2D,
 }
 
@@ -73,7 +75,8 @@ impl Swapchain {
             });
         let image_views = images.iter().map(|swapchain_image| {
             image_view_info.image = *swapchain_image;
-            unsafe { device.device().create_image_view(&image_view_info, None) }
+            let image_view = unsafe { device.device().create_image_view(&image_view_info, None) }?;
+            ImageView::new_external(*swapchain_image, image_view)
         }).collect::<VkResult<Vec<_>>>()?;
 
         Ok(Self { loader, handle, images, image_views, extent: swapchain_extent })
@@ -87,7 +90,7 @@ impl Swapchain {
         &self.images
     }
 
-    pub fn get_image_views(&self) -> &[vk::ImageView] {
+    pub fn get_image_views(&self) -> &[ImageView] {
         &self.image_views
     }
 
@@ -116,7 +119,7 @@ impl Swapchain {
     pub unsafe fn destroy(&mut self, device: &Device) {
         // Drop image views.
         for image_view in self.image_views.iter() {
-            unsafe { device.device().destroy_image_view(*image_view, None) };
+            unsafe { device.device().destroy_image_view(*image_view.handle(), None) };
         }
         self.image_views.clear();
         self.images.clear();
