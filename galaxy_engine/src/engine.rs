@@ -366,7 +366,11 @@ impl GalaxyEngine {
                 vk::PipelineShaderStageCreateInfo::default()
                     .stage(self.stage)
                     .module(self.module)
-                    .name(c"main")
+                    .name(match self.stage {
+                        vk::ShaderStageFlags::VERTEX => c"mainVS",
+                        vk::ShaderStageFlags::FRAGMENT => c"mainFS",
+                        _ => panic!("Unsupported shader stage: {:?}", self.stage),
+                    })
             }
             unsafe fn destroy(&mut self, device: &Device) {
                 unsafe { device.device().destroy_shader_module(self.module, None) };
