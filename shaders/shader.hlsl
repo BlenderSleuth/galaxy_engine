@@ -1,12 +1,13 @@
-struct UBO {
-    float4x4 model;
-    float4x4 view;
-    float4x4 proj;
+struct PushConstants {
+    float4x4 mvp;
 };
 
+[[vk::push_constant]]
+ConstantBuffer<PushConstants> push_constants;
+
 [[vk::binding(0)]]
-cbuffer CBuffer {
-   UBO ubo;
+cbuffer Binding0 {
+    float3 sun_direction;
 };
 
 struct VSInput {
@@ -23,8 +24,8 @@ struct VSToFS {
 
 VSToFS mainVS(VSInput input) {
     VSToFS output;
-    output.position = mul(ubo.proj, mul(ubo.view, mul(ubo.model, float4(input.position, 1.0))));
-    output.color = input.color;
+    output.position = mul(push_constants.mvp, float4(input.position, 1.));
+    output.color = sun_direction;
     output.tex_coord = input.tex_coord;
     return output;
 }
@@ -35,5 +36,5 @@ Texture2D<float4> texture0;
 SamplerState sampler0;
 
 float4 mainFS(VSToFS input): SV_TARGET0 {
-    return texture0.Sample(sampler0, input.tex_coord);
+    return float4(input.color, 1.) * texture0.Sample(sampler0, input.tex_coord);
 }

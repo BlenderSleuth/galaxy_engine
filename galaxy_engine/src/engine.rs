@@ -19,7 +19,7 @@ use device::Device;
 use maths::VkPerspective;
 use surface::Surface;
 use swapchain::Swapchain;
-use crate::device::{PhysicalDeviceProperties, SharedDeviceLoader};
+use device::{PhysicalDeviceProperties, SharedDeviceLoader};
 use crate::gpu_alloc::{MemResult, MemoryError};
 use crate::image::{Image, ImageDimensions};
 
@@ -172,10 +172,34 @@ impl Vertex {
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
-struct UniformBufferObject {
+struct UniformData {
+    sun_direction: na::Vector3<f32>,
+}
+
+impl UniformData {
+    pub fn size() -> vk::DeviceSize {
+        std::mem::size_of::<Self>() as vk::DeviceSize
+    }
+}
+
+struct ModelViewProjection {
     model: maths::Mat4,
     view: maths::Mat4,
     proj: maths::Mat4,
+}
+
+impl ModelViewProjection {
+    fn spin(window_size: vk::Extent2D, time: f32, rpm: f32) -> Self {
+        Self {
+            model: na::Rotation3::from_axis_angle(&na::UnitVector3::new_normalize(na::Vector3::new(0., 0., 1.)), time * 360_f32.to_radians() * rpm / 60.).to_homogeneous(),
+            view: na::Isometry3::look_at_rh(&na::Point3::new(2., 2., 2.), &na::Point3::new(0., 0., 0.), &na::Vector3::new(0., 0., 1.)).to_homogeneous(),
+            proj: na::Perspective3::vk_new(window_size.width as f32 / window_size.height as f32, 45_f32.to_radians(), 0.1, 10.0).to_homogeneous(),
+        }
+    }
+
+    fn mvp(&self) -> maths::Mat4 {
+        self.proj * self.view * self.model
+    }
 }
 
 struct ShaderModule {
@@ -451,7 +475,7 @@ impl GalaxyEngine {
                 "Uniform buffer",
                 &device,
                 1,
-                std::mem::size_of::<UniformBufferObject>(),
+                std::mem::size_of::<ModelViewProjection>(),
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
                 vk::SharingMode::EXCLUSIVE,
             ).unwrap()
@@ -501,7 +525,7 @@ impl GalaxyEngine {
             let buffer_info = vk::DescriptorBufferInfo::default()
                 .buffer(uniform_buffers[i].handle())
                 .offset(0)
-                .range(std::mem::size_of::<UniformBufferObject>() as vk::DeviceSize);
+                .range(UniformData::size());
 
             let image_info = vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -525,6 +549,18 @@ impl GalaxyEngine {
 
             unsafe { device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
         }
+
+        // Create push constant range.
+        let push_constant_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .offset(0)
+            .size(std::mem::size_of::<maths::Mat4>() as u32);
+
+        // Create pipeline layout.
+        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(slice::from_ref(&descriptor_set_layout))
+            .push_constant_ranges(slice::from_ref(&push_constant_range));
+        let pipeline_layout = unsafe { device.loader().create_pipeline_layout(&pipeline_layout_info, None) }?;
 
         // Create graphics pipeline.
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
@@ -568,10 +604,6 @@ impl GalaxyEngine {
             .stencil_test_enable(false)
             .front(Default::default())
             .back(Default::default());
-
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
-            .set_layouts(slice::from_ref(&descriptor_set_layout));
-        let pipeline_layout = unsafe { device.loader().create_pipeline_layout(&pipeline_layout_info, None) }?;
 
         let mut dynamic_pipeline_info = vk::PipelineRenderingCreateInfo::default()
             .color_attachment_formats(slice::from_ref(&device_properties.swapchain_format.format))
@@ -662,14 +694,13 @@ impl GalaxyEngine {
 
         // Update uniform buffer.
         let time = self.start_time.elapsed().as_secs_f32();
-        let ubo = UniformBufferObject {
-            model: na::Rotation3::from_axis_angle(&na::UnitVector3::new_normalize(na::Vector3::new(0., 0., 1.)), time * 90_f32.to_radians()).to_homogeneous(),
-            view: na::Isometry3::look_at_rh(&na::Point3::new(2., 2., 2.), &na::Point3::new(0., 0., 0.), &na::Vector3::new(0., 0., 1.)).to_homogeneous(),
-            proj: na::Perspective3::vk_new(self.window_size.width as f32 / self.window_size.height as f32, 45_f32.to_radians(), 0.1, 10.0).to_homogeneous(),
-        };
+        let mvp = ModelViewProjection::spin(self.window_size, time, 20.0).mvp();
 
-        // Copy UBO to uniform buffer.
-        self.uniform_buffers[current_frame].copy_into_buffer(bytemuck::bytes_of(&ubo), 0)?;
+        let uniform_data = UniformData {
+            sun_direction: na::Vector3::new(time.sin().abs(), (time + 0.3).sin().abs(), (time + 0.6).sin().abs()),
+        };
+        // Copy data to uniform buffer.
+        self.uniform_buffers[current_frame].copy_into_buffer(bytemuck::bytes_of(&uniform_data), 0)?;
 
         // Wait for fence.
         unsafe { device.wait_for_fences(&[self.in_flight_fences[current_frame]], true, u64::MAX) }?;
@@ -746,6 +777,7 @@ impl GalaxyEngine {
         unsafe { device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline) };
         unsafe { device.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.model.vertex_buffer.handle()), slice::from_ref(&0)) };
         unsafe { device.cmd_bind_index_buffer(command_buffer, self.model.index_buffer.handle(), 0, vk::IndexType::UINT32) };
+        unsafe { device.cmd_push_constants(command_buffer, self.pipeline_layout, vk::ShaderStageFlags::VERTEX, 0, bytemuck::cast_slice(&[mvp])) };
         unsafe { device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline_layout, 0, slice::from_ref(&self.descriptor_sets[current_frame]), &[]) };
         unsafe { device.cmd_set_viewport(command_buffer, 0, &[viewport]) };
         unsafe { device.cmd_set_scissor(command_buffer, 0, &[scissor]) };
