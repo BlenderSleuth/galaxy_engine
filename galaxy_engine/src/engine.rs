@@ -249,12 +249,12 @@ impl Model {
         let mip_levels = image.levels().collect::<Vec<_>>();
         let extent = vk::Extent2D { width: header.pixel_width, height: header.pixel_height };
         let texture_image = Image::new_from_mip_levels(
+            "Model texture",
             device,
             gfx_cmd_pool,
             &mip_levels,
             ImageDimensions::Type2D(extent),
             header.format.map(utils::ktx_to_vulkan_format).unwrap_or(vk::Format::R8G8B8A8_SRGB),
-            "Model texture",
         )?;
 
         // Create texture sampler.
@@ -307,8 +307,8 @@ impl Model {
 
         // Vertex buffer.
         let mut vertex_buffer = Buffer::<GpuOnly>::new_for_typed_data(
-            &device,
             "Model vertex buffer",
+            &device,
             &vertices,
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
             vk::SharingMode::EXCLUSIVE,
@@ -317,8 +317,8 @@ impl Model {
 
         // Index buffer.
         let mut index_buffer = Buffer::<GpuOnly>::new_for_typed_data(
-            &device,
             "Model index buffer",
+            &device,
             &indices,
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
             vk::SharingMode::EXCLUSIVE,
@@ -448,8 +448,8 @@ impl GalaxyEngine {
         // Create uniform buffers.
         let uniform_buffers: [Buffer<CpuToGpu>; Self::MAX_FRAMES_IN_FLIGHT] = core::array::from_fn(|_| {
             Buffer::new(
+                "Uniform buffer",
                 &device,
-                "Uniform Buffer",
                 1,
                 std::mem::size_of::<UniformBufferObject>(),
                 vk::BufferUsageFlags::UNIFORM_BUFFER,

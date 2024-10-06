@@ -93,7 +93,7 @@ pub struct Image {
 
 impl Image {
     // New with an image create info.
-    pub fn new(device: &Device, info: &vk::ImageCreateInfo, subresource: vk::ImageSubresourceRange, name: &str) -> MemResult<Self> {
+    pub fn new(name: &str, device: &Device, info: &vk::ImageCreateInfo, subresource: vk::ImageSubresourceRange) -> MemResult<Self> {
         let handle = unsafe { device.loader().create_image(&info, None) }?;
 
         // Allocate memory for image.
@@ -112,7 +112,7 @@ impl Image {
         };
 
         let alloc_desc = AllocationCreateDesc {
-            name,
+            name: utils::debug_only_name!(name),
             requirements,
             location: MemoryLocation::GpuOnly,
             linear: false,
@@ -143,12 +143,12 @@ impl Image {
     }
 
     pub fn new_from_mip_levels(
+        name: &str,
         device: &Device,
         gfx_cmd_pool: vk::CommandPool,
         levels: &[&[u8]],
         dimensions: ImageDimensions,
         format: vk::Format,
-        name: &str,
     ) -> MemResult<Self> {
         let num_mips = levels.len() as u32;
         let total_mip_size: u32 = levels.iter().fold(0, |acc, level| acc + level.len()).try_into().unwrap();
@@ -170,11 +170,11 @@ impl Image {
             level_count: num_mips,
             ..utils::DEFAULT_SUBRESOURCE_RANGE
         };
-        let mut image = Image::new(device, &image_info, subresource, name)?;
+        let mut image = Image::new(name, device, &image_info, subresource)?;
 
         let mut image_buffer = Buffer::<CpuToGpu>::new(
+            &utils::debug_only_name!(format!("{name} staging buffer")),
             &device,
-            &format!("{name} staging buffer"), // TODO: Resource names only in debug.
             total_mip_size,
             std::mem::size_of::<u8>(),
             vk::BufferUsageFlags::TRANSFER_SRC,

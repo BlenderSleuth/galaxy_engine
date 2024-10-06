@@ -44,11 +44,18 @@ pub struct Buffer<L: MemLocation> {
 
 impl<L: MemLocation> Buffer<L> {
     // NOTE: When buffers are being used for multiple resources, should we remove the length and element size fields?
-    pub fn new_for_typed_data<T: bytemuck::Pod>(device: &Device, name: &str, data: &[T], usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode) -> MemResult<Self> {
-        Self::new(device, name, data.len() as u32, std::mem::size_of::<T>(), usage, sharing_mode)
+    pub fn new_for_typed_data<T: bytemuck::Pod>(name: &str, device: &Device, data: &[T], usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode) -> MemResult<Self> {
+        Self::new(name, device, data.len() as u32, std::mem::size_of::<T>(), usage, sharing_mode)
     }
 
-    pub fn new(device: &Device, name: &str, length: u32, element_size: usize, usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode) -> MemResult<Self> {
+    pub fn new(
+        name: &str,
+        device: &Device,
+        length: u32,
+        element_size: usize,
+        usage: vk::BufferUsageFlags,
+        sharing_mode: vk::SharingMode,
+    ) -> MemResult<Self> {
         let device_properties = device.get_properties();
         let queue_indices = [device.get_properties().graphics_queue_family_idx, device_properties.transfer_queue_family_idx];
 
@@ -77,7 +84,7 @@ impl<L: MemLocation> Buffer<L> {
         };
 
         let desc = AllocationCreateDesc {
-            name,
+            name: utils::debug_only_name!(name),
             requirements,
             location: L::location(),
             linear: true,
@@ -127,8 +134,8 @@ impl<L: MemLocation> Drop for Buffer<L> {
 impl Buffer<GpuOnly> {
     pub fn copy_via_staging_buffer(&mut self, device: &Device, src_data: &[u8], cmd_pool: vk::CommandPool, queue_family: QueueFamily) -> MemResult<()> {
         let mut staging_buffer = Buffer::<CpuToGpu>::new(
-            &device,
             "Staging Buffer",
+            &device,
             src_data.len() as u32,
             std::mem::size_of::<u8>(),
             vk::BufferUsageFlags::TRANSFER_SRC,

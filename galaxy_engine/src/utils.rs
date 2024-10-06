@@ -2,6 +2,14 @@ use std::ffi::{c_char, CStr};
 use std::str::from_utf8;
 use ash::vk;
 
+// Strip names in release builds.
+macro_rules! debug_only_name {
+    ($name:expr) => {
+        if cfg!(feature = "debug") { $name } else { "".into() }
+    };
+}
+pub(crate) use debug_only_name;
+
 pub(crate) const DEFAULT_SUBRESOURCE_RANGE: vk::ImageSubresourceRange =
     vk::ImageSubresourceRange {
         aspect_mask: vk::ImageAspectFlags::COLOR,

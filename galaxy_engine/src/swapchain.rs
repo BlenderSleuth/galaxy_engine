@@ -28,7 +28,7 @@ impl Swapchain {
         gfx_cmd_pool: vk::CommandPool,
         surface: &Surface,
         window_size: vk::Extent2D,
-        old_swapchain: Option<&Swapchain>
+        old_swapchain: Option<&Swapchain>,
     ) -> MemResult<Self> {
         let device_properties = device.get_properties();
         let unique_queue_families = device_properties.get_unique_queue_families();
@@ -101,10 +101,10 @@ impl Swapchain {
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .samples(msaa_samples);
         let colour_resolve_image = Image::new(
+            "Colour resolve image",
             &device,
             &colour_resolve_info,
             Self::get_subresource_range(),
-            "Colour resolve image",
         )?;
 
         // Create depth image.
@@ -124,7 +124,7 @@ impl Swapchain {
             ..Self::get_subresource_range()
         };
 
-        let mut depth_image = Image::new(&device, &depth_image_info, depth_subresource, "Depth image")?;
+        let mut depth_image = Image::new("Depth image", &device, &depth_image_info, depth_subresource)?;
         depth_image.transition_layout(
             &device,
             CommandBuffer::one_time_transient(&device, gfx_cmd_pool)?,
