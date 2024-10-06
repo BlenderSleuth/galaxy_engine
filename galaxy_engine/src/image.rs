@@ -1,51 +1,32 @@
+use std::mem::ManuallyDrop;
 use std::slice;
 
 use ash::prelude::VkResult;
 use ash::vk;
 use gpu_allocator::MemoryLocation;
-use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
+use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme};
 
 use crate::buffer::Buffer;
 use crate::buffer::mem_location::{CpuToGpu};
 use crate::command_buffer::{CommandBuffer, TransientOrPersistentCommandBuffer};
-use crate::device::{Device, QueueFamily};
-use crate::engine::MemResult;
-use crate::utils;
+use crate::device::{Device, QueueFamily, SharedDeviceLoader};
+use crate::gpu_alloc::{MemResult, ManuallyFreeAllocation, SharedAllocator};
+use crate::{gpu_alloc, utils};
 
-#[ouroboros::self_referencing]
-pub struct ImageWithView {
-    pub image: Image,
-    #[borrows(image)]
-    #[covariant]
-    pub view: ImageView<'this>,
-}
-
-impl ImageWithView {
-    pub fn from_image(device: &Device, image: Image) -> VkResult<Self> {
-        ImageWithViewTryBuilder {
-            image,
-            view_builder: |image| ImageView::new(device, image),
-        }.try_build()
-    }
-
-    pub unsafe fn destroy(mut self, device: &Device) {
-        self.with_view_mut(|view| view.destroy(&device));
-        let mut heads = self.into_heads();
-        heads.image.destroy(device);
-    }
-}
-
-pub enum ImageRef<'a> {
-    External(vk::Image),
-    Image(&'a Image),
-}
-
-pub struct ImageView<'a> {
+pub struct ImageView {
+    loader: SharedDeviceLoader,
     handle: vk::ImageView,
-    image: ImageRef<'a>,
 }
 
-impl<'a> ImageView<'a> {
+impl ImageView {
+    // Image in view_info must outlive the image view. Usually call Image::get_or_create_view() instead.
+    pub unsafe fn new(loader: SharedDeviceLoader, view_info: &vk::ImageViewCreateInfo) -> VkResult<Self> {
+        let handle = unsafe { loader.create_image_view(view_info, None) }?;
+        Ok(Self { loader, handle })
+    }
+
+    pub fn handle(&self) -> vk::ImageView { self.handle }
+
     fn view_type_from_image_type(image_type: vk::ImageType, array_layers: u32) -> vk::ImageViewType {
         // Currently doesn't support cube maps.
         match (image_type, array_layers) {
@@ -57,34 +38,55 @@ impl<'a> ImageView<'a> {
             _ => panic!("Unsupported image type."),
         }
     }
+}
 
-    pub fn new(device: &Device, image: &'a Image) -> VkResult<Self> {
-        let view_info = vk::ImageViewCreateInfo::default()
-            .image(image.handle())
-            .view_type(Self::view_type_from_image_type(image.num_dimensions, image.subresource.layer_count))
-            .format(image.format)
-            .subresource_range(image.subresource);
-        let handle = unsafe { device.device().create_image_view(&view_info, None) }?;
-        Ok(Self { handle, image: ImageRef::Image(image) })
+impl Drop for ImageView {
+    fn drop(&mut self) {
+        unsafe { self.loader.destroy_image_view(self.handle, None) };
     }
-    pub fn new_external(device: &Device, image: vk::Image, view_info: &vk::ImageViewCreateInfo) -> VkResult<Self> {
-        let handle = unsafe { device.device().create_image_view(view_info, None) }?;
-        Ok(Self { handle, image: ImageRef::External(image) })
+}
+
+#[allow(dead_code)] // TODO
+#[derive(Clone, Copy)]
+pub enum ImageDimensions {
+    Type1D(u32),
+    Type2D(vk::Extent2D),
+    Type3D(vk::Extent3D),
+}
+
+impl ImageDimensions {
+    pub fn num_dimensions(&self) -> u32 {
+        match self {
+            ImageDimensions::Type1D(_) => 1,
+            ImageDimensions::Type2D(_) => 2,
+            ImageDimensions::Type3D(_) => 3,
+        }
     }
-    pub fn handle(&self) -> &vk::ImageView {
-        &self.handle
+    pub fn image_type(&self) -> vk::ImageType {
+        match self {
+            ImageDimensions::Type1D(_) => vk::ImageType::TYPE_1D,
+            ImageDimensions::Type2D(_) => vk::ImageType::TYPE_2D,
+            ImageDimensions::Type3D(_) => vk::ImageType::TYPE_3D,
+        }
     }
-    pub unsafe fn destroy(&self, device: &Device) {
-        unsafe { device.device().destroy_image_view(self.handle, None) };
+    pub fn extent(&self) -> vk::Extent3D {
+        match self {
+            ImageDimensions::Type1D(width) => vk::Extent3D { width: *width, height: 1, depth: 1 },
+            ImageDimensions::Type2D(extent) => vk::Extent3D { width: extent.width, height: extent.height, depth: 1 },
+            ImageDimensions::Type3D(extent) => *extent,
+        }
     }
 }
 
 pub struct Image {
+    loader: SharedDeviceLoader,
+    alloc: SharedAllocator,
     handle: vk::Image,
-    allocation: Option<Allocation>,
-    format: vk::Format,
-    tiling: vk::ImageTiling,
-    num_dimensions: vk::ImageType,
+    allocation: ManuallyFreeAllocation,
+    view: ManuallyDrop<ImageView>,
+    // format: vk::Format,
+    // tiling: vk::ImageTiling,
+    // num_dimensions: vk::ImageType,
     extent: vk::Extent3D,
     subresource: vk::ImageSubresourceRange,
 }
@@ -92,7 +94,7 @@ pub struct Image {
 impl Image {
     // New with an image create info.
     pub fn new(device: &Device, info: &vk::ImageCreateInfo, subresource: vk::ImageSubresourceRange, name: &str) -> MemResult<Self> {
-        let handle = unsafe { device.device().create_image(&info, None) }?;
+        let handle = unsafe { device.loader().create_image(&info, None) }?;
 
         // Allocate memory for image.
         let mut dedicated_requirements = vk::MemoryDedicatedRequirements::default();
@@ -100,7 +102,7 @@ impl Image {
             .push_next(&mut dedicated_requirements);
         let requirements_info = vk::ImageMemoryRequirementsInfo2::default()
             .image(handle);
-        unsafe { device.device().get_image_memory_requirements2(&requirements_info, &mut requirements) };
+        unsafe { device.loader().get_image_memory_requirements2(&requirements_info, &mut requirements) };
 
         let requirements = requirements.memory_requirements;
         let allocation_scheme = if utils::use_dedicated_allocation(dedicated_requirements) {
@@ -117,14 +119,24 @@ impl Image {
             allocation_scheme,
         };
         let allocation = device.allocate_memory(&alloc_desc)?;
-        unsafe { device.device().bind_image_memory(handle, allocation.memory(), 0) }?;
+        unsafe { device.loader().bind_image_memory(handle, allocation.memory(), 0) }?;
+
+        let view_info = vk::ImageViewCreateInfo::default()
+            .image(handle)
+            .view_type(ImageView::view_type_from_image_type(info.image_type, subresource.layer_count))
+            .format(info.format)
+            .subresource_range(subresource);
+        let view = unsafe { ImageView::new(device.cloned_loader(), &view_info)? };
 
         Ok(Self {
+            loader: device.cloned_loader(),
+            alloc: device.cloned_allocator(),
             handle,
-            allocation: Some(allocation),
-            format: info.format,
-            tiling: info.tiling,
-            num_dimensions: info.image_type,
+            allocation,
+            view: ManuallyDrop::new(view),
+            // format: info.format,
+            // tiling: info.tiling,
+            // num_dimensions: info.image_type,
             extent: info.extent,
             subresource,
         })
@@ -134,15 +146,15 @@ impl Image {
         device: &Device,
         gfx_cmd_pool: vk::CommandPool,
         levels: &[&[u8]],
-        num_dimensions: vk::ImageType,
-        extent: vk::Extent3D,
+        dimensions: ImageDimensions,
         format: vk::Format,
         name: &str,
     ) -> MemResult<Self> {
         let num_mips = levels.len() as u32;
         let total_mip_size: u32 = levels.iter().fold(0, |acc, level| acc + level.len()).try_into().unwrap();
+        let extent = dimensions.extent();
         let image_info = vk::ImageCreateInfo::default()
-            .image_type(num_dimensions)
+            .image_type(dimensions.image_type())
             .extent(extent)
             .mip_levels(num_mips)
             .array_layers(1)
@@ -188,8 +200,8 @@ impl Image {
                 .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
                 .image_extent(vk::Extent3D {
                     width: extent.width >> mip_level,
-                    height: if num_dimensions >= vk::ImageType::TYPE_2D { extent.height >> mip_level} else { 1 },
-                    depth: if num_dimensions >= vk::ImageType::TYPE_3D { extent.depth >> mip_level} else { 1 },
+                    height: if dimensions.num_dimensions() >= 2 { extent.height >> mip_level } else { 1 },
+                    depth: if dimensions.num_dimensions() >= 3 { extent.depth >> mip_level } else { 1 },
                 })
             );
             image_buffer.copy_into_buffer(&data, offset)?;
@@ -210,7 +222,7 @@ impl Image {
         )?;
 
         // Perform the copy.
-        unsafe { device.device().cmd_copy_buffer_to_image(cmd_buffer.handle(), image_buffer.handle(), image.handle, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &regions) };
+        unsafe { device.loader().cmd_copy_buffer_to_image(cmd_buffer.handle(), image_buffer.handle(), image.handle, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &regions) };
 
         // Transition all mip levels to shader read only optimal.
         image.transition_layout(
@@ -225,13 +237,15 @@ impl Image {
 
         cmd_buffer.end_submit_and_wait(device, device.get_queue(QueueFamily::Graphics))?;
 
-        unsafe { image_buffer.destroy(&device) }?;
-
         Ok(image)
     }
 
-    pub fn handle(&self) -> vk::Image {
-        self.handle
+    //pub fn handle(&self) -> vk::Image {
+    //    self.handle
+    //}
+
+    pub fn view(&self) -> &ImageView {
+        &self.view
     }
 
     pub fn transition_layout(&mut self,
@@ -293,6 +307,7 @@ impl Image {
         cmd.maybe_end_submit_and_wait(device, device.get_queue(QueueFamily::Graphics))
     }
 
+    #[allow(dead_code)] // TODO
     pub fn copy_buffer_to_image(&mut self, device: &Device, cmd: TransientOrPersistentCommandBuffer, buffer: &Buffer<CpuToGpu>, mip_level: u32, queue: QueueFamily) -> VkResult<()> {
         let cmd_buffer = cmd.command_buffer();
 
@@ -309,15 +324,19 @@ impl Image {
             .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
             .image_extent(self.extent);
 
-        unsafe { device.device().cmd_copy_buffer_to_image(cmd_buffer.handle(), buffer.handle(), self.handle, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]) };
+        unsafe { device.loader().cmd_copy_buffer_to_image(cmd_buffer.handle(), buffer.handle(), self.handle, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]) };
 
         cmd.maybe_end_submit_and_wait(device, device.get_queue(queue))
     }
+}
 
-    pub unsafe fn destroy(&mut self, device: &Device) {
-        unsafe { device.device().destroy_image(self.handle, None) };
-        if let Some(allocation) = self.allocation.take() {
-            utils::drop_fail(device.free_memory(allocation), "Failed to free image memory");
-        }
+impl Drop for Image {
+    fn drop(&mut self) {
+        // Drop image view.
+        unsafe { ManuallyDrop::drop(&mut self.view) };
+        // Drop image.
+        unsafe { self.loader.destroy_image(self.handle, None) };
+        // Free memory.
+        unsafe { gpu_alloc::free_or_log_on_fail(&self.alloc, &mut self.allocation) };
     }
 }

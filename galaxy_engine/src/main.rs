@@ -8,6 +8,7 @@ mod buffer;
 mod maths;
 mod command_buffer;
 mod image;
+mod gpu_alloc;
 
 use winit::error::EventLoopError;
 use winit::event_loop::{ControlFlow, EventLoop};

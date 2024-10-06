@@ -5,8 +5,8 @@ use ash::prelude::VkResult;
 
 use crate::command_buffer::CommandBuffer;
 use crate::device::{Device, PhysicalDeviceProperties, PropertyQueueList};
-use crate::engine::MemResult;
-use crate::image::{Image, ImageView, ImageWithView};
+use crate::gpu_alloc::MemResult;
+use crate::image::{Image, ImageView};
 use crate::surface::Surface;
 use crate::utils;
 
@@ -14,15 +14,22 @@ pub struct Swapchain {
     loader: khr::swapchain::Device,
     handle: vk::SwapchainKHR,
     images: Vec<vk::Image>,
-    image_views: Vec<ImageView<'static>>,
-    colour_resolve_image: ManuallyDrop<ImageWithView>,
-    depth_image_view: ManuallyDrop<ImageWithView>,
+    image_views: Vec<ImageView>,
+    colour_resolve_image: ManuallyDrop<Image>,
+    depth_image: ManuallyDrop<Image>,
     extent: vk::Extent2D,
     msaa_samples: vk::SampleCountFlags,
 }
 
 impl Swapchain {
-    pub fn new(instance: &ash::Instance, device: &Device, gfx_cmd_pool: vk::CommandPool, surface: &Surface, window_size: vk::Extent2D, old_swapchain: Option<&Swapchain>) -> MemResult<Self> {
+    pub fn new(
+        instance: &ash::Instance,
+        device: &Device,
+        gfx_cmd_pool: vk::CommandPool,
+        surface: &Surface,
+        window_size: vk::Extent2D,
+        old_swapchain: Option<&Swapchain>
+    ) -> MemResult<Self> {
         let device_properties = device.get_properties();
         let unique_queue_families = device_properties.get_unique_queue_families();
 
@@ -46,7 +53,7 @@ impl Swapchain {
         };
         let swapchain_format = device_properties.swapchain_format;
 
-        let loader = khr::swapchain::Device::new(&instance, &device.device());
+        let loader = khr::swapchain::Device::new(&instance, &device.loader());
         let swapchain_info = vk::SwapchainCreateInfoKHR::default()
             .surface(surface.handle())
             .min_image_count(device_properties.image_count)
@@ -76,7 +83,7 @@ impl Swapchain {
             .subresource_range(utils::DEFAULT_SUBRESOURCE_RANGE);
         let image_views = images.iter().map(|swapchain_image| {
             image_view_info.image = *swapchain_image;
-            ImageView::new_external(device, *swapchain_image, &image_view_info)
+            unsafe { ImageView::new(device.cloned_loader(), &image_view_info) }
         }).collect::<VkResult<Vec<_>>>()?;
 
         let msaa_samples = PhysicalDeviceProperties::MSAA_SAMPLES;
@@ -99,7 +106,6 @@ impl Swapchain {
             Self::get_subresource_range(),
             "Colour resolve image",
         )?;
-        let colour_resolve_image = ImageWithView::from_image(&device, colour_resolve_image)?;
 
         // Create depth image.
         let depth_image_info = vk::ImageCreateInfo::default()
@@ -129,15 +135,13 @@ impl Swapchain {
             None,
         )?;
 
-        let depth_image_view = ImageWithView::from_image(&device, depth_image)?;
-
         Ok(Self {
             loader,
             handle,
             images,
             image_views,
             colour_resolve_image: ManuallyDrop::new(colour_resolve_image),
-            depth_image_view: ManuallyDrop::new(depth_image_view),
+            depth_image: ManuallyDrop::new(depth_image),
             extent: swapchain_extent,
             msaa_samples,
         })
@@ -147,7 +151,7 @@ impl Swapchain {
         self.extent
     }
 
-    pub fn get_colour_resolve_view(&self) -> &ImageWithView {
+    pub fn get_colour_resolve_view(&self) -> &Image {
         &self.colour_resolve_image
     }
 
@@ -160,7 +164,7 @@ impl Swapchain {
     }
 
     pub fn get_depth_view(&self) -> &ImageView {
-        self.depth_image_view.borrow_view()
+        self.depth_image.view()
     }
 
     pub fn get_subresource_range() -> vk::ImageSubresourceRange {
@@ -188,18 +192,17 @@ impl Swapchain {
             .image_indices(slice::from_ref(&image_index));
         unsafe { self.loader.queue_present(queue, &present_info) }
     }
+}
 
-    pub unsafe fn destroy(&mut self, device: &Device) {
+impl Drop for Swapchain {
+    fn drop(&mut self) {
         // Drop depth image and view.
-        unsafe { ManuallyDrop::take(&mut self.depth_image_view).destroy(device) };
+        unsafe { ManuallyDrop::drop(&mut self.depth_image) };
 
         // Drop colour resolve image.
-        unsafe { ManuallyDrop::take(&mut self.colour_resolve_image).destroy(device) };
+        unsafe { ManuallyDrop::drop(&mut self.colour_resolve_image) };
 
         // Drop image views.
-        for image_view in self.image_views.iter() {
-            unsafe { device.device().destroy_image_view(*image_view.handle(), None) };
-        }
         self.image_views.clear();
         self.images.clear();
 

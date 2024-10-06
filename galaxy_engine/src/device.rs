@@ -1,13 +1,12 @@
-use std::cell::RefCell;
 use std::mem::{ManuallyDrop, MaybeUninit};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::{khr, vk};
 use gpu_allocator::vulkan::{AllocationCreateDesc, Allocator, AllocatorCreateDesc};
 use itertools::Itertools;
 
-use crate::engine::MemResult;
+use crate::gpu_alloc::{AllocResult, ManuallyFreeAllocation, SharedAllocator};
 use crate::surface::Surface;
 use crate::utils;
 
@@ -71,10 +70,38 @@ impl PhysicalDeviceProperties {
     }
 }
 
+// Used to allow sharing of objects, but also ensuring that it is destroyed at the appropriate time.
+struct ArcFinalOwner<T>(ManuallyDrop<Arc<T>>);
+
+impl<T> ArcFinalOwner<T> {
+    pub fn new(value: T) -> Self {
+        Self(ManuallyDrop::new(Arc::new(value)))
+    }
+
+    pub unsafe fn destroy_as_final(&mut self, destroy: impl FnOnce(&mut T)) {
+        // Get shared item and drop it. Ensure we are the last owner of the shared reference.
+        let Some(mut object) = (unsafe { Arc::into_inner(ManuallyDrop::take(&mut self.0)) }) else {
+            log::error!("Not last owner of Vulkan object.");
+            return;
+        };
+        destroy(&mut object);
+    }
+}
+
+impl<T> std::ops::Deref for ArcFinalOwner<T> {
+    type Target = Arc<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+pub type SharedDeviceLoader = Arc<ash::Device>;
+
 pub struct Device {
-    device: ManuallyDrop<Arc<ash::Device>>,
+    loader: ArcFinalOwner<ash::Device>,
     ext: LoadedExtensions,
-    allocator: RefCell<ManuallyDrop<Allocator>>,
+    allocator: ArcFinalOwner<Mutex<Allocator>>,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
     transfer_queue: vk::Queue,
@@ -282,9 +309,9 @@ impl Device {
         let ext = LoadedExtensions::new(&instance, &device);
 
         Ok(Self {
-            device: ManuallyDrop::new(Arc::new(device)),
+            loader: ArcFinalOwner::new(device),
             ext,
-            allocator: RefCell::new(ManuallyDrop::new(allocator)),
+            allocator: ArcFinalOwner::new(Mutex::new(allocator)),
             graphics_queue,
             present_queue,
             transfer_queue,
@@ -292,8 +319,15 @@ impl Device {
         })
     }
 
-    pub fn device(&self) -> &Arc<ash::Device> {
-        &self.device
+    pub fn loader(&self) -> &SharedDeviceLoader {
+        &self.loader
+    }
+    pub fn cloned_loader(&self) -> SharedDeviceLoader {
+        Arc::clone(&self.loader)
+    }
+
+    pub fn cloned_allocator(&self) -> SharedAllocator {
+        Arc::clone(&self.allocator)
     }
 
     pub fn ext(&self) -> &LoadedExtensions {
@@ -319,16 +353,14 @@ impl Device {
         }
     }
 
-    pub fn allocate_memory(&self, desc: &AllocationCreateDesc) -> MemResult<gpu_allocator::vulkan::Allocation> {
-        Ok(self.allocator.borrow_mut().allocate(desc)?)
-    }
-
-    pub fn free_memory(&self, allocation: gpu_allocator::vulkan::Allocation) -> MemResult<()> {
-        Ok(self.allocator.borrow_mut().free(allocation)?)
+    pub fn allocate_memory(&self, desc: &AllocationCreateDesc) -> AllocResult<ManuallyFreeAllocation> {
+        Ok(ManuallyDrop::new(self.allocator.lock().map_err(|_| {
+            gpu_allocator::AllocationError::Internal("Mutex Poisoned".to_string())
+        })?.allocate(desc)?))
     }
 
     pub fn print_allocator_report(&self) {
-        log::info!("{:?}", self.allocator.borrow().generate_report());
+        log::info!("{:?}", self.allocator.lock().unwrap().generate_report());
     }
 
     // Doesn't allocate a vec for the single buffer case.
@@ -338,8 +370,8 @@ impl Device {
             .level(level)
             .command_buffer_count(1);
         let mut buffer = MaybeUninit::uninit();
-        (self.device.fp_v1_0().allocate_command_buffers)(
-            self.device.handle(),
+        (self.loader.fp_v1_0().allocate_command_buffers)(
+            self.loader.handle(),
             &allocate_info,
             buffer.as_mut_ptr(),
         ).result()?;
@@ -351,36 +383,16 @@ impl Device {
         let command_pool_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::TRANSIENT)
             .queue_family_index(self.get_queue_family_idx(queue_family));
-        unsafe { self.device.create_command_pool(&command_pool_info, None) }
+        unsafe { self.loader.create_command_pool(&command_pool_info, None) }
     }
-
 }
 
 impl Drop for Device {
     fn drop(&mut self) {
-        // Drop allocator.
-        unsafe { ManuallyDrop::drop(self.allocator.get_mut()) };
-        // Drop device. Ensures this is the last reference to the device.
-        unsafe { Arc::into_inner(ManuallyDrop::take(&mut self.device)).unwrap().destroy_device(None) };
+        // Drop allocator. Allocator has drop semantics, so we don't need a custom destroy closure.
+        unsafe { self.allocator.destroy_as_final(|_| {}) };
+
+        // Drop device.
+        unsafe { self.loader.destroy_as_final(|device| device.destroy_device(None)) };
     }
 }
-
-//pub struct SharedDevice(Arc<ManuallyDrop<Device>>);
-//
-//impl SharedDevice {
-//    pub fn new(device: Device) -> Self {
-//        Self(Arc::new(ManuallyDrop::new(device)))
-//    }
-//
-//    pub fn destroy(&mut self) {
-//        unsafe { ManuallyDrop::drop(&mut Arc::into_inner(self.0)) };
-//    }
-//}
-//
-//impl std::ops::Deref for SharedDevice {
-//    type Target = Device;
-//
-//    fn deref(&self) -> &Self::Target {
-//        &self.0
-//    }
-//}

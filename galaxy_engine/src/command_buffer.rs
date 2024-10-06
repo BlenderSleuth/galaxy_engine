@@ -1,8 +1,9 @@
 use std::slice;
-use std::sync::Arc;
+
 use ash::prelude::VkResult;
 use ash::vk;
-use crate::device::Device;
+
+use crate::device::{Device, SharedDeviceLoader};
 
 // Either use a specific command buffer, or allocate a new one-time buffer from a pool.
 // TODO: unify queue / pool system.
@@ -27,7 +28,7 @@ impl<'a> TransientOrPersistentCommandBuffer<'a> {
 }
 
 pub struct CommandBuffer {
-    device: Arc<ash::Device>,
+    loader: SharedDeviceLoader,
     handle: vk::CommandBuffer,
     pool: vk::CommandPool,
 }
@@ -40,9 +41,9 @@ impl CommandBuffer {
         let cmd_buffer = unsafe { device.allocate_command_buffer(cmd_pool, vk::CommandBufferLevel::PRIMARY) }?;
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        unsafe { device.device().begin_command_buffer(cmd_buffer, &begin_info) }?;
+        unsafe { device.loader().begin_command_buffer(cmd_buffer, &begin_info) }?;
         Ok(Self {
-            device: Arc::clone(device.device()),
+            loader: device.cloned_loader(),
             handle: cmd_buffer,
             pool: cmd_pool,
         })
@@ -53,16 +54,16 @@ impl CommandBuffer {
     }
 
     pub fn end_and_submit(&self, device: &Device, queue: vk::Queue) -> VkResult<()> {
-        unsafe { device.device().end_command_buffer(self.handle) }?;
+        unsafe { device.loader().end_command_buffer(self.handle) }?;
         let submit_info = vk::SubmitInfo::default()
             .command_buffers(slice::from_ref(&self.handle));
-        unsafe { device.device().queue_submit(queue, &[submit_info], vk::Fence::null()) }?;
+        unsafe { device.loader().queue_submit(queue, &[submit_info], vk::Fence::null()) }?;
         Ok(())
     }
 
     pub fn end_submit_and_wait(self, device: &Device, queue: vk::Queue) -> VkResult<()> {
         self.end_and_submit(device, queue)?;
-        unsafe { device.device().queue_wait_idle(queue) }?;
+        unsafe { device.loader().queue_wait_idle(queue) }?;
         // Command buffer is freed in Drop.
         Ok(())
     }
@@ -74,7 +75,7 @@ impl CommandBuffer {
 
 impl Drop for CommandBuffer {
     fn drop(&mut self) {
-        unsafe { self.device.free_command_buffers(self.pool, &[self.handle]) };
+        unsafe { self.loader.free_command_buffers(self.pool, &[self.handle]) };
     }
 }
 

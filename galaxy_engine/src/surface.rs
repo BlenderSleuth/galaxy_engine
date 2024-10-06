@@ -34,8 +34,10 @@ impl Surface {
     pub fn get_formats(&self, physical_device: vk::PhysicalDevice) -> VkResult<Vec<vk::SurfaceFormatKHR>> {
         unsafe { self.loader.get_physical_device_surface_formats(physical_device, self.handle) }
     }
-    
-    pub unsafe fn destroy(&self) {
+}
+
+impl Drop for Surface {
+    fn drop(&mut self) {
         unsafe { self.loader.destroy_surface(self.handle, None) };
     }
 }

@@ -34,12 +34,6 @@ pub(crate) fn use_dedicated_allocation(dedicated_requirements: vk::MemoryDedicat
         || dedicated_requirements.prefers_dedicated_allocation == vk::TRUE
 }
 
-pub(crate) fn drop_fail<T, E: std::error::Error>(result: Result<T, E>, message: &str) {
-    if let Err(err) = result {
-        log::error!("{message}: {err}.");
-    }
-}
-
 pub(crate) fn cstr_to_ptrs(c_strs: &[&'static CStr]) -> Vec<*const c_char> {
     c_strs.iter().map(|cstr| cstr.as_ptr()).collect()
 }

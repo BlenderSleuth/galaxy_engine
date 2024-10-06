@@ -19,21 +19,9 @@ use device::Device;
 use maths::VkPerspective;
 use surface::Surface;
 use swapchain::Swapchain;
-use crate::device::PhysicalDeviceProperties;
-use crate::image::{Image, ImageWithView};
-
-#[derive(thiserror::Error, Debug)]
-pub enum MemoryError {
-    #[error("Memory vulkan error: {0}")]
-    VkResult(#[from] vk::Result),
-    #[error("Allocation error: {0}")]
-    AllocationError(#[from] gpu_allocator::AllocationError),
-    #[error("No allocation for object: {0}")]
-    NotAllocated(&'static str),
-    #[error("Copy error: {0}")]
-    CopyError(#[from] presser::CopyError),
-}
-pub type MemResult<T> = Result<T, MemoryError>;
+use crate::device::{PhysicalDeviceProperties, SharedDeviceLoader};
+use crate::gpu_alloc::{MemResult, MemoryError};
+use crate::image::{Image, ImageDimensions};
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
@@ -137,8 +125,10 @@ impl DebugMessenger {
 
         vk::FALSE
     }
+}
 
-    pub unsafe fn destroy(&mut self) {
+impl Drop for DebugMessenger {
+    fn drop(&mut self) {
         unsafe { self.loader.destroy_debug_utils_messenger(self.messenger, None) };
     }
 }
@@ -189,6 +179,7 @@ struct UniformBufferObject {
 }
 
 struct ShaderModule {
+    loader: SharedDeviceLoader,
     module: vk::ShaderModule,
     stage: vk::ShaderStageFlags,
 }
@@ -200,7 +191,8 @@ impl ShaderModule {
         assert!(suffix.is_empty());
         let create_info = vk::ShaderModuleCreateInfo::default().code(code);
         Ok(Self {
-            module: unsafe { device.device().create_shader_module(&create_info, None) }?,
+            loader: device.cloned_loader(),
+            module: unsafe { device.loader().create_shader_module(&create_info, None) }?,
             stage,
         })
     }
@@ -215,9 +207,11 @@ impl ShaderModule {
                 _ => panic!("Unsupported shader stage: {:?}", self.stage),
             })
     }
+}
 
-    unsafe fn destroy(&mut self, device: &Device) {
-        unsafe { device.device().destroy_shader_module(self.module, None) };
+impl Drop for ShaderModule {
+    fn drop(&mut self) {
+        unsafe { self.loader.destroy_shader_module(self.module, None) };
     }
 }
 
@@ -234,9 +228,10 @@ pub enum ModelError {
 }
 
 struct Model {
+    loader: SharedDeviceLoader,
     vertex_buffer: Buffer<GpuOnly>,
     index_buffer: Buffer<GpuOnly>,
-    texture_image: Option<ImageWithView>,
+    texture_image: Image,
     sampler: vk::Sampler,
     vertex_shader_module: ShaderModule,
     fragment_shader_module: ShaderModule,
@@ -252,19 +247,15 @@ impl Model {
         let image = ktx2::Reader::new(image_file).unwrap();
         let header = image.header();
         let mip_levels = image.levels().collect::<Vec<_>>();
-        let extent = vk::Extent3D { width: header.pixel_width, height: header.pixel_height, depth: 1 };
+        let extent = vk::Extent2D { width: header.pixel_width, height: header.pixel_height };
         let texture_image = Image::new_from_mip_levels(
             device,
             gfx_cmd_pool,
             &mip_levels,
-            vk::ImageType::TYPE_2D,
-            extent,
+            ImageDimensions::Type2D(extent),
             header.format.map(utils::ktx_to_vulkan_format).unwrap_or(vk::Format::R8G8B8A8_SRGB),
             "Model texture",
         )?;
-
-        // Create texture image view.
-        let texture_image_view = ImageWithView::from_image(&device, texture_image)?;
 
         // Create texture sampler.
         let max_anisotropy = device.get_properties().properties.limits.max_sampler_anisotropy;
@@ -283,7 +274,7 @@ impl Model {
             .mip_lod_bias(0.)
             .min_lod(0.)
             .max_lod(0.);
-        let sampler = unsafe { device.device().create_sampler(&sampler_info, None) }?;
+        let sampler = unsafe { device.loader().create_sampler(&sampler_info, None) }?;
 
         // Load shaders.
         let vertex_shader_code = std::fs::read("shaders/shader.vert.spv")?;
@@ -335,9 +326,10 @@ impl Model {
         index_buffer.copy_via_staging_buffer(&device, bytemuck::must_cast_slice(indices.as_slice()), gfx_cmd_pool, QueueFamily::Graphics)?;
 
         Ok(Self {
+            loader: device.cloned_loader(),
             vertex_buffer,
             index_buffer,
-            texture_image: Some(texture_image_view),
+            texture_image,
             sampler,
             vertex_shader_module,
             fragment_shader_module,
@@ -347,36 +339,23 @@ impl Model {
     pub fn shader_stages(&self) -> [vk::PipelineShaderStageCreateInfo; 2] {
         [self.vertex_shader_module.stage_info(), self.fragment_shader_module.stage_info()]
     }
+}
 
-    pub unsafe fn destroy(&mut self, device: &Device) -> MemResult<()> {
-        // Drop vertex buffer.
-        unsafe { self.vertex_buffer.destroy(device) }?;
-        // Drop index buffer.
-        unsafe { self.index_buffer.destroy(device) }?;
-        // Drop shader modules after pipeline creation.
-        unsafe { self.vertex_shader_module.destroy(device) };
-        unsafe { self.fragment_shader_module.destroy(device) };
-
-        // Drop texture image and view.
-        if let Some(image) = self.texture_image.take() {
-            unsafe { image.destroy(device) };
-        }
-
+impl Drop for Model {
+    fn drop(&mut self) {
         // Drop sampler.
-        unsafe { device.device().destroy_sampler(self.sampler, None) };
-
-        Ok(())
+        unsafe { self.loader.destroy_sampler(self.sampler, None) };
     }
 }
 
 pub struct GalaxyEngine {
     _entry: ash::Entry,
-    instance: ash::Instance,
+    instance: ManuallyDrop<ash::Instance>,
     debug_messenger: Option<DebugMessenger>,
-    surface: Surface,
+    surface: ManuallyDrop<Surface>,
     device: ManuallyDrop<Device>,
-    swapchain: Swapchain,
-    model: Model,
+    swapchain: ManuallyDrop<Swapchain>,
+    model: ManuallyDrop<Model>,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: [vk::DescriptorSet; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
@@ -384,7 +363,7 @@ pub struct GalaxyEngine {
     pipeline: vk::Pipeline,
     graphics_cmd_pool: vk::CommandPool,
     transfer_cmd_pool: vk::CommandPool,
-    uniform_buffers: [Buffer<CpuToGpu>; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
+    uniform_buffers: Vec<Buffer<CpuToGpu>>,
     cmd_buffers: [vk::CommandBuffer; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     image_available_semaphores: [vk::Semaphore; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     render_finished_semaphores: [vk::Semaphore; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
@@ -456,7 +435,7 @@ impl GalaxyEngine {
         let command_pool_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
             .queue_family_index(device_properties.graphics_queue_family_idx);
-        let graphics_cmd_pool = unsafe { device.device().create_command_pool(&command_pool_info, None) }?;
+        let graphics_cmd_pool = unsafe { device.loader().create_command_pool(&command_pool_info, None) }?;
         let transfer_cmd_pool = device.create_transient_command_pool(QueueFamily::Transfer)?;
 
         // Create swapchain.
@@ -493,7 +472,7 @@ impl GalaxyEngine {
 
         let layout_bindings = [ubo_layout_binding, sampler_layout_binding];
         let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&layout_bindings);
-        let descriptor_set_layout = unsafe { device.device().create_descriptor_set_layout(&descriptor_set_layout_info, None) }?;
+        let descriptor_set_layout = unsafe { device.loader().create_descriptor_set_layout(&descriptor_set_layout_info, None) }?;
 
         // Create descriptor pool.
         let pool_sizes = [
@@ -509,14 +488,14 @@ impl GalaxyEngine {
             .pool_sizes(&pool_sizes)
             .max_sets(Self::MAX_FRAMES_IN_FLIGHT as u32);
 
-        let descriptor_pool = unsafe { device.device().create_descriptor_pool(&descriptor_pool_info, None) }?;
+        let descriptor_pool = unsafe { device.loader().create_descriptor_pool(&descriptor_pool_info, None) }?;
 
         // Create descriptor sets.
         let layouts = [descriptor_set_layout; Self::MAX_FRAMES_IN_FLIGHT];
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&layouts);
-        let descriptor_sets = unsafe { device.device().allocate_descriptor_sets(&alloc_info) }?;
+        let descriptor_sets = unsafe { device.loader().allocate_descriptor_sets(&alloc_info) }?;
 
         for (i, descriptor_set) in descriptor_sets.iter().enumerate() {
             let buffer_info = vk::DescriptorBufferInfo::default()
@@ -526,7 +505,7 @@ impl GalaxyEngine {
 
             let image_info = vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(*model.texture_image.as_ref().unwrap().borrow_view().handle())
+                .image_view(model.texture_image.view().handle())
                 .sampler(model.sampler);
 
             let descriptor_writes = [
@@ -544,7 +523,7 @@ impl GalaxyEngine {
                     .image_info(slice::from_ref(&image_info)),
             ];
 
-            unsafe { device.device().update_descriptor_sets(&descriptor_writes, &[]) };
+            unsafe { device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
         }
 
         // Create graphics pipeline.
@@ -592,7 +571,7 @@ impl GalaxyEngine {
 
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(slice::from_ref(&descriptor_set_layout));
-        let pipeline_layout = unsafe { device.device().create_pipeline_layout(&pipeline_layout_info, None) }?;
+        let pipeline_layout = unsafe { device.loader().create_pipeline_layout(&pipeline_layout_info, None) }?;
 
         let mut dynamic_pipeline_info = vk::PipelineRenderingCreateInfo::default()
             .color_attachment_formats(slice::from_ref(&device_properties.swapchain_format.format))
@@ -620,14 +599,14 @@ impl GalaxyEngine {
             .layout(pipeline_layout)
             .push_next(&mut dynamic_pipeline_info);
 
-        let pipeline = unsafe { device.device().create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None) }.map_err(|(_, e)| e)?[0];
+        let pipeline = unsafe { device.loader().create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None) }.map_err(|(_, e)| e)?[0];
 
         // Create command buffer.
         let command_buffer_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(graphics_cmd_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(Self::MAX_FRAMES_IN_FLIGHT as u32);
-        let command_buffers = unsafe { device.device().allocate_command_buffers(&command_buffer_info) }?;
+        let command_buffers = unsafe { device.loader().allocate_command_buffers(&command_buffer_info) }?;
 
         // Create sync objects.
         let mut image_available_semaphores = [vk::Semaphore::null(); Self::MAX_FRAMES_IN_FLIGHT];
@@ -635,21 +614,21 @@ impl GalaxyEngine {
         let mut in_flight_fences = [vk::Fence::null(); Self::MAX_FRAMES_IN_FLIGHT];
         let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
         for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
-            image_available_semaphores[i] = unsafe { device.device().create_semaphore(&Default::default(), None) }?;
-            render_finished_semaphores[i] = unsafe { device.device().create_semaphore(&Default::default(), None) }?;
-            in_flight_fences[i] = unsafe { device.device().create_fence(&fence_info, None) }?;
+            image_available_semaphores[i] = unsafe { device.loader().create_semaphore(&Default::default(), None) }?;
+            render_finished_semaphores[i] = unsafe { device.loader().create_semaphore(&Default::default(), None) }?;
+            in_flight_fences[i] = unsafe { device.loader().create_fence(&fence_info, None) }?;
         }
 
         device.print_allocator_report();
 
         Ok(Self {
             _entry: entry,
-            instance,
+            instance: ManuallyDrop::new(instance),
             debug_messenger,
-            surface,
+            surface: ManuallyDrop::new(surface),
             device: ManuallyDrop::new(device),
-            swapchain,
-            model,
+            swapchain: ManuallyDrop::new(swapchain),
+            model: ManuallyDrop::new(model),
             descriptor_set_layout,
             descriptor_pool,
             descriptor_sets: descriptor_sets.try_into().unwrap(),
@@ -657,7 +636,7 @@ impl GalaxyEngine {
             pipeline,
             graphics_cmd_pool,
             transfer_cmd_pool,
-            uniform_buffers,
+            uniform_buffers: uniform_buffers.into(),
             cmd_buffers: command_buffers.try_into().unwrap(),
             image_available_semaphores,
             render_finished_semaphores,
@@ -675,7 +654,7 @@ impl GalaxyEngine {
             self.recreate_swapchain()?;
         }
 
-        let device = self.device.device();
+        let device = self.device.loader();
 
         let ext = self.device.ext();
 
@@ -741,17 +720,17 @@ impl GalaxyEngine {
         unsafe { ext.sync2.cmd_pipeline_barrier2(command_buffer, &dependency_info) };
 
         let color_attachment_info = vk::RenderingAttachmentInfo::default()
-            .image_view(*self.swapchain.get_colour_resolve_view().borrow_view().handle())
+            .image_view(self.swapchain.get_colour_resolve_view().view().handle())
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::STORE)
             .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } })
             .resolve_mode(vk::ResolveModeFlags::AVERAGE)
-            .resolve_image_view(*self.swapchain.get_image_views()[image_idx as usize].handle())
+            .resolve_image_view(self.swapchain.get_image_views()[image_idx as usize].handle())
             .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
         let depth_attachment_info = vk::RenderingAttachmentInfo::default()
-            .image_view(*self.swapchain.get_depth_view().handle())
+            .image_view(self.swapchain.get_depth_view().handle())
             .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -811,10 +790,10 @@ impl GalaxyEngine {
     }
 
     fn recreate_swapchain(&mut self) -> MemResult<()> {
-        unsafe { self.device.device().device_wait_idle() }?;
+        unsafe { self.device.loader().device_wait_idle() }?;
         let new_swapchain = Swapchain::new(&self.instance, &self.device, self.graphics_cmd_pool, &self.surface, self.window_size, Some(&self.swapchain))?;
-        unsafe { self.swapchain.destroy(&self.device) };
-        self.swapchain = new_swapchain;
+        unsafe { ManuallyDrop::drop(&mut self.swapchain) };
+        self.swapchain = ManuallyDrop::new(new_swapchain);
         Ok(())
     }
 
@@ -891,56 +870,52 @@ impl Drop for GalaxyEngine {
     fn drop(&mut self) {
         self.device.print_allocator_report();
 
-        let device = self.device.device();
+        let device_loader = self.device.loader();
 
-        unsafe { device.device_wait_idle() }.unwrap_or_else(|e| log::error!("Failed to wait for device idle: {:?}", e));
+        unsafe { device_loader.device_wait_idle() }.unwrap_or_else(|e| log::error!("Failed to wait for device idle: {:?}", e));
 
         // Drop sync objects.
         for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
-            unsafe { device.destroy_semaphore(self.image_available_semaphores[i], None) };
-            unsafe { device.destroy_semaphore(self.render_finished_semaphores[i], None) };
-            unsafe { device.destroy_fence(self.in_flight_fences[i], None) };
+            unsafe { device_loader.destroy_semaphore(self.image_available_semaphores[i], None) };
+            unsafe { device_loader.destroy_semaphore(self.render_finished_semaphores[i], None) };
+            unsafe { device_loader.destroy_fence(self.in_flight_fences[i], None) };
         }
 
         // Drop command_buffers.
-        unsafe { device.free_command_buffers(self.graphics_cmd_pool, &self.cmd_buffers) };
+        unsafe { device_loader.free_command_buffers(self.graphics_cmd_pool, &self.cmd_buffers) };
 
         // Drop command_pools.
-        unsafe { device.destroy_command_pool(self.graphics_cmd_pool, None) };
-        unsafe { device.destroy_command_pool(self.transfer_cmd_pool, None) };
+        unsafe { device_loader.destroy_command_pool(self.graphics_cmd_pool, None) };
+        unsafe { device_loader.destroy_command_pool(self.transfer_cmd_pool, None) };
 
         // Drop pipeline.
-        unsafe { device.destroy_pipeline(self.pipeline, None) };
+        unsafe { device_loader.destroy_pipeline(self.pipeline, None) };
 
         // Drop pipeline layout.
-        unsafe { device.destroy_pipeline_layout(self.pipeline_layout, None) };
+        unsafe { device_loader.destroy_pipeline_layout(self.pipeline_layout, None) };
 
         // Drop descriptor set layout.
-        unsafe { device.destroy_descriptor_set_layout(self.descriptor_set_layout, None) };
+        unsafe { device_loader.destroy_descriptor_set_layout(self.descriptor_set_layout, None) };
         // Drop descriptor pool.
-        unsafe { device.destroy_descriptor_pool(self.descriptor_pool, None) };
+        unsafe { device_loader.destroy_descriptor_pool(self.descriptor_pool, None) };
 
         // Drop uniform buffers.
-        for uniform_buffer in self.uniform_buffers.iter_mut() {
-            unsafe { uniform_buffer.destroy(&self.device) }.unwrap_or_else(|e| log::error!("Failed to destroy uniform buffer: {:?}", e));
-        }
+        self.uniform_buffers.clear();
 
         // Drop model.
-        unsafe { self.model.destroy(&self.device) }.unwrap_or_else(|e| log::error!("Failed to destroy model: {:?}", e));
+        unsafe { ManuallyDrop::drop(&mut self.model) };
 
         // Drop swapchain.
-        unsafe { self.swapchain.destroy(&self.device) };
+        unsafe { ManuallyDrop::drop(&mut self.swapchain) };
 
         // Drop device.
         unsafe { ManuallyDrop::drop(&mut self.device) };
 
         // Drop surface.
-        unsafe { self.surface.destroy() };
+        unsafe { ManuallyDrop::drop(&mut self.surface) };
 
         // Drop debug messenger.
-        if let Some(debug_messenger) = &mut self.debug_messenger {
-            unsafe { debug_messenger.destroy() };
-        }
+        self.debug_messenger = None;
 
         // Drop instance.
         unsafe { self.instance.destroy_instance(None) };

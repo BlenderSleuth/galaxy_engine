@@ -1,11 +1,11 @@
 use ash::vk;
-use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
+use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme};
 
 use crate::buffer::mem_location::*;
 use crate::command_buffer::{CommandBuffer, TransientOrPersistentCommandBuffer};
-use crate::device::{Device, QueueFamily};
-use crate::engine::{MemResult, MemoryError};
-use crate::utils;
+use crate::device::{Device, QueueFamily, SharedDeviceLoader};
+use crate::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
+use crate::{gpu_alloc, utils};
 
 pub mod mem_location {
     use gpu_allocator::MemoryLocation;
@@ -33,8 +33,10 @@ pub mod mem_location {
 }
 
 pub struct Buffer<L: MemLocation> {
+    loader: SharedDeviceLoader,
+    alloc: SharedAllocator,
     handle: vk::Buffer,
-    allocation: Option<Allocation>,
+    allocation: ManuallyFreeAllocation,
     length: u32,
     element_size: vk::DeviceSize,
     _mem_location: std::marker::PhantomData<L>,
@@ -57,7 +59,7 @@ impl<L: MemLocation> Buffer<L> {
             .usage(usage)
             .sharing_mode(sharing_mode)
             .queue_family_indices(if sharing_mode == vk::SharingMode::CONCURRENT { &queue_indices } else { &[] });
-        let handle = unsafe { device.device().create_buffer(&buffer_info, None) }?;
+        let handle = unsafe { device.loader().create_buffer(&buffer_info, None) }?;
 
         // Allocate memory for buffer. Check if the buffer requires dedicated allocation.
         let mut dedicated_requirements = vk::MemoryDedicatedRequirements::default();
@@ -65,7 +67,7 @@ impl<L: MemLocation> Buffer<L> {
             .push_next(&mut dedicated_requirements);
         let requirements_info = vk::BufferMemoryRequirementsInfo2::default()
             .buffer(handle);
-        unsafe { device.device().get_buffer_memory_requirements2(&requirements_info, &mut requirements) };
+        unsafe { device.loader().get_buffer_memory_requirements2(&requirements_info, &mut requirements) };
 
         let requirements = requirements.memory_requirements;
         let allocation_scheme = if utils::use_dedicated_allocation(dedicated_requirements) {
@@ -84,9 +86,9 @@ impl<L: MemLocation> Buffer<L> {
         let allocation = device.allocate_memory(&desc)?;
 
         // Bind buffer memory.
-        unsafe { device.device().bind_buffer_memory(handle, allocation.memory(), allocation.offset()) }?;
+        unsafe { device.loader().bind_buffer_memory(handle, allocation.memory(), allocation.offset()) }?;
 
-        Ok(Self { handle, allocation: Some(allocation), length, element_size, _mem_location: std::marker::PhantomData })
+        Ok(Self { loader: device.cloned_loader(), alloc: device.cloned_allocator(), handle, allocation, length, element_size, _mem_location: std::marker::PhantomData })
     }
 
     pub fn handle(&self) -> vk::Buffer {
@@ -103,23 +105,22 @@ impl<L: MemLocation> Buffer<L> {
         self.length
     }
 
-    pub unsafe fn destroy(&mut self, device: &Device) -> MemResult<()> {
-        device.device().destroy_buffer(self.handle, None);
-        if let Some(allocation) = self.allocation.take() {
-            device.free_memory(allocation)
-        } else {
-            Ok(())
-        }
-    }
-
     pub fn copy_to_buffer<L2: MemLocation>(&self, cmd: TransientOrPersistentCommandBuffer, device: &Device, dst_buffer: &mut Buffer<L2>, size: vk::DeviceSize, queue_family: QueueFamily) -> MemResult<()> {
         let cmd_buffer = cmd.command_buffer();
 
         let copy_region = vk::BufferCopy::default()
             .size(size);
-        unsafe { device.device().cmd_copy_buffer(cmd_buffer.handle(), self.handle(), dst_buffer.handle(), &[copy_region]) };
+        unsafe { device.loader().cmd_copy_buffer(cmd_buffer.handle(), self.handle(), dst_buffer.handle(), &[copy_region]) };
 
         Ok(cmd.maybe_end_submit_and_wait(device, device.get_queue(queue_family))?)
+    }
+}
+
+impl<L: MemLocation> Drop for Buffer<L> {
+    fn drop(&mut self) {
+        // Drop buffer.
+        unsafe { self.loader.destroy_buffer(self.handle, None); }
+        unsafe { gpu_alloc::free_or_log_on_fail(&self.alloc, &mut self.allocation) };
     }
 }
 
@@ -135,16 +136,14 @@ impl Buffer<GpuOnly> {
         )?;
         staging_buffer.copy_into_buffer(&src_data, 0)?;
         staging_buffer.copy_to_buffer(CommandBuffer::one_time_transient(device, cmd_pool)?, &device, self, staging_buffer.size(), queue_family)?;
-        unsafe { staging_buffer.destroy(&device) }?;
         Ok(())
     }
 }
 
 impl Buffer<CpuToGpu> {
     pub fn copy_into_buffer(&mut self, data: &[u8], offset: usize) -> MemResult<()> {
-        let allocation = self.allocation.as_mut().ok_or(MemoryError::NotAllocated("Buffer"))?;
         // CPU to GPU memory is always mappable.
-        let mut memory = allocation.try_as_mapped_slab().unwrap();
+        let mut memory = self.allocation.try_as_mapped_slab().unwrap();
         presser::copy_from_slice_to_offset_with_align(data, &mut memory, offset, 1)?;
         Ok(())
     }
