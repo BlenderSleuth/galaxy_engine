@@ -25,7 +25,7 @@ struct VSToFS {
 VSToFS mainVS(VSInput input) {
     VSToFS output;
     output.position = mul(push_constants.mvp, float4(input.position, 1.));
-    output.color = sun_direction;
+    output.color = sun_direction * input.color;
     output.tex_coord = input.tex_coord;
     return output;
 }

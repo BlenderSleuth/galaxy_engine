@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::mem::ManuallyDrop;
 use std::slice;
+use std::sync::Arc;
 use ash::prelude::VkResult;
 use ash::{ext, vk};
 use meshopt::VertexDataAdapter;
@@ -19,9 +20,10 @@ use device::Device;
 use maths::VkPerspective;
 use surface::Surface;
 use swapchain::Swapchain;
-use device::{PhysicalDeviceProperties, SharedDeviceLoader};
+use device::SharedDeviceLoader;
 use crate::gpu_alloc::{MemResult, MemoryError};
 use crate::image::{Image, ImageDimensions};
+use crate::pipeline::{GraphicsPipeline, GraphicsPipelineParameters, GraphicsShaderStageArray, Pipeline, PipelineLayout};
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
@@ -360,8 +362,11 @@ impl Model {
         })
     }
 
-    pub fn shader_stages(&self) -> [vk::PipelineShaderStageCreateInfo; 2] {
-        [self.vertex_shader_module.stage_info(), self.fragment_shader_module.stage_info()]
+    pub fn shader_stages(&self) -> GraphicsShaderStageArray {
+        utils::arrayvec_from_array([
+            self.vertex_shader_module.stage_info(),
+            self.fragment_shader_module.stage_info(),
+        ])
     }
 }
 
@@ -383,8 +388,7 @@ pub struct GalaxyEngine {
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: [vk::DescriptorSet; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
-    pipeline_layout: vk::PipelineLayout,
-    pipeline: vk::Pipeline,
+    pipeline: ManuallyDrop<GraphicsPipeline>,
     graphics_cmd_pool: vk::CommandPool,
     transfer_cmd_pool: vk::CommandPool,
     uniform_buffers: Vec<Buffer<CpuToGpu>>,
@@ -557,81 +561,17 @@ impl GalaxyEngine {
             .size(std::mem::size_of::<maths::Mat4>() as u32);
 
         // Create pipeline layout.
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
-            .set_layouts(slice::from_ref(&descriptor_set_layout))
-            .push_constant_ranges(slice::from_ref(&push_constant_range));
-        let pipeline_layout = unsafe { device.loader().create_pipeline_layout(&pipeline_layout_info, None) }?;
+        let pipeline_layout = Arc::new(PipelineLayout::new(&device, &descriptor_set_layout, &push_constant_range)?);
 
-        // Create graphics pipeline.
-        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .primitive_restart_enable(false);
-
-        let pipeline_dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
-            .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
-
-        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-            .viewport_count(1)
-            .scissor_count(1);
-
-        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
-            .depth_clamp_enable(false)
-            .rasterizer_discard_enable(false)
-            .polygon_mode(vk::PolygonMode::FILL)
-            .line_width(1.0)
-            .cull_mode(vk::CullModeFlags::BACK)
-            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-            .depth_bias_enable(false);
-
-        let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
-            .sample_shading_enable(false) // Sample shading adds extra samples to
-            .rasterization_samples(swapchain.samples());
-
-        let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
-            .color_write_mask(vk::ColorComponentFlags::RGBA)
-            .blend_enable(false);
-
-        let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
-            .logic_op_enable(false)
-            .attachments(slice::from_ref(&color_blend_attachment));
-
-        let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
-            .depth_test_enable(true)
-            .depth_write_enable(true)
-            .depth_compare_op(vk::CompareOp::LESS)
-            .min_depth_bounds(0.0)
-            .max_depth_bounds(1.0)
-            .stencil_test_enable(false)
-            .front(Default::default())
-            .back(Default::default());
-
-        let mut dynamic_pipeline_info = vk::PipelineRenderingCreateInfo::default()
-            .color_attachment_formats(slice::from_ref(&device_properties.swapchain_format.format))
-            .depth_attachment_format(PhysicalDeviceProperties::DEPTH_STENCIL_FORMAT);
-
-        let shader_stages = model.shader_stages();
-
-        // Vertex binding.
-        let binding_description = Vertex::binding_description();
-        let attribute_descriptions = Vertex::attribute_descriptions();
-        let vertex_input_info =
-        vk::PipelineVertexInputStateCreateInfo::default()
-            .vertex_binding_descriptions(slice::from_ref(&binding_description))
-            .vertex_attribute_descriptions(&attribute_descriptions);
-        let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&shader_stages)
-            .vertex_input_state(&vertex_input_info)
-            .input_assembly_state(&input_assembly)
-            .viewport_state(&viewport_state)
-            .rasterization_state(&rasterizer)
-            .multisample_state(&multisampling)
-            .color_blend_state(&color_blend_state)
-            .depth_stencil_state(&depth_stencil_state)
-            .dynamic_state(&pipeline_dynamic_state)
-            .layout(pipeline_layout)
-            .push_next(&mut dynamic_pipeline_info);
-
-        let pipeline = unsafe { device.loader().create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None) }.map_err(|(_, e)| e)?[0];
+        // Create pipeline.
+        let pipeline_params = GraphicsPipelineParameters {
+            layout: pipeline_layout,
+            vertex_binding_description: Vertex::binding_description(),
+            vertex_attribute_descriptions: &Vertex::attribute_descriptions(),
+            shader_stages: model.shader_stages(),
+            samples: swapchain.samples(),
+        };
+        let pipeline = GraphicsPipeline::new(&device, pipeline_params)?;
 
         // Create command buffer.
         let command_buffer_info = vk::CommandBufferAllocateInfo::default()
@@ -664,8 +604,7 @@ impl GalaxyEngine {
             descriptor_set_layout,
             descriptor_pool,
             descriptor_sets: descriptor_sets.try_into().unwrap(),
-            pipeline_layout,
-            pipeline,
+            pipeline: ManuallyDrop::new(pipeline),
             graphics_cmd_pool,
             transfer_cmd_pool,
             uniform_buffers: uniform_buffers.into(),
@@ -774,11 +713,11 @@ impl GalaxyEngine {
             .depth_attachment(&depth_attachment_info);
 
         unsafe { ext.dyn_cmd.cmd_begin_rendering(command_buffer, &rendering_info) }
-        unsafe { device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline) };
+        unsafe { device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.handle()) };
         unsafe { device.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.model.vertex_buffer.handle()), slice::from_ref(&0)) };
         unsafe { device.cmd_bind_index_buffer(command_buffer, self.model.index_buffer.handle(), 0, vk::IndexType::UINT32) };
-        unsafe { device.cmd_push_constants(command_buffer, self.pipeline_layout, vk::ShaderStageFlags::VERTEX, 0, bytemuck::cast_slice(&[mvp])) };
-        unsafe { device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline_layout, 0, slice::from_ref(&self.descriptor_sets[current_frame]), &[]) };
+        unsafe { device.cmd_push_constants(command_buffer, self.pipeline.layout().handle(), vk::ShaderStageFlags::VERTEX, 0, bytemuck::cast_slice(&[mvp])) };
+        unsafe { device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.layout().handle(), 0, slice::from_ref(&self.descriptor_sets[current_frame]), &[]) };
         unsafe { device.cmd_set_viewport(command_buffer, 0, &[viewport]) };
         unsafe { device.cmd_set_scissor(command_buffer, 0, &[scissor]) };
         unsafe { device.cmd_draw_indexed(command_buffer, self.model.index_buffer.len(), 1, 0, 0, 0) };
@@ -921,10 +860,7 @@ impl Drop for GalaxyEngine {
         unsafe { device_loader.destroy_command_pool(self.transfer_cmd_pool, None) };
 
         // Drop pipeline.
-        unsafe { device_loader.destroy_pipeline(self.pipeline, None) };
-
-        // Drop pipeline layout.
-        unsafe { device_loader.destroy_pipeline_layout(self.pipeline_layout, None) };
+        unsafe { ManuallyDrop::drop(&mut self.pipeline) };
 
         // Drop descriptor set layout.
         unsafe { device_loader.destroy_descriptor_set_layout(self.descriptor_set_layout, None) };

@@ -2,6 +2,16 @@ use std::ffi::{c_char, CStr};
 use std::str::from_utf8;
 use ash::vk;
 
+struct AssertLessThanOrEqual<const N1: usize, const N2: usize>;
+impl<const N1: usize, const N2: usize> AssertLessThanOrEqual<N1, N2> {
+    const OK: () = assert!(N1 <= N2, "N1 must be <= N2.");
+}
+
+pub(crate) fn arrayvec_from_array<T, const N1: usize, const N2: usize>(array: [T; N1]) -> arrayvec::ArrayVec<T, N2> {
+    let _ = AssertLessThanOrEqual::<N1, N2>::OK;
+    array.into_iter().collect()
+}
+
 // Strip names in release builds.
 macro_rules! debug_only_name {
     ($name:expr) => {
