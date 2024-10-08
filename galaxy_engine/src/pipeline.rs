@@ -4,8 +4,8 @@ use std::sync::Arc;
 use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::vk;
-
 use crate::device::{Device, PhysicalDeviceProperties, SharedDeviceLoader};
+use crate::shader::{ComputeShaderStage, ShaderModule};
 
 pub trait Pipeline {
     fn handle(&self) -> vk::Pipeline;
@@ -62,7 +62,8 @@ impl GraphicsPipeline {
 
         // Create graphics pipeline.
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            //.topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .topology(vk::PrimitiveTopology::POINT_LIST)
             .primitive_restart_enable(false);
 
         let pipeline_dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
@@ -78,6 +79,7 @@ impl GraphicsPipeline {
             .polygon_mode(vk::PolygonMode::FILL)
             .line_width(1.0)
             .cull_mode(vk::CullModeFlags::BACK)
+            //.front_face(vk::FrontFace::CLOCKWISE)
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false);
 
@@ -94,11 +96,13 @@ impl GraphicsPipeline {
             .attachments(slice::from_ref(&color_blend_attachment));
 
         let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
-            .depth_test_enable(true)
+            //.depth_test_enable(true)
+            .depth_test_enable(false)
             .depth_write_enable(true)
             .depth_compare_op(vk::CompareOp::LESS)
             .min_depth_bounds(0.0)
             .max_depth_bounds(1.0)
+            //.max_depth_bounds(2.0)
             .stencil_test_enable(false)
             .front(Default::default())
             .back(Default::default());
@@ -147,11 +151,60 @@ impl GraphicsPipeline {
 
 impl Pipeline for GraphicsPipeline {
     fn handle(&self) -> vk::Pipeline { self.handle }
-
     fn layout(&self) -> &Arc<PipelineLayout> { &self.layout }
 }
 
 impl Drop for GraphicsPipeline {
+    fn drop(&mut self) {
+        unsafe { self.loader.destroy_pipeline(self.handle, None) }
+    }
+}
+
+pub struct ComputePipelineParameters {
+    pub layout: Arc<PipelineLayout>,
+    pub compute_module: ShaderModule<ComputeShaderStage>,
+}
+
+pub struct ComputePipeline {
+    loader: SharedDeviceLoader,
+    handle: vk::Pipeline,
+    layout: Arc<PipelineLayout>,
+}
+
+impl ComputePipeline {
+    pub fn new(device: &Device, params: ComputePipelineParameters) -> VkResult<Self> {
+        let loader = device.cloned_loader();
+
+        let compute_stage = params.compute_module.stage_info();
+        let pipeline_info = vk::ComputePipelineCreateInfo::default()
+            .stage(compute_stage)
+            .layout(params.layout.handle());
+
+        // Non allocating version of create_graphics_pipelines.
+        let mut handle = vk::Pipeline::null();
+        let err_code = unsafe {
+            (loader.fp_v1_0().create_compute_pipelines)(
+                loader.handle(),
+                vk::PipelineCache::null(),
+                1,
+                &pipeline_info,
+                core::ptr::null(),
+                &mut handle,
+            )
+        };
+        if err_code != vk::Result::SUCCESS {
+            return Err(err_code);
+        }
+        Ok(Self { loader, handle, layout: params.layout })
+    }
+}
+
+impl Pipeline for ComputePipeline {
+    fn handle(&self) -> vk::Pipeline { self.handle }
+    fn layout(&self) -> &Arc<PipelineLayout> { &self.layout }
+}
+
+impl Drop for ComputePipeline {
     fn drop(&mut self) {
         unsafe { self.loader.destroy_pipeline(self.handle, None) }
     }

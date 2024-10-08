@@ -6,8 +6,7 @@ use ash::vk;
 use gpu_allocator::MemoryLocation;
 use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme};
 
-use crate::buffer::Buffer;
-use crate::buffer::mem_location::{CpuToGpu};
+use crate::buffer::{Buffer, CpuToGpu};
 use crate::command_buffer::{CommandBuffer, TransientOrPersistentCommandBuffer};
 use crate::device::{Device, QueueFamily, SharedDeviceLoader};
 use crate::gpu_alloc::{MemResult, ManuallyFreeAllocation, SharedAllocator};

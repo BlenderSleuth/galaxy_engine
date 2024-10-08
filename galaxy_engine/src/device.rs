@@ -39,6 +39,7 @@ pub enum QueueFamily {
     Graphics,
     Present,
     Transfer,
+    Compute,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +48,7 @@ pub struct PhysicalDeviceProperties {
     pub graphics_queue_family_idx: u32,
     pub present_queue_family_idx: u32,
     pub transfer_queue_family_idx: u32,
+    pub compute_queue_family_idx: u32,
     pub is_discrete: bool,
     pub swapchain_format: vk::SurfaceFormatKHR,
     pub presentation_mode: vk::PresentModeKHR,
@@ -59,10 +61,15 @@ pub type PropertyQueueList = ArrayVec<u32, { PhysicalDeviceProperties::MAX_QUEUE
 impl PhysicalDeviceProperties {
     pub(crate) const DEPTH_STENCIL_FORMAT: vk::Format = vk::Format::D32_SFLOAT_S8_UINT;
     pub(crate) const MSAA_SAMPLES: vk::SampleCountFlags = vk::SampleCountFlags::TYPE_8;
-    const MAX_QUEUE_FAMILIES: usize = 3;
+    const MAX_QUEUE_FAMILIES: usize = 4;
 
     pub fn get_unique_queue_families(&self) -> PropertyQueueList {
-        let mut unique_queue_families = PropertyQueueList::from([self.graphics_queue_family_idx, self.present_queue_family_idx, self.transfer_queue_family_idx]);
+        let mut unique_queue_families = PropertyQueueList::from([
+            self.graphics_queue_family_idx,
+            self.present_queue_family_idx,
+            self.transfer_queue_family_idx,
+            self.compute_queue_family_idx,
+        ]);
         unique_queue_families.sort_unstable();
         let mut result = PropertyQueueList::new();
         result.extend(unique_queue_families.into_iter().dedup());
@@ -105,6 +112,7 @@ pub struct Device {
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
     transfer_queue: vk::Queue,
+    compute_queue: vk::Queue,
     properties: PhysicalDeviceProperties,
 }
 
@@ -140,6 +148,7 @@ impl Device {
             // Select queue families.
             let mut graphics_queue_family_idx = None;
             let mut present_queue_family_idx = None;
+            let mut compute_queue_family_idx = None;
             let queue_families = unsafe { instance.get_physical_device_queue_family_properties(*physical_device) };
 
             for (queue_family_idx, queue_family) in queue_families.iter().enumerate() {
@@ -158,11 +167,16 @@ impl Device {
                     // Present-only queue family.
                     present_queue_family_idx = Some(queue_family_idx);
                 }
+
+                // Grab the first compute queue family.
+                if compute_queue_family_idx.is_none() && queue_family.queue_flags.contains(vk::QueueFlags::COMPUTE) {
+                    compute_queue_family_idx = Some(queue_family_idx);
+                }
             }
 
-            // Require graphics and present queue families.
-            let (Some(graphics_queue_family_idx), Some(present_queue_family_idx)) =
-                (graphics_queue_family_idx, present_queue_family_idx) else {
+            // Require all queue families.
+            let (Some(graphics_queue_family_idx), Some(present_queue_family_idx), Some(compute_queue_family_idx)) =
+                (graphics_queue_family_idx, present_queue_family_idx, compute_queue_family_idx) else {
                 continue;
             };
 
@@ -199,7 +213,8 @@ impl Device {
             }) else {
                 continue;
             };
-            let Some(presentation_mode) = surface_present_modes.into_iter().find(|&mode| mode == vk::PresentModeKHR::MAILBOX) else {
+            const REQUESTED_PRESENTATION_MODE: vk::PresentModeKHR = vk::PresentModeKHR::FIFO; // FIFO = VSync, MAILBOX = fastest.
+            let Some(presentation_mode) = surface_present_modes.into_iter().find(|&mode| mode == REQUESTED_PRESENTATION_MODE) else {
                 continue;
             };
 
@@ -215,6 +230,11 @@ impl Device {
 
             // Require 8 MSAA samples.
             if !physical_device_properties.limits.framebuffer_color_sample_counts.contains(PhysicalDeviceProperties::MSAA_SAMPLES) {
+                continue;
+            }
+
+            // Require 128 bits of push constant space.
+            if physical_device_properties.limits.max_push_constants_size < 128 {
                 continue;
             }
 
@@ -238,6 +258,7 @@ impl Device {
                 graphics_queue_family_idx,
                 present_queue_family_idx,
                 transfer_queue_family_idx,
+                compute_queue_family_idx,
                 is_discrete: physical_device_properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU,
                 swapchain_format,
                 presentation_mode,
@@ -294,6 +315,7 @@ impl Device {
         let graphics_queue = unsafe { device.get_device_queue(current_device_properties.graphics_queue_family_idx, 0) };
         let present_queue = unsafe { device.get_device_queue(current_device_properties.present_queue_family_idx, 0) };
         let transfer_queue = unsafe { device.get_device_queue(current_device_properties.transfer_queue_family_idx, 0) };
+        let compute_queue = unsafe { device.get_device_queue(current_device_properties.compute_queue_family_idx, 0) };
 
         // TODO: This allocator keeps a copy of the device and instance, which is not ideal.
         let allocator = Allocator::new(&AllocatorCreateDesc {
@@ -315,6 +337,7 @@ impl Device {
             graphics_queue,
             present_queue,
             transfer_queue,
+            compute_queue,
             properties: current_device_properties,
         })
     }
@@ -343,6 +366,7 @@ impl Device {
             QueueFamily::Graphics => self.graphics_queue,
             QueueFamily::Present => self.present_queue,
             QueueFamily::Transfer => self.transfer_queue,
+            QueueFamily::Compute => self.compute_queue,
         }
     }
     pub fn get_queue_family_idx(&self, queue: QueueFamily) -> u32 {
@@ -350,6 +374,7 @@ impl Device {
             QueueFamily::Graphics => self.properties.graphics_queue_family_idx,
             QueueFamily::Present => self.properties.present_queue_family_idx,
             QueueFamily::Transfer => self.properties.transfer_queue_family_idx,
+            QueueFamily::Compute => self.properties.compute_queue_family_idx,
         }
     }
 

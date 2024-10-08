@@ -469,6 +469,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastrand"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8c02a5121d4ea3eb16a80748c74f5549a5665e4c21333c6098f283870fbdea6"
+
+[[package]]
 name = "float-cmp"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -514,6 +520,7 @@ dependencies = [
  "bitflags 2.6.0",
  "bytemuck",
  "env_logger",
+ "fastrand",
  "gpu-allocator",
  "itertools",
  "ktx2",

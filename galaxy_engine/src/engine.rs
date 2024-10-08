@@ -2,6 +2,7 @@ use std::ffi::{c_char, CStr};
 use std::fs::File;
 use std::io::BufReader;
 use std::mem::ManuallyDrop;
+use std::ops::Deref;
 use std::slice;
 use std::sync::Arc;
 use ash::prelude::VkResult;
@@ -12,7 +13,6 @@ use raw_window_handle::{DisplayHandle, WindowHandle};
 
 use crate::{app, buffer, engine, device, maths, surface, swapchain, utils};
 use buffer::Buffer;
-use buffer::mem_location::{CpuToGpu, GpuOnly};
 use device::QueueFamily;
 use engine::MainLoopError::VulkanError;
 use app::AppInfo;
@@ -21,9 +21,12 @@ use maths::VkPerspective;
 use surface::Surface;
 use swapchain::Swapchain;
 use device::SharedDeviceLoader;
+use crate::buffer::{CpuToGpu, GpuOnly};
+use crate::command_buffer::CommandBuffer;
 use crate::gpu_alloc::{MemResult, MemoryError};
 use crate::image::{Image, ImageDimensions};
-use crate::pipeline::{GraphicsPipeline, GraphicsPipelineParameters, GraphicsShaderStageArray, Pipeline, PipelineLayout};
+use crate::pipeline::{ComputePipeline, ComputePipelineParameters, GraphicsPipeline, GraphicsPipelineParameters, GraphicsShaderStageArray, Pipeline, PipelineLayout};
+use crate::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
@@ -46,6 +49,8 @@ pub enum EngineInitError {
     InstanceExtensionError(#[from] InstanceExtensionError),
     #[error("Device init error: {0}")]
     DeviceInitError(#[from] device::DeviceInitError),
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
     #[error("Memory error: {0}")]
     MemoryError(#[from] MemoryError),
     #[error("Model error: {0}")]
@@ -138,7 +143,7 @@ impl Drop for DebugMessenger {
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
 struct Vertex {
-    pos: na::Vector3<f32>,
+    position: na::Vector3<f32>,
     color: na::Vector3<f32>,
     tex_coord: na::Vector2<f32>,
 }
@@ -157,7 +162,7 @@ impl Vertex {
                 .binding(0)
                 .location(0)
                 .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(std::mem::offset_of!(Vertex, pos) as u32),
+                .offset(std::mem::offset_of!(Vertex, position) as u32),
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .location(1)
@@ -173,9 +178,41 @@ impl Vertex {
 }
 
 #[repr(C)]
+#[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
+struct Particle {
+    position: na::Vector2<f32>,
+    velocity: na::Vector2<f32>,
+    color: na::Vector4<f32>,
+}
+
+impl Particle {
+    fn binding_description() -> vk::VertexInputBindingDescription {
+        vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(std::mem::size_of::<Particle>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX)
+    }
+    pub fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
+        [
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(0)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(std::mem::offset_of!(Particle, position) as u32),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(1)
+                .format(vk::Format::R32G32B32A32_SFLOAT)
+                .offset(std::mem::offset_of!(Particle, color) as u32),
+        ]
+    }
+}
+
+#[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
 struct UniformData {
-    sun_direction: na::Vector3<f32>,
+    //    sun_direction: na::Vector3<f32>,
+    delta_time: f32,
 }
 
 impl UniformData {
@@ -204,43 +241,6 @@ impl ModelViewProjection {
     }
 }
 
-struct ShaderModule {
-    loader: SharedDeviceLoader,
-    module: vk::ShaderModule,
-    stage: vk::ShaderStageFlags,
-}
-
-impl ShaderModule {
-    fn new(device: &Device, code: &[u8], stage: vk::ShaderStageFlags) -> VkResult<Self> {
-        let (prefix, code, suffix) = unsafe { code.align_to::<u32>() };
-        assert!(prefix.is_empty());
-        assert!(suffix.is_empty());
-        let create_info = vk::ShaderModuleCreateInfo::default().code(code);
-        Ok(Self {
-            loader: device.cloned_loader(),
-            module: unsafe { device.loader().create_shader_module(&create_info, None) }?,
-            stage,
-        })
-    }
-
-    fn stage_info(&self) -> vk::PipelineShaderStageCreateInfo {
-        vk::PipelineShaderStageCreateInfo::default()
-            .stage(self.stage)
-            .module(self.module)
-            .name(match self.stage {
-                vk::ShaderStageFlags::VERTEX => c"mainVS",
-                vk::ShaderStageFlags::FRAGMENT => c"mainFS",
-                _ => panic!("Unsupported shader stage: {:?}", self.stage),
-            })
-    }
-}
-
-impl Drop for ShaderModule {
-    fn drop(&mut self) {
-        unsafe { self.loader.destroy_shader_module(self.module, None) };
-    }
-}
-
 #[derive(thiserror::Error, Debug)]
 pub enum ModelError {
     #[error("IO error: {0}")]
@@ -255,12 +255,13 @@ pub enum ModelError {
 
 struct Model {
     loader: SharedDeviceLoader,
+    // TODO: Use a single buffer for both vertices and indices.
     vertex_buffer: Buffer<GpuOnly>,
     index_buffer: Buffer<GpuOnly>,
     texture_image: Image,
     sampler: vk::Sampler,
-    vertex_shader_module: ShaderModule,
-    fragment_shader_module: ShaderModule,
+    vertex_shader_module: ShaderModule<VertexShaderStage>,
+    fragment_shader_module: ShaderModule<FragmentShaderStage>,
 }
 
 impl Model {
@@ -306,8 +307,8 @@ impl Model {
         let vertex_shader_code = std::fs::read("shaders/shader.vert.spv")?;
         let fragment_shader_code = std::fs::read("shaders/shader.frag.spv")?;
 
-        let vertex_shader_module = ShaderModule::new(&device, &vertex_shader_code, vk::ShaderStageFlags::VERTEX)?;
-        let fragment_shader_module = ShaderModule::new(&device, &fragment_shader_code, vk::ShaderStageFlags::FRAGMENT)?;
+        let vertex_shader_module = ShaderModule::new(&device, &vertex_shader_code)?;
+        let fragment_shader_module = ShaderModule::new(&device, &fragment_shader_code)?;
 
         // Load model. The obj crate already does indexing for us.
         let obj_model: obj::Obj<obj::TexturedVertex, u32> = obj::load_obj(BufReader::new(File::open(Model::MODEL_PATH)?))?;
@@ -316,7 +317,7 @@ impl Model {
             .vertices
             .iter()
             .map(|v| Vertex {
-                pos: na::Vector3::new(v.position[0], v.position[1], v.position[2]),
+                position: na::Vector3::new(v.position[0], v.position[1], v.position[2]),
                 color: na::Vector3::new(1.0, 1.0, 1.0),
                 tex_coord: na::Vector2::new(v.texture[0], 1.0 - v.texture[1]),
             })
@@ -327,7 +328,7 @@ impl Model {
         let mut vertices = meshopt::remap_vertex_buffer(&vertices, vertex_count, &vert_remap);
         let mut indices = meshopt::remap_index_buffer(Some(&obj_model.indices), vertex_count, &vert_remap);
         meshopt::optimize_vertex_cache_in_place(&mut indices, vertex_count);
-        let vertex_data_adapter = VertexDataAdapter::new(bytemuck::must_cast_slice(&vertices), std::mem::size_of::<Vertex>(), std::mem::offset_of!(Vertex, pos)).unwrap();
+        let vertex_data_adapter = VertexDataAdapter::new(bytemuck::must_cast_slice(&vertices), std::mem::size_of::<Vertex>(), std::mem::offset_of!(Vertex, position)).unwrap();
         meshopt::optimize_overdraw_in_place(&mut indices, &vertex_data_adapter, 1.05);
         meshopt::optimize_vertex_fetch_in_place(&mut indices, &mut vertices);
 
@@ -385,19 +386,28 @@ pub struct GalaxyEngine {
     device: ManuallyDrop<Device>,
     swapchain: ManuallyDrop<Swapchain>,
     model: ManuallyDrop<Model>,
+    storage_buffers: Vec<Buffer<GpuOnly>>,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: [vk::DescriptorSet; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
+    compute_descriptor_set_layout: vk::DescriptorSetLayout,
+    compute_descriptor_sets: [vk::DescriptorSet; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     pipeline: ManuallyDrop<GraphicsPipeline>,
+    compute_pipeline: ManuallyDrop<ComputePipeline>,
     graphics_cmd_pool: vk::CommandPool,
+    compute_cmd_pool: vk::CommandPool,
     transfer_cmd_pool: vk::CommandPool,
     uniform_buffers: Vec<Buffer<CpuToGpu>>,
     cmd_buffers: [vk::CommandBuffer; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
+    compute_cmd_buffers: [vk::CommandBuffer; 2],
     image_available_semaphores: [vk::Semaphore; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
     render_finished_semaphores: [vk::Semaphore; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
+    compute_finished_semaphores: [vk::Semaphore; 2],
     in_flight_fences: [vk::Fence; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
+    compute_in_flight_fences: [vk::Fence; 2],
     current_frame: u32,
     start_time: std::time::Instant,
+    last_frame_time: std::time::Instant,
     window_size: vk::Extent2D,
     window_resized: bool,
 }
@@ -407,7 +417,23 @@ impl GalaxyEngine {
     const ENGINE_NAME: &'static CStr = c"Galaxy Engine";
     const ENGINE_VERSION_STR: &'static str = env!("CARGO_PKG_VERSION");
     const MAX_FRAMES_IN_FLIGHT: usize = 2;
+    const NUM_PARTICLES: u32 = 1024;
 
+    // TODO: Compute cleanup:
+    // - Convert to HLSL.
+    // - Separate particle graphics pipeline.
+    // - Model cmd buffer recording.
+    // - Model resources/descriptor set management.
+    // - GpuParticleSystem object.
+    // - Material object (shader stages).
+    // - Compute shader object.
+
+    // TODO: General cleanup:
+    // -
+    // - RAII handles.
+    // - Queue object.
+    // - Command buffer and pool management.
+    // - Use a single buffer for both vertices and indices.
     pub fn new(app_info: &AppInfo, display: DisplayHandle, window: WindowHandle, width: u32, height: u32) -> Result<Self, EngineInitError> {
         // Setup Vulkan.
         let entry = unsafe { ash::Entry::load() }?;
@@ -464,6 +490,10 @@ impl GalaxyEngine {
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
             .queue_family_index(device_properties.graphics_queue_family_idx);
         let graphics_cmd_pool = unsafe { device.loader().create_command_pool(&command_pool_info, None) }?;
+        let command_pool_info = vk::CommandPoolCreateInfo::default()
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+            .queue_family_index(device_properties.compute_queue_family_idx);
+        let compute_cmd_pool = unsafe { device.loader().create_command_pool(&command_pool_info, None) }?;
         let transfer_cmd_pool = device.create_transient_command_pool(QueueFamily::Transfer)?;
 
         // Create swapchain.
@@ -482,10 +512,10 @@ impl GalaxyEngine {
                 std::mem::size_of::<ModelViewProjection>(),
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
                 vk::SharingMode::EXCLUSIVE,
-            ).unwrap()
+            ).unwrap_or_else(|err| panic!("Failed to create uniform buffer: {err}"))
         });
 
-        // Create descriptor sets.
+        // Create descriptor set layout.
         let ubo_layout_binding = vk::DescriptorSetLayoutBinding::default()
             .binding(0)
             .descriptor_count(1)
@@ -509,12 +539,15 @@ impl GalaxyEngine {
                 .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32)
+                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32 * 2),
         ];
 
         let descriptor_pool_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(&pool_sizes)
-            .max_sets(Self::MAX_FRAMES_IN_FLIGHT as u32);
+            .max_sets(Self::MAX_FRAMES_IN_FLIGHT as u32 * 2); // Allocator 2 sets for graphics and 2 sets for compute.
 
         let descriptor_pool = unsafe { device.loader().create_descriptor_pool(&descriptor_pool_info, None) }?;
 
@@ -564,11 +597,21 @@ impl GalaxyEngine {
         let pipeline_layout = Arc::new(PipelineLayout::new(&device, &descriptor_set_layout, &push_constant_range)?);
 
         // Create pipeline.
+        let vertex_shader_code = std::fs::read("shaders/particles.vert.spv")?;
+        let fragment_shader_code = std::fs::read("shaders/particles.frag.spv")?;
+        let vertex_shader_module = ShaderModule::<VertexShaderStage>::new(&device, &vertex_shader_code)?;
+        let fragment_shader_module = ShaderModule::<FragmentShaderStage>::new(&device, &fragment_shader_code)?;
+        let particle_shader_stages = utils::arrayvec_from_array([
+            vertex_shader_module.stage_info(),
+            fragment_shader_module.stage_info(),
+        ]);
         let pipeline_params = GraphicsPipelineParameters {
             layout: pipeline_layout,
-            vertex_binding_description: Vertex::binding_description(),
-            vertex_attribute_descriptions: &Vertex::attribute_descriptions(),
-            shader_stages: model.shader_stages(),
+            vertex_binding_description: Particle::binding_description(),
+            //vertex_binding_description: Vertex::binding_description(),
+            vertex_attribute_descriptions: &Particle::attribute_descriptions(),
+            //vertex_attribute_descriptions: &Vertex::attribute_descriptions(),
+            shader_stages: particle_shader_stages, // TODO: Separate particle graphics pipeline.
             samples: swapchain.samples(),
         };
         let pipeline = GraphicsPipeline::new(&device, pipeline_params)?;
@@ -580,16 +623,152 @@ impl GalaxyEngine {
             .command_buffer_count(Self::MAX_FRAMES_IN_FLIGHT as u32);
         let command_buffers = unsafe { device.loader().allocate_command_buffers(&command_buffer_info) }?;
 
+        let command_buffer_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(compute_cmd_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(Self::MAX_FRAMES_IN_FLIGHT as u32);
+        let compute_command_buffers = unsafe { device.loader().allocate_command_buffers(&command_buffer_info) }?;
+
         // Create sync objects.
         let mut image_available_semaphores = [vk::Semaphore::null(); Self::MAX_FRAMES_IN_FLIGHT];
         let mut render_finished_semaphores = [vk::Semaphore::null(); Self::MAX_FRAMES_IN_FLIGHT];
+        let mut compute_finished_semaphores = [vk::Semaphore::null(); Self::MAX_FRAMES_IN_FLIGHT];
         let mut in_flight_fences = [vk::Fence::null(); Self::MAX_FRAMES_IN_FLIGHT];
+        let mut compute_in_flight_fences = [vk::Fence::null(); Self::MAX_FRAMES_IN_FLIGHT];
         let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
         for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
             image_available_semaphores[i] = unsafe { device.loader().create_semaphore(&Default::default(), None) }?;
             render_finished_semaphores[i] = unsafe { device.loader().create_semaphore(&Default::default(), None) }?;
+            compute_finished_semaphores[i] = unsafe { device.loader().create_semaphore(&Default::default(), None) }?;
             in_flight_fences[i] = unsafe { device.loader().create_fence(&fence_info, None) }?;
+            compute_in_flight_fences[i] = unsafe { device.loader().create_fence(&fence_info, None) }?;
         }
+
+        // Set up particle system compute pipeline.
+        let particle_shader_code = std::fs::read("shaders/particles.comp.spv")?;
+        let particle_shader_module = ShaderModule::new(&device, &particle_shader_code)?;
+
+        // Initial particle positions.
+        let window_aspect_ratio = window_size.width as f32 / window_size.height as f32;
+        let initial_particles = (0..Self::NUM_PARTICLES).map(|_| {
+            let r = 0.25 * fastrand::f32().sqrt();
+            let theta = 2.0 * std::f32::consts::PI * fastrand::f32();
+            let x = r * theta.cos() * window_aspect_ratio;
+            let y = r * theta.sin();
+            let position = r * na::Vector2::new(x, y);
+            Particle {
+                position,
+                velocity: position.normalize() * 0.25,
+                color: na::Vector4::new(fastrand::f32(), fastrand::f32(), fastrand::f32(), 1.0),
+            }
+        }).collect::<Vec<_>>();
+
+        // Copy to staging buffer.
+        let mut particle_staging_buffer = Buffer::<CpuToGpu>::new(
+            "Particle staging buffer",
+            &device,
+            1,
+            std::mem::size_of::<Particle>() * Self::NUM_PARTICLES as usize,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::SharingMode::EXCLUSIVE,
+        )?;
+        particle_staging_buffer.copy_into_buffer(bytemuck::cast_slice(&initial_particles), 0)?;
+
+        let cmd_buffer = CommandBuffer::begin_one_time(&device, graphics_cmd_pool)?;
+        let shader_storage_buffers = (0..Self::MAX_FRAMES_IN_FLIGHT).map(|_| {
+            let mut buffer = Buffer::<GpuOnly>::new_for_typed_data(
+                "Particle storage buffer",
+                &device,
+                &initial_particles,
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
+                vk::SharingMode::EXCLUSIVE,
+            )?;
+            let buffer_size = buffer.size();
+            particle_staging_buffer.copy_to_buffer(cmd_buffer.as_persistent(), &device, &mut buffer, buffer_size, QueueFamily::Graphics)?;
+            Ok(buffer)
+        }).collect::<MemResult<Vec<_>>>()?;
+        cmd_buffer.end_submit_and_wait(&device, device.get_queue(QueueFamily::Graphics))?;
+
+        // Create compute descriptor set layout.
+        let compute_layout_bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(2)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+        ];
+        let compute_layout_info = vk::DescriptorSetLayoutCreateInfo::default()
+            .bindings(&compute_layout_bindings);
+        let compute_descriptor_set_layout = unsafe { device.loader().create_descriptor_set_layout(&compute_layout_info, None) }?;
+
+        // Allocate compute descriptor sets.
+        let layouts = [compute_descriptor_set_layout; Self::MAX_FRAMES_IN_FLIGHT];
+        let alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(descriptor_pool)
+            .set_layouts(&layouts);
+        let compute_descriptor_sets = unsafe { device.loader().allocate_descriptor_sets(&alloc_info) }?;
+
+        // Write descriptor sets.
+        let descriptor_buffer_infos = (0..Self::MAX_FRAMES_IN_FLIGHT).map(|i| {
+            [
+                vk::DescriptorBufferInfo::default()
+                    .buffer(uniform_buffers[i].handle())
+                    .offset(0)
+                    .range(UniformData::size()),
+                vk::DescriptorBufferInfo::default()
+                    .buffer(shader_storage_buffers[(i + 1) % Self::MAX_FRAMES_IN_FLIGHT].handle())
+                    .offset(0)
+                    .range((std::mem::size_of::<Particle>() * Self::NUM_PARTICLES as usize) as vk::DeviceSize),
+                vk::DescriptorBufferInfo::default()
+                    .buffer(shader_storage_buffers[i].handle())
+                    .offset(0)
+                    .range((std::mem::size_of::<Particle>() * Self::NUM_PARTICLES as usize) as vk::DeviceSize),
+            ]
+        }).collect::<Vec<_>>();
+
+        let descriptor_writes = compute_descriptor_sets.iter().zip(descriptor_buffer_infos.iter()).flat_map(|(descriptor_set, buffer_infos)| {
+            [
+                vk::WriteDescriptorSet::default()
+                    .dst_set(*descriptor_set)
+                    .dst_binding(0)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(slice::from_ref(&buffer_infos[0])),
+                // Last frame's storage buffer.
+                vk::WriteDescriptorSet::default()
+                    .dst_set(*descriptor_set)
+                    .dst_binding(1)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(slice::from_ref(&buffer_infos[1])),
+                // Current frame's storage buffer.
+                vk::WriteDescriptorSet::default()
+                    .dst_set(*descriptor_set)
+                    .dst_binding(2)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(slice::from_ref(&buffer_infos[2])),
+            ]
+        }).collect::<Vec<_>>();
+        unsafe { device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
+
+        let compute_pipeline_layout = Arc::new(PipelineLayout::new(&device, &compute_descriptor_set_layout, &push_constant_range)?);
+
+        let compute_pipeline_params = ComputePipelineParameters {
+            layout: compute_pipeline_layout,
+            compute_module: particle_shader_module,
+        };
+        let compute_pipeline = ComputePipeline::new(&device, compute_pipeline_params)?;
 
         device.print_allocator_report();
 
@@ -604,16 +783,25 @@ impl GalaxyEngine {
             descriptor_set_layout,
             descriptor_pool,
             descriptor_sets: descriptor_sets.try_into().unwrap(),
+            compute_descriptor_set_layout,
+            compute_descriptor_sets: compute_descriptor_sets.try_into().unwrap(),
             pipeline: ManuallyDrop::new(pipeline),
+            compute_pipeline: ManuallyDrop::new(compute_pipeline),
+            storage_buffers: shader_storage_buffers,
             graphics_cmd_pool,
+            compute_cmd_pool,
             transfer_cmd_pool,
             uniform_buffers: uniform_buffers.into(),
             cmd_buffers: command_buffers.try_into().unwrap(),
+            compute_cmd_buffers: compute_command_buffers.try_into().unwrap(),
             image_available_semaphores,
             render_finished_semaphores,
+            compute_finished_semaphores,
             in_flight_fences,
+            compute_in_flight_fences,
             current_frame: 0,
             start_time: std::time::Instant::now(),
+            last_frame_time: std::time::Instant::now(),
             window_size,
             window_resized: false,
         })
@@ -625,8 +813,7 @@ impl GalaxyEngine {
             self.recreate_swapchain()?;
         }
 
-        let device = self.device.loader();
-
+        let loader = self.device.loader().deref();
         let ext = self.device.ext();
 
         let current_frame = self.current_frame as usize;
@@ -635,14 +822,35 @@ impl GalaxyEngine {
         let time = self.start_time.elapsed().as_secs_f32();
         let mvp = ModelViewProjection::spin(self.window_size, time, 20.0).mvp();
 
+        let delta_time = self.last_frame_time.elapsed().as_secs_f32();
+        self.last_frame_time = std::time::Instant::now();
+
         let uniform_data = UniformData {
-            sun_direction: na::Vector3::new(time.sin().abs(), (time + 0.3).sin().abs(), (time + 0.6).sin().abs()),
+            //sun_direction: na::Vector3::new(delta_time.sin().abs(), (delta_time + 0.3).sin().abs(), (delta_time + 0.6).sin().abs()),
+            delta_time,
         };
         // Copy data to uniform buffer.
         self.uniform_buffers[current_frame].copy_into_buffer(bytemuck::bytes_of(&uniform_data), 0)?;
 
-        // Wait for fence.
-        unsafe { device.wait_for_fences(&[self.in_flight_fences[current_frame]], true, u64::MAX) }?;
+        // Wait for compute fence.
+        unsafe { loader.wait_for_fences(&[self.compute_in_flight_fences[current_frame]], true, u64::MAX) }?;
+        unsafe { loader.reset_fences(&[self.compute_in_flight_fences[current_frame]]) }?;
+
+        let command_buffer = self.compute_cmd_buffers[current_frame];
+        unsafe { loader.reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty()) }?;
+        unsafe { loader.begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default()) }?;
+        unsafe { loader.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, self.compute_pipeline.handle()) };
+        unsafe { loader.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::COMPUTE, self.compute_pipeline.layout().handle(), 0, slice::from_ref(&self.compute_descriptor_sets[current_frame]), &[]) };
+        unsafe { loader.cmd_dispatch(command_buffer, Self::NUM_PARTICLES / 256, 1, 1) };
+        unsafe { loader.end_command_buffer(command_buffer) }?;
+
+        let submit_info = vk::SubmitInfo::default()
+            .command_buffers(slice::from_ref(&command_buffer))
+            .signal_semaphores(slice::from_ref(&self.compute_finished_semaphores[current_frame]));
+        unsafe { loader.queue_submit(self.device.get_queue(QueueFamily::Compute), &[submit_info], self.compute_in_flight_fences[current_frame]) }?;
+
+        // Wait for graphics fence.
+        unsafe { loader.wait_for_fences(&[self.in_flight_fences[current_frame]], true, u64::MAX) }?;
 
         // Acquire image from swapchain.
         let (image_idx, _is_suboptimal) = match self.swapchain.acquire_next_image(self.image_available_semaphores[current_frame], vk::Fence::null()) {
@@ -654,11 +862,11 @@ impl GalaxyEngine {
             Err(err) => Err(err)?,
         };
 
-        unsafe { device.reset_fences(&[self.in_flight_fences[current_frame]]) }?;
+        unsafe { loader.reset_fences(&[self.in_flight_fences[current_frame]]) }?;
 
         let command_buffer = self.cmd_buffers[current_frame];
 
-        unsafe { device.reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty()) }?;
+        unsafe { loader.reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty()) }?;
 
         let swapchain_extent = self.swapchain.get_extent();
 
@@ -673,7 +881,7 @@ impl GalaxyEngine {
 
         // Record command buffer.
         let begin_info = vk::CommandBufferBeginInfo::default();
-        unsafe { device.begin_command_buffer(command_buffer, &begin_info) }?;
+        unsafe { loader.begin_command_buffer(command_buffer, &begin_info) }?;
 
         let color_optimal_transition = vk::ImageMemoryBarrier2::default()
             .src_access_mask(vk::AccessFlags2::empty())
@@ -713,14 +921,16 @@ impl GalaxyEngine {
             .depth_attachment(&depth_attachment_info);
 
         unsafe { ext.dyn_cmd.cmd_begin_rendering(command_buffer, &rendering_info) }
-        unsafe { device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.handle()) };
-        unsafe { device.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.model.vertex_buffer.handle()), slice::from_ref(&0)) };
-        unsafe { device.cmd_bind_index_buffer(command_buffer, self.model.index_buffer.handle(), 0, vk::IndexType::UINT32) };
-        unsafe { device.cmd_push_constants(command_buffer, self.pipeline.layout().handle(), vk::ShaderStageFlags::VERTEX, 0, bytemuck::cast_slice(&[mvp])) };
-        unsafe { device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.layout().handle(), 0, slice::from_ref(&self.descriptor_sets[current_frame]), &[]) };
-        unsafe { device.cmd_set_viewport(command_buffer, 0, &[viewport]) };
-        unsafe { device.cmd_set_scissor(command_buffer, 0, &[scissor]) };
-        unsafe { device.cmd_draw_indexed(command_buffer, self.model.index_buffer.len(), 1, 0, 0, 0) };
+        unsafe { loader.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.handle()) };
+        //unsafe { loader.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.model.vertex_buffer.handle()), slice::from_ref(&0)) };
+        unsafe { loader.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.storage_buffers[current_frame].handle()), slice::from_ref(&0)) };
+        //unsafe { loader.cmd_bind_index_buffer(command_buffer, self.model.index_buffer.handle(), 0, vk::IndexType::UINT32) };
+        unsafe { loader.cmd_push_constants(command_buffer, self.pipeline.layout().handle(), vk::ShaderStageFlags::VERTEX, 0, bytemuck::cast_slice(&[mvp])) };
+        unsafe { loader.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.layout().handle(), 0, slice::from_ref(&self.descriptor_sets[current_frame]), &[]) };
+        unsafe { loader.cmd_set_viewport(command_buffer, 0, &[viewport]) };
+        unsafe { loader.cmd_set_scissor(command_buffer, 0, &[scissor]) };
+        //unsafe { loader.cmd_draw_indexed(command_buffer, self.model.index_buffer.len(), 1, 0, 0, 0) };
+        unsafe { loader.cmd_draw(command_buffer, Self::NUM_PARTICLES, 1, 0, 0) };
         unsafe { ext.dyn_cmd.cmd_end_rendering(command_buffer) };
 
         let color_optimal_to_present_src_transition = vk::ImageMemoryBarrier2::default()
@@ -736,16 +946,18 @@ impl GalaxyEngine {
             .image_memory_barriers(slice::from_ref(&color_optimal_to_present_src_transition));
         unsafe { ext.sync2.cmd_pipeline_barrier2(command_buffer, &dependency_info) };
 
-        unsafe { device.end_command_buffer(command_buffer) }?;
+        unsafe { loader.end_command_buffer(command_buffer) }?;
 
         // Submit command buffer.
+        let wait_semaphores = [self.compute_finished_semaphores[current_frame], self.image_available_semaphores[current_frame]];
+        let wait_stages = [vk::PipelineStageFlags::VERTEX_INPUT, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let submit_info = vk::SubmitInfo::default()
             .command_buffers(slice::from_ref(&command_buffer))
-            .wait_semaphores(slice::from_ref(&self.image_available_semaphores[current_frame]))
-            .wait_dst_stage_mask(slice::from_ref(&vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT))
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&wait_stages)
             .signal_semaphores(slice::from_ref(&self.render_finished_semaphores[current_frame]));
 
-        unsafe { device.queue_submit(self.device.get_queue(QueueFamily::Graphics), slice::from_ref(&submit_info), self.in_flight_fences[current_frame]) }?;
+        unsafe { loader.queue_submit(self.device.get_queue(QueueFamily::Graphics), slice::from_ref(&submit_info), self.in_flight_fences[current_frame]) }?;
 
         match self.swapchain.queue_present(self.device.get_queue(QueueFamily::Present), image_idx, &[self.render_finished_semaphores[current_frame]]) {
             Ok(_) => {}
@@ -845,11 +1057,14 @@ impl Drop for GalaxyEngine {
 
         unsafe { device_loader.device_wait_idle() }.unwrap_or_else(|e| log::error!("Failed to wait for device idle: {:?}", e));
 
+        // TODO: Make all these handles RAII types so Engine::new() doesn't trigger lifetime validations warnings on init error.
         // Drop sync objects.
         for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
             unsafe { device_loader.destroy_semaphore(self.image_available_semaphores[i], None) };
             unsafe { device_loader.destroy_semaphore(self.render_finished_semaphores[i], None) };
+            unsafe { device_loader.destroy_semaphore(self.compute_finished_semaphores[i], None) };
             unsafe { device_loader.destroy_fence(self.in_flight_fences[i], None) };
+            unsafe { device_loader.destroy_fence(self.compute_in_flight_fences[i], None) };
         }
 
         // Drop command_buffers.
@@ -857,18 +1072,22 @@ impl Drop for GalaxyEngine {
 
         // Drop command_pools.
         unsafe { device_loader.destroy_command_pool(self.graphics_cmd_pool, None) };
+        unsafe { device_loader.destroy_command_pool(self.compute_cmd_pool, None) };
         unsafe { device_loader.destroy_command_pool(self.transfer_cmd_pool, None) };
 
-        // Drop pipeline.
+        // Drop pipelines.
         unsafe { ManuallyDrop::drop(&mut self.pipeline) };
+        unsafe { ManuallyDrop::drop(&mut self.compute_pipeline) };
 
-        // Drop descriptor set layout.
+        // Drop descriptor set layouts.
+        unsafe { device_loader.destroy_descriptor_set_layout(self.compute_descriptor_set_layout, None) };
         unsafe { device_loader.destroy_descriptor_set_layout(self.descriptor_set_layout, None) };
         // Drop descriptor pool.
         unsafe { device_loader.destroy_descriptor_pool(self.descriptor_pool, None) };
 
         // Drop uniform buffers.
         self.uniform_buffers.clear();
+        self.storage_buffers.clear();
 
         // Drop model.
         unsafe { ManuallyDrop::drop(&mut self.model) };

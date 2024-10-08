@@ -10,6 +10,7 @@ mod command_buffer;
 mod image;
 mod gpu_alloc;
 mod pipeline;
+mod shader;
 
 use winit::error::EventLoopError;
 use winit::event_loop::{ControlFlow, EventLoop};

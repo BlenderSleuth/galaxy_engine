@@ -1,35 +1,32 @@
 use ash::vk;
 use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme};
 
-use crate::buffer::mem_location::*;
 use crate::command_buffer::{CommandBuffer, TransientOrPersistentCommandBuffer};
 use crate::device::{Device, QueueFamily, SharedDeviceLoader};
 use crate::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
 use crate::{gpu_alloc, utils};
 
-pub mod mem_location {
-    use gpu_allocator::MemoryLocation;
+use gpu_allocator::MemoryLocation;
 
-    // Type-state trait encoding of gpu_allocator::MemoryLocation for use in generic parameters.
-    pub trait MemLocation {
-        fn location() -> MemoryLocation;
-    }
-    pub enum Unknown {}
-    impl MemLocation for Unknown {
-        fn location() -> MemoryLocation { MemoryLocation::Unknown }
-    }
-    pub enum GpuOnly {}
-    impl MemLocation for GpuOnly {
-        fn location() -> MemoryLocation { MemoryLocation::GpuOnly }
-    }
-    pub enum CpuToGpu {}
-    impl MemLocation for CpuToGpu {
-        fn location() -> MemoryLocation { MemoryLocation::CpuToGpu }
-    }
-    pub enum GpuToCpu {}
-    impl MemLocation for GpuToCpu {
-        fn location() -> MemoryLocation { MemoryLocation::GpuToCpu }
-    }
+// Type-state trait encoding of gpu_allocator::MemoryLocation for use in generic parameters.
+pub trait MemLocation {
+    fn location() -> MemoryLocation;
+}
+pub struct Unknown;
+impl MemLocation for Unknown {
+    fn location() -> MemoryLocation { MemoryLocation::Unknown }
+}
+pub struct GpuOnly;
+impl MemLocation for GpuOnly {
+    fn location() -> MemoryLocation { MemoryLocation::GpuOnly }
+}
+pub struct CpuToGpu;
+impl MemLocation for CpuToGpu {
+    fn location() -> MemoryLocation { MemoryLocation::CpuToGpu }
+}
+pub struct GpuToCpu;
+impl MemLocation for GpuToCpu {
+    fn location() -> MemoryLocation { MemoryLocation::GpuToCpu }
 }
 
 pub struct Buffer<L: MemLocation> {
