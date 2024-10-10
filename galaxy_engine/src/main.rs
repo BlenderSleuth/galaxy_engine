@@ -11,6 +11,10 @@ mod image;
 mod gpu_alloc;
 mod pipeline;
 mod shader;
+mod mesh;
+mod material;
+mod uniform_buffer;
+mod particles;
 
 use winit::error::EventLoopError;
 use winit::event_loop::{ControlFlow, EventLoop};

@@ -213,7 +213,7 @@ impl Device {
             }) else {
                 continue;
             };
-            const REQUESTED_PRESENTATION_MODE: vk::PresentModeKHR = vk::PresentModeKHR::FIFO; // FIFO = VSync, MAILBOX = fastest.
+            const REQUESTED_PRESENTATION_MODE: vk::PresentModeKHR = vk::PresentModeKHR::FIFO; // FIFO = waits for VSync, MAILBOX = waits for vsync, but will keep rendering (some frames will be thrown away).
             let Some(presentation_mode) = surface_present_modes.into_iter().find(|&mode| mode == REQUESTED_PRESENTATION_MODE) else {
                 continue;
             };

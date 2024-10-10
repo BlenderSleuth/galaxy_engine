@@ -1,6 +1,7 @@
 #version 450
 
 layout (binding = 0) uniform ParameterUBO {
+    vec3 sunDirection;
     float deltaTime;
 } ubo;
 

@@ -8,6 +8,7 @@ ConstantBuffer<PushConstants> push_constants;
 [[vk::binding(0)]]
 cbuffer Binding0 {
     float3 sun_direction;
+    float delta_time;
 };
 
 struct VSInput {
@@ -22,19 +23,11 @@ struct VSToFS {
     float2 tex_coord : TEXCOORD0;
 };
 
-VSToFS mainVS(VSInput input) {
+VSToFS main(VSInput input) {
     VSToFS output;
     output.position = mul(push_constants.mvp, float4(input.position, 1.));
-    output.color = sun_direction * input.color;
+    output.color = sun_direction;
     output.tex_coord = input.tex_coord;
     return output;
 }
 
-[[vk::combinedImageSampler]][[vk::binding(1)]]
-Texture2D<float4> texture0;
-[[vk::combinedImageSampler]][[vk::binding(1)]]
-SamplerState sampler0;
-
-float4 mainFS(VSToFS input): SV_TARGET0 {
-    return float4(input.color, 1.) * texture0.Sample(sampler0, input.tex_coord);
-}

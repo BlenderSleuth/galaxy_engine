@@ -18,12 +18,16 @@ pub struct PipelineLayout {
 }
 
 impl PipelineLayout {
-    pub fn new(device: &Device, descriptor_set_layout: &vk::DescriptorSetLayout, push_constant_range: &vk::PushConstantRange) -> VkResult<Self> {
+    pub fn new(device: &Device, descriptor_set_layout: Option<&vk::DescriptorSetLayout>, push_constant_range: Option<&vk::PushConstantRange>) -> VkResult<Self> {
         let loader = device.cloned_loader();
 
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
-            .set_layouts(slice::from_ref(descriptor_set_layout))
-            .push_constant_ranges(slice::from_ref(&push_constant_range));
+        let mut pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
+        if let Some(descriptor_set_layout) = descriptor_set_layout {
+            pipeline_layout_info = pipeline_layout_info.set_layouts(slice::from_ref(descriptor_set_layout));
+        }
+        if let Some(push_constant_range) = push_constant_range {
+            pipeline_layout_info = pipeline_layout_info.push_constant_ranges(slice::from_ref(&push_constant_range));
+        }
         let handle = unsafe { loader.create_pipeline_layout(&pipeline_layout_info, None) }?;
 
         Ok(Self { loader, handle })
@@ -46,6 +50,8 @@ pub struct GraphicsPipelineParameters<'a> {
     pub vertex_attribute_descriptions: &'a [vk::VertexInputAttributeDescription],
     pub shader_stages: GraphicsShaderStageArray<'a>,
     pub samples: vk::SampleCountFlags,
+    pub depth_test: bool,
+    pub topology: vk::PrimitiveTopology,
 }
 
 pub struct GraphicsPipeline {
@@ -63,7 +69,7 @@ impl GraphicsPipeline {
         // Create graphics pipeline.
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             //.topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .topology(vk::PrimitiveTopology::POINT_LIST)
+            .topology(params.topology)
             .primitive_restart_enable(false);
 
         let pipeline_dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
@@ -96,13 +102,11 @@ impl GraphicsPipeline {
             .attachments(slice::from_ref(&color_blend_attachment));
 
         let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
-            //.depth_test_enable(true)
-            .depth_test_enable(false)
+            .depth_test_enable(params.depth_test)
             .depth_write_enable(true)
             .depth_compare_op(vk::CompareOp::LESS)
             .min_depth_bounds(0.0)
             .max_depth_bounds(1.0)
-            //.max_depth_bounds(2.0)
             .stencil_test_enable(false)
             .front(Default::default())
             .back(Default::default());
