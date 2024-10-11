@@ -4,7 +4,7 @@ use std::sync::Arc;
 use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::vk;
-use crate::device::{Device, PhysicalDeviceProperties, SharedDeviceLoader};
+use crate::device::{Device, DeviceExt, PhysicalDeviceProperties, SharedDeviceLoader};
 use crate::shader::{ComputeShaderStage, ShaderModule};
 
 pub trait Pipeline {
@@ -133,21 +133,7 @@ impl GraphicsPipeline {
             .layout(params.layout.handle())
             .push_next(&mut dynamic_pipeline_info);
 
-        // Non allocating version of create_graphics_pipelines.
-        let mut handle = vk::Pipeline::null();
-        let err_code = unsafe {
-            (loader.fp_v1_0().create_graphics_pipelines)(
-                loader.handle(),
-                vk::PipelineCache::null(),
-                1,
-                &pipeline_info,
-                core::ptr::null(),
-                &mut handle,
-            )
-        };
-        if err_code != vk::Result::SUCCESS {
-            return Err(err_code);
-        }
+        let handle = unsafe { loader.create_graphics_pipeline(vk::PipelineCache::null(), &pipeline_info, None) }?;
 
         Ok(Self { loader, handle, layout: params.layout })
     }

@@ -8,6 +8,7 @@ use meshopt::VertexDataAdapter;
 use nalgebra as na;
 
 use crate::buffer::{Buffer, GpuOnly};
+use crate::descriptors::DescriptorPool;
 use crate::device::{Device, QueueFamily, SharedDeviceLoader};
 use crate::gpu_alloc::MemoryError;
 use crate::material::{Material, MaterialError};
@@ -71,7 +72,7 @@ pub struct Mesh {
     // TODO: Use a single buffer for both vertices and indices.
     vertex_buffer: Buffer<GpuOnly>,
     index_buffer: Buffer<GpuOnly>,
-    material: Material,
+    _material: Material,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_set: vk::DescriptorSet,
     pipeline: GraphicsPipeline,
@@ -82,17 +83,17 @@ impl Mesh {
     pub fn new(
         device: &Device,
         gfx_cmd_pool: vk::CommandPool,
-        model_path: &str,
+        mesh_path: &str,
         texture_path: &str,
         samples: vk::SampleCountFlags,
         uniform_buffer: &VolatileUniformBuffer,
-        descriptor_pool: vk::DescriptorPool,
+        descriptor_pool: &DescriptorPool,
     ) -> Result<Self, MeshError> {
         // Load material.
         let material = Material::new(device, texture_path, gfx_cmd_pool)?;
 
         // Load model. The obj crate already does indexing for us.
-        let obj_model: obj::Obj<obj::TexturedVertex, u32> = obj::load_obj(BufReader::new(File::open(model_path)?))?;
+        let obj_model: obj::Obj<obj::TexturedVertex, u32> = obj::load_obj(BufReader::new(File::open(mesh_path)?))?;
 
         let vertices = obj_model
             .vertices
@@ -160,7 +161,7 @@ impl Mesh {
 
         // Create mesh descriptor sets.
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(descriptor_pool)
+            .descriptor_pool(descriptor_pool.handle())
             .set_layouts(slice::from_ref(&descriptor_set_layout));
         let descriptor_set = unsafe { device.loader().allocate_descriptor_sets(&alloc_info) }?[0];
 
@@ -191,7 +192,7 @@ impl Mesh {
             loader: device.cloned_loader(),
             vertex_buffer,
             index_buffer,
-            material,
+            _material: material,
             descriptor_set_layout,
             descriptor_set,
             pipeline,
@@ -199,13 +200,13 @@ impl Mesh {
         })
     }
 
-    pub fn material(&self) -> &Material {
-        &self.material
-    }
+    //pub fn material(&self) -> &Material {
+    //    &self.material
+    //}
 
-    pub fn descriptor_set_layout(&self) -> vk::DescriptorSetLayout {
-        self.descriptor_set_layout
-    }
+    //pub fn descriptor_set_layout(&self) -> vk::DescriptorSetLayout {
+    //    self.descriptor_set_layout
+    //}
 
     pub fn record_graphics(&self, loader: &ash::Device, command_buffer: vk::CommandBuffer, viewport: vk::Viewport, scissor: vk::Rect2D) {
         unsafe { loader.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.handle()) };

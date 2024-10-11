@@ -1,28 +1,29 @@
+use std::ffi::{c_char, CStr};
+use std::mem::ManuallyDrop;
+use std::slice;
+
 use ash::prelude::VkResult;
 use ash::{ext, vk};
 use nalgebra as na;
 use raw_window_handle::{DisplayHandle, WindowHandle};
-use std::ffi::{c_char, CStr};
-use std::mem::ManuallyDrop;
-use std::ops::Deref;
-use std::slice;
+use arrayvec::ArrayVec;
 
 use crate::gpu_alloc::{MemResult, MemoryError};
 use crate::maths::ModelViewProjection;
 use crate::mesh::{Mesh, MeshError};
 use crate::particles::ParticleSystem;
-use crate::pipeline::{ComputePipeline, ComputePipelineParameters, GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout};
-use crate::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
 use crate::uniform_buffer::VolatileUniformBuffer;
-use crate::{app, buffer, device, engine, maths, particles, surface, swapchain, uniform_buffer, utils};
+use crate::{app, device, engine,  surface, swapchain, utils};
 use app::AppInfo;
-use buffer::Buffer;
-use buffer::{CpuToGpu, GpuOnly};
 use device::Device;
 use device::QueueFamily;
 use engine::MainLoopError::VulkanError;
 use surface::Surface;
 use swapchain::Swapchain;
+use crate::descriptors::DescriptorPool;
+use crate::device::DeviceExt;
+use crate::sync::{BinarySemaphore, Fence};
+
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
@@ -144,33 +145,27 @@ pub struct UniformData {
     delta_time: f32,
 }
 
-impl UniformData {
-    pub fn size() -> vk::DeviceSize {
-        std::mem::size_of::<Self>() as vk::DeviceSize
-    }
-}
-
 pub struct GalaxyEngine {
     _entry: ash::Entry,
-    instance: ManuallyDrop<ash::Instance>,
+    instance: ash::Instance,
     debug_messenger: Option<DebugMessenger>,
     surface: ManuallyDrop<Surface>,
     device: ManuallyDrop<Device>,
     swapchain: ManuallyDrop<Swapchain>,
     mesh: ManuallyDrop<Mesh>,
-    descriptor_pool: vk::DescriptorPool,
+    descriptor_pool: ManuallyDrop<DescriptorPool>,
     graphics_cmd_pool: vk::CommandPool,
     compute_cmd_pool: vk::CommandPool,
     transfer_cmd_pool: vk::CommandPool,
     uniform_buffer: ManuallyDrop<VolatileUniformBuffer>,
     particle_system: ManuallyDrop<ParticleSystem>,
-    cmd_buffers: [vk::CommandBuffer; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
-    compute_cmd_buffers: [vk::CommandBuffer; 2],
-    image_available_semaphores: [vk::Semaphore; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
-    render_finished_semaphores: [vk::Semaphore; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
-    compute_finished_semaphores: [vk::Semaphore; 2],
-    in_flight_fences: [vk::Fence; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
-    compute_in_flight_fences: [vk::Fence; 2],
+    cmd_buffers: ArrayVec<vk::CommandBuffer, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
+    compute_cmd_buffers: ArrayVec<vk::CommandBuffer, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
+    image_available_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
+    render_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
+    compute_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
+    in_flight_fences: ArrayVec<Fence, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
+    compute_in_flight_fences: ArrayVec<Fence, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     current_frame: u32,
     start_time: std::time::Instant,
     last_frame_time: std::time::Instant,
@@ -188,7 +183,6 @@ impl GalaxyEngine {
     // TODO: Compute cleanup:
     // - Convert to HLSL.
     // - Model resources/descriptor set management.
-    // - Compute shader object.
 
     // TODO: General cleanup:
     // - RAII handles.
@@ -242,7 +236,7 @@ impl GalaxyEngine {
         // Create surface.
         let surface = Surface::new(&entry, &instance, display, window)?;
 
-        // Create device.
+        // Create device. This sets the static device.
         let device = Device::new(&instance, &surface)?;
         let device_properties = device.get_properties();
 
@@ -284,7 +278,7 @@ impl GalaxyEngine {
             .pool_sizes(&pool_sizes)
             .max_sets(1 + Self::MAX_FRAMES_IN_FLIGHT as u32); // Allocator 1 set for graphics and 2 sets for compute.
 
-        let descriptor_pool = unsafe { device.loader().create_descriptor_pool(&descriptor_pool_info, None) }?;
+        let descriptor_pool = DescriptorPool::new(&device, &descriptor_pool_info)?;
 
         // Load mesh.
         let mesh = Mesh::new(
@@ -294,7 +288,7 @@ impl GalaxyEngine {
             "assets/viking_room.ktx2",
             swapchain.samples(),
             &uniform_buffer,
-            descriptor_pool,
+            &descriptor_pool,
         )?;
 
         // Create command buffer.
@@ -302,42 +296,41 @@ impl GalaxyEngine {
             .command_pool(graphics_cmd_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(Self::MAX_FRAMES_IN_FLIGHT as u32);
-        let command_buffers = unsafe { device.loader().allocate_command_buffers(&command_buffer_info) }?;
+        let command_buffers = unsafe { device.loader().allocate_command_buffers_av(&command_buffer_info) }?;
 
         let command_buffer_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(compute_cmd_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(Self::MAX_FRAMES_IN_FLIGHT as u32);
-        let compute_command_buffers = unsafe { device.loader().allocate_command_buffers(&command_buffer_info) }?;
+        let compute_command_buffers = unsafe { device.loader().allocate_command_buffers_av(&command_buffer_info) }?;
 
         // Create sync objects.
-        let mut image_available_semaphores = [vk::Semaphore::null(); Self::MAX_FRAMES_IN_FLIGHT];
-        let mut render_finished_semaphores = [vk::Semaphore::null(); Self::MAX_FRAMES_IN_FLIGHT];
-        let mut compute_finished_semaphores = [vk::Semaphore::null(); Self::MAX_FRAMES_IN_FLIGHT];
-        let mut in_flight_fences = [vk::Fence::null(); Self::MAX_FRAMES_IN_FLIGHT];
-        let mut compute_in_flight_fences = [vk::Fence::null(); Self::MAX_FRAMES_IN_FLIGHT];
-        let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-        for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
-            image_available_semaphores[i] = unsafe { device.loader().create_semaphore(&Default::default(), None) }?;
-            render_finished_semaphores[i] = unsafe { device.loader().create_semaphore(&Default::default(), None) }?;
-            compute_finished_semaphores[i] = unsafe { device.loader().create_semaphore(&Default::default(), None) }?;
-            in_flight_fences[i] = unsafe { device.loader().create_fence(&fence_info, None) }?;
-            compute_in_flight_fences[i] = unsafe { device.loader().create_fence(&fence_info, None) }?;
+        let mut image_available_semaphores = ArrayVec::new();
+        let mut render_finished_semaphores = ArrayVec::new();
+        let mut compute_finished_semaphores = ArrayVec::new();
+        let mut in_flight_fences = ArrayVec::new();
+        let mut compute_in_flight_fences = ArrayVec::new();
+        for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
+            image_available_semaphores.push(BinarySemaphore::new(&device)?);
+            render_finished_semaphores.push(BinarySemaphore::new(&device)?);
+            compute_finished_semaphores.push(BinarySemaphore::new(&device)?);
+            in_flight_fences.push(Fence::new(&device, true)?);
+            compute_in_flight_fences.push(Fence::new(&device, true)?);
         }
 
-        let particle_system = ParticleSystem::new(&device, swapchain.samples(), Self::NUM_PARTICLES, window_size, &uniform_buffer, graphics_cmd_pool, descriptor_pool)?;
+        let particle_system = ParticleSystem::new(&device, swapchain.samples(), Self::NUM_PARTICLES, window_size, &uniform_buffer, graphics_cmd_pool, &descriptor_pool)?;
 
         device.print_allocator_report();
 
         Ok(Self {
             _entry: entry,
-            instance: ManuallyDrop::new(instance),
+            instance,
             debug_messenger,
             surface: ManuallyDrop::new(surface),
             device: ManuallyDrop::new(device),
             swapchain: ManuallyDrop::new(swapchain),
             mesh: ManuallyDrop::new(mesh),
-            descriptor_pool,
+            descriptor_pool: ManuallyDrop::new(descriptor_pool),
             particle_system: ManuallyDrop::new(particle_system),
             graphics_cmd_pool,
             compute_cmd_pool,
@@ -364,7 +357,7 @@ impl GalaxyEngine {
             self.recreate_swapchain()?;
         }
 
-        let loader = self.device.loader().deref();
+        let loader = self.device.loader();
         let ext = self.device.ext();
 
         let current_frame = self.current_frame as usize;
@@ -384,8 +377,8 @@ impl GalaxyEngine {
         self.uniform_buffer.update(current_frame, bytemuck::bytes_of(&uniform_data))?;
 
         // Wait for compute fence.
-        unsafe { loader.wait_for_fences(&[self.compute_in_flight_fences[current_frame]], true, u64::MAX) }?;
-        unsafe { loader.reset_fences(&[self.compute_in_flight_fences[current_frame]]) }?;
+        self.compute_in_flight_fences[current_frame].wait(u64::MAX)?;
+        self.compute_in_flight_fences[current_frame].reset()?;
 
         let command_buffer = self.compute_cmd_buffers[current_frame];
         unsafe { loader.reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty()) }?;
@@ -396,14 +389,14 @@ impl GalaxyEngine {
 
         let submit_info = vk::SubmitInfo::default()
             .command_buffers(slice::from_ref(&command_buffer))
-            .signal_semaphores(slice::from_ref(&self.compute_finished_semaphores[current_frame]));
-        unsafe { loader.queue_submit(self.device.get_queue(QueueFamily::Compute), &[submit_info], self.compute_in_flight_fences[current_frame]) }?;
+            .signal_semaphores(slice::from_ref(self.compute_finished_semaphores[current_frame].ref_handle()));
+        unsafe { loader.queue_submit(self.device.get_queue(QueueFamily::Compute), &[submit_info], self.compute_in_flight_fences[current_frame].handle()) }?;
 
         // Wait for graphics fence.
-        unsafe { loader.wait_for_fences(&[self.in_flight_fences[current_frame]], true, u64::MAX) }?;
+        self.in_flight_fences[current_frame].wait(u64::MAX)?;
 
         // Acquire image from swapchain.
-        let (image_idx, _is_suboptimal) = match self.swapchain.acquire_next_image(self.image_available_semaphores[current_frame], vk::Fence::null()) {
+        let (image_idx, _is_suboptimal) = match self.swapchain.acquire_next_image(self.image_available_semaphores[current_frame].handle(), vk::Fence::null()) {
             Ok(x) => x,
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 self.recreate_swapchain()?;
@@ -412,7 +405,7 @@ impl GalaxyEngine {
             Err(err) => Err(err)?,
         };
 
-        unsafe { loader.reset_fences(&[self.in_flight_fences[current_frame]]) }?;
+        self.in_flight_fences[current_frame].reset()?;
 
         let command_buffer = self.cmd_buffers[current_frame];
 
@@ -491,17 +484,17 @@ impl GalaxyEngine {
         unsafe { loader.end_command_buffer(command_buffer) }?;
 
         // Submit command buffer.
-        let wait_semaphores = [self.compute_finished_semaphores[current_frame], self.image_available_semaphores[current_frame]];
+        let wait_semaphores = [self.compute_finished_semaphores[current_frame].handle(), self.image_available_semaphores[current_frame].handle()];
         let wait_stages = [vk::PipelineStageFlags::VERTEX_INPUT, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let submit_info = vk::SubmitInfo::default()
             .command_buffers(slice::from_ref(&command_buffer))
             .wait_semaphores(&wait_semaphores)
             .wait_dst_stage_mask(&wait_stages)
-            .signal_semaphores(slice::from_ref(&self.render_finished_semaphores[current_frame]));
+            .signal_semaphores(slice::from_ref(self.render_finished_semaphores[current_frame].ref_handle()));
 
-        unsafe { loader.queue_submit(self.device.get_queue(QueueFamily::Graphics), slice::from_ref(&submit_info), self.in_flight_fences[current_frame]) }?;
+        unsafe { loader.queue_submit(self.device.get_queue(QueueFamily::Graphics), slice::from_ref(&submit_info), self.in_flight_fences[current_frame].handle()) }?;
 
-        match self.swapchain.queue_present(self.device.get_queue(QueueFamily::Present), image_idx, &[self.render_finished_semaphores[current_frame]]) {
+        match self.swapchain.queue_present(self.device.get_queue(QueueFamily::Present), image_idx, &[self.render_finished_semaphores[current_frame].handle()]) {
             Ok(_) => {}
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
                 self.recreate_swapchain()?;
@@ -593,21 +586,18 @@ impl GalaxyEngine {
 
 impl Drop for GalaxyEngine {
     fn drop(&mut self) {
-        self.device.print_allocator_report();
-
         let device_loader = self.device.loader();
 
         unsafe { device_loader.device_wait_idle() }.unwrap_or_else(|e| log::error!("Failed to wait for device idle: {:?}", e));
 
-        // TODO: Make all these handles RAII types so Engine::new() doesn't trigger lifetime validations warnings on init error.
+        self.device.print_allocator_report();
+
         // Drop sync objects.
-        for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
-            unsafe { device_loader.destroy_semaphore(self.image_available_semaphores[i], None) };
-            unsafe { device_loader.destroy_semaphore(self.render_finished_semaphores[i], None) };
-            unsafe { device_loader.destroy_semaphore(self.compute_finished_semaphores[i], None) };
-            unsafe { device_loader.destroy_fence(self.in_flight_fences[i], None) };
-            unsafe { device_loader.destroy_fence(self.compute_in_flight_fences[i], None) };
-        }
+        self.image_available_semaphores.clear();
+        self.render_finished_semaphores.clear();
+        self.compute_finished_semaphores.clear();
+        self.in_flight_fences.clear();
+        self.compute_in_flight_fences.clear();
 
         // Drop command_buffers.
         unsafe { device_loader.free_command_buffers(self.graphics_cmd_pool, &self.cmd_buffers) };
@@ -624,7 +614,7 @@ impl Drop for GalaxyEngine {
         unsafe { ManuallyDrop::drop(&mut self.mesh) };
 
         // Drop descriptor pool.
-        unsafe { device_loader.destroy_descriptor_pool(self.descriptor_pool, None) };
+        unsafe { ManuallyDrop::drop(&mut self.descriptor_pool) };
 
         // Drop uniform buffers.
         unsafe { ManuallyDrop::drop(&mut self.uniform_buffer) };
@@ -634,6 +624,7 @@ impl Drop for GalaxyEngine {
 
         // Drop device.
         unsafe { ManuallyDrop::drop(&mut self.device) };
+
 
         // Drop surface.
         unsafe { ManuallyDrop::drop(&mut self.surface) };

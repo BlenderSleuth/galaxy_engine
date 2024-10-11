@@ -1,11 +1,10 @@
 use ash::vk;
 
 use crate::buffer::{Buffer, CpuToGpu, GpuOnly, MemLocation};
-use crate::device::{Device, SharedDeviceLoader};
-use crate::gpu_alloc::{MemResult, MemoryError};
-use crate::utils;
-use crate::command_buffer::CommandBuffer;
+use crate::device::Device;
 use crate::engine::GalaxyEngine;
+use crate::gpu_alloc::MemResult;
+use crate::utils;
 
 // How often is this resource updated?
 // #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,11 +58,11 @@ impl VolatileUniformBuffer {
     pub fn new(name: &str, device: &Device, size: u32) -> MemResult<Self> {
         Ok(Self {
             staging_buffer: Self::new_buffer(
-                    &utils::debug_only_name!(format!("{name} staging buffer")),
-                    device,
-                    size * Self::N as u32,
-                    vk::BufferUsageFlags::TRANSFER_SRC,
-                )?,
+                &utils::debug_only_name!(format!("{name} staging buffer")),
+                device,
+                size * Self::N as u32,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+            )?,
             gpu_buffer: Self::new_buffer(
                 &utils::debug_only_name!(format!("{name} gpu buffer")),
                 device,

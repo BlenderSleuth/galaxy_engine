@@ -1,14 +1,22 @@
-use std::mem::{ManuallyDrop, MaybeUninit};
-use std::sync::{Arc, Mutex};
-use arrayvec::ArrayVec;
-use ash::prelude::VkResult;
-use ash::{khr, vk};
-use gpu_allocator::vulkan::{AllocationCreateDesc, Allocator, AllocatorCreateDesc};
-use itertools::Itertools;
-
+use std::mem;
 use crate::gpu_alloc::{AllocResult, ManuallyFreeAllocation, SharedAllocator};
 use crate::surface::Surface;
 use crate::utils;
+use arrayvec::ArrayVec;
+use ash::prelude::VkResult;
+use ash::{khr, vk, RawPtr};
+use gpu_allocator::vulkan::{AllocationCreateDesc, Allocator, AllocatorCreateDesc};
+use itertools::Itertools;
+use std::mem::{ManuallyDrop, MaybeUninit};
+use std::sync::{Arc, Mutex, OnceLock};
+
+// Initialised by the engine.
+static DEVICE_LOADER: OnceLock<ash::Device> = OnceLock::new();
+
+// Can be called once the device is initialised by the engine. Device will be destroyed when the engine is dropped.
+pub fn get_device() -> &'static ash::Device {
+    DEVICE_LOADER.get().unwrap()
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum DeviceInitError {
@@ -311,6 +319,10 @@ impl Device {
 
         let device = unsafe { instance.create_device(current_device_properties.physical_device, &device_info, None) }?;
 
+        // Ensure that this is the only device.
+        assert!(DEVICE_LOADER.get().is_none());
+        DEVICE_LOADER.get_or_init(|| device.clone());
+
         // Get queues.
         let graphics_queue = unsafe { device.get_device_queue(current_device_properties.graphics_queue_family_idx, 0) };
         let present_queue = unsafe { device.get_device_queue(current_device_properties.present_queue_family_idx, 0) };
@@ -342,7 +354,7 @@ impl Device {
         })
     }
 
-    pub fn loader(&self) -> &SharedDeviceLoader {
+    pub fn loader(&self) -> &ash::Device {
         &self.loader
     }
     pub fn cloned_loader(&self) -> SharedDeviceLoader {
@@ -419,5 +431,71 @@ impl Drop for Device {
 
         // Drop device.
         unsafe { self.loader.destroy_as_final(|device| device.destroy_device(None)) };
+    }
+}
+
+// Extension trait for compatibility with arrayvec.
+pub trait VkResultExt {
+    unsafe fn set_array_vec_len_on_success<T, const N: usize>(self, v: ArrayVec<T, N>, len: usize) -> VkResult<ArrayVec<T, N>>;
+}
+
+impl VkResultExt for vk::Result {
+    #[inline]
+    unsafe fn set_array_vec_len_on_success<T, const N: usize>(self, mut v: ArrayVec<T, N>, len: usize) -> VkResult<ArrayVec<T, N>> {
+        self.result().map(move |()| {
+            v.set_len(len);
+            v
+        })
+    }
+}
+
+pub trait DeviceExt {
+    unsafe fn create_graphics_pipeline(
+        &self,
+        pipeline_cache: vk::PipelineCache,
+        create_info: &vk::GraphicsPipelineCreateInfo<'_>,
+        allocation_callbacks: Option<&vk::AllocationCallbacks<'_>>,
+    ) -> VkResult<vk::Pipeline>;
+    unsafe fn allocate_command_buffers_av<const N: usize>(
+        &self,
+        allocate_info: &vk::CommandBufferAllocateInfo<'_>,
+    ) -> VkResult<ArrayVec<vk::CommandBuffer, N>>;
+}
+
+impl DeviceExt for ash::Device {
+    /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkCreateGraphicsPipelines.html>
+    ///
+    /// Non-allocating version of create_graphics_pipelines for single pipeline creation.
+    #[inline]
+    unsafe fn create_graphics_pipeline(
+        &self,
+        pipeline_cache: vk::PipelineCache,
+        create_info: &vk::GraphicsPipelineCreateInfo<'_>,
+        allocation_callbacks: Option<&vk::AllocationCallbacks<'_>>,
+    ) -> VkResult<vk::Pipeline> {
+        let mut pipeline = mem::MaybeUninit::uninit();
+        (self.fp_v1_0().create_graphics_pipelines)(
+            self.handle(),
+            pipeline_cache,
+            1,
+            create_info,
+            allocation_callbacks.as_raw_ptr(),
+            pipeline.as_mut_ptr(),
+        ).assume_init_on_success(pipeline)
+    }
+
+    /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkAllocateCommandBuffers.html>
+    #[inline]
+    unsafe fn allocate_command_buffers_av<const N: usize>(
+        &self,
+        allocate_info: &vk::CommandBufferAllocateInfo<'_>,
+    ) -> VkResult<ArrayVec<vk::CommandBuffer, N>> {
+        assert!(allocate_info.command_buffer_count <= N as u32);
+        let mut buffers = ArrayVec::new();
+        (self.fp_v1_0().allocate_command_buffers)(
+            self.handle(),
+            allocate_info,
+            buffers.as_mut_ptr(),
+        ).set_array_vec_len_on_success(buffers, allocate_info.command_buffer_count as usize)
     }
 }

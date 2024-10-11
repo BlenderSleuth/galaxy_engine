@@ -11,6 +11,7 @@ use ash::vk;
 use nalgebra as na;
 use std::slice;
 use std::sync::Arc;
+use crate::descriptors::DescriptorPool;
 
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
@@ -61,7 +62,7 @@ impl ParticleSystem {
         window_size: vk::Extent2D,
         uniform_buffer: &VolatileUniformBuffer,
         graphics_cmd_pool: vk::CommandPool,
-        descriptor_pool: vk::DescriptorPool,
+        descriptor_pool: &DescriptorPool,
     ) -> MemResult<Self> {
         // Set up particle system compute pipeline.
         let particle_shader_code = std::fs::read("shaders/particles.comp.spv").unwrap();
@@ -133,7 +134,7 @@ impl ParticleSystem {
         // Allocate compute descriptor sets.
         let layouts = [compute_descriptor_set_layout; GalaxyEngine::MAX_FRAMES_IN_FLIGHT];
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(descriptor_pool)
+            .descriptor_pool(descriptor_pool.handle())
             .set_layouts(&layouts);
         let compute_descriptor_sets = unsafe { device.loader().allocate_descriptor_sets(&alloc_info) }?;
 

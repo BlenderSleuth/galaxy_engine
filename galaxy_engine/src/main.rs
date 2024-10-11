@@ -15,6 +15,8 @@ mod mesh;
 mod material;
 mod uniform_buffer;
 mod particles;
+mod sync;
+mod descriptors;
 
 use winit::error::EventLoopError;
 use winit::event_loop::{ControlFlow, EventLoop};
