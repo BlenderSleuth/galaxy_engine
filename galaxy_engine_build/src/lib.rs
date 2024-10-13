@@ -9,10 +9,10 @@ macro_rules! print_warning {
     }
 }
 
-fn compile_stage(path: &Path, shader_model: &str, entry: &str, output_ext: &str, debug: bool) {
-    let current_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+fn compile_stage(path: &Path, current_dir: &str, shader_model: &str, entry: &str, output_ext: &str, debug: bool) {
     let output_path = path.with_extension(format!("{output_ext}.spv").as_str());
-    println!("cargo::rerun-if-changed={output_path:?}");
+    // DXC seems to change the output spv each time it's run, so we shouldn't rerun if the output changes.
+    // println!("cargo::rerun-if-changed={output_path:?}");
     let mut command = Command::new("dxc");
     command
         .current_dir(current_dir)
@@ -74,23 +74,23 @@ impl ShaderStages {
     }
 
     fn compile(&self, path: &Path, debug: bool) {
-        println!("cargo::rerun-if-changed={path:?}");
+        let current_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        println!("cargo::rerun-if-changed={}", current_dir.clone() + "/" + path.to_str().unwrap());
         if self.vertex {
-            compile_stage(path, "vs_6_0", "mainVS", "vert", debug);
+            compile_stage(path, &current_dir, "vs_6_0", "mainVS", "vert", debug);
         }
         if self.fragment {
-            compile_stage(path, "ps_6_0", "mainFS", "frag", debug);
+            compile_stage(path, &current_dir, "ps_6_0", "mainFS", "frag", debug);
         }
         if self.compute {
-            compile_stage(path, "cs_6_0", "mainCS", "comp", debug);
+            compile_stage(path, &current_dir, "cs_6_0", "mainCS", "comp", debug);
         }
     }
 }
 
 // Compile all shaders in the given glob pattern. Relies on dxc being installed.
-// Relative to CARGO_MANIFEST_DIR.
+// Paths are relative to CARGO_MANIFEST_DIR.
 pub fn compile_shaders(glob_shader_paths: &[&str], debug: bool) {
-    //let glob_shader_paths: Vec<String> = glob_shader_paths.iter().map(|s| format!("{current_dir}/{s}")).collect();
     for glob_path in glob_shader_paths {
         for path in glob(glob_path).expect("Failed to read shader glob pattern") {
             let shader_path = path.unwrap();
