@@ -3,11 +3,11 @@ use crate::descriptors::DescriptorPool;
 use crate::device::{Device, QueueFamily, SharedDeviceLoader};
 use crate::gpu_alloc::MemResult;
 use crate::maths::ModelViewProjection;
-use crate::mesh::{BindableVertex, Vertex, VertexIndexBuffer};
+use crate::mesh::{BindableVertex, Vertex, MeshBuffer};
 use crate::pipeline::{ComputePipeline, ComputePipelineParameters, GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout};
 use crate::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
 use crate::uniform_buffer::VolatileUniformBuffer;
-use crate::{engine, utils};
+use crate::{engine, pod, utils};
 use ash::vk;
 use nalgebra as na;
 use std::ops::Deref;
@@ -56,7 +56,7 @@ pub struct GpuParticleSystem {
     _particles_indirect_buffer: Buffer<GpuOnly>,
     compute_descriptor_set_layout: vk::DescriptorSetLayout,
     compute_descriptor_set: vk::DescriptorSet,
-    quad_buffer: Arc<VertexIndexBuffer>,
+    mesh_buffer: Arc<MeshBuffer>,
 }
 
 impl GpuParticleSystem {
@@ -82,7 +82,7 @@ impl GpuParticleSystem {
             let x = r * theta.cos() * window_aspect_ratio;
             let y = r * theta.sin();
             let position = r * na::Vector2::new(x, y);
-            let velocity = position.normalize() * 0.25;
+            let velocity = position.normalize() * fastrand::f32() * 0.25;
             Particle {
                 position: na::Vector3::new(position.x, position.y, fastrand::f32()),
                 age: fastrand::f32() * 10.,
@@ -92,7 +92,7 @@ impl GpuParticleSystem {
             }
         }).collect::<Vec<_>>();
 
-        let mut particle_storage_buffer = Buffer::<GpuOnly>::new_for_typed_data(
+        let mut particle_storage_buffer = Buffer::<GpuOnly>::new_for_slice(
             "Particle storage buffer",
             &device,
             &initial_particles,
@@ -102,11 +102,9 @@ impl GpuParticleSystem {
         particle_storage_buffer.copy_via_staging_buffer(&device, bytemuck::must_cast_slice(&initial_particles), graphics_cmd_pool, QueueFamily::Graphics)?;
 
         // TODO: Don't allocate small buffers.
-        let num_particles_buffer = Buffer::<GpuOnly>::new(
+        let num_particles_buffer = Buffer::<GpuOnly>::new_for_type::<pod::vk::DrawIndexedIndirectCommand>(
             "Num particles buffer",
             &device,
-            1,
-            std::mem::size_of::<vk::DrawIndexedIndirectCommand>(),
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDIRECT_BUFFER,
             vk::SharingMode::EXCLUSIVE,
         )?;
@@ -213,7 +211,7 @@ impl GpuParticleSystem {
             _particles_indirect_buffer: num_particles_buffer,
             compute_descriptor_set_layout,
             compute_descriptor_set,
-            quad_buffer: engine::static_resources().get_quad_cloned(),
+            mesh_buffer: engine::static_resources().get_octagon_cloned(),
         })
     }
 
@@ -232,10 +230,10 @@ impl GpuParticleSystem {
         unsafe { self.loader.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.graphics_pipeline.handle()) };
         unsafe { self.loader.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.graphics_pipeline.layout().handle(), 0, slice::from_ref(&self.compute_descriptor_set), &[]) };
         unsafe { self.loader.cmd_push_constants(command_buffer, self.graphics_pipeline.layout().handle(), vk::ShaderStageFlags::VERTEX, 0, bytemuck::bytes_of(&mvp)) };
-        self.quad_buffer.bind(self.loader.deref(), command_buffer);
+        self.mesh_buffer.bind(self.loader.deref(), command_buffer);
         unsafe { self.loader.cmd_set_viewport(command_buffer, 0, &[viewport]) };
         unsafe { self.loader.cmd_set_scissor(command_buffer, 0, &[scissor]) };
-        unsafe { self.loader.cmd_draw_indexed(command_buffer, self.quad_buffer.num_indices(), self.max_num_particles, 0, 0, 0) };
+        unsafe { self.loader.cmd_draw_indexed(command_buffer, self.mesh_buffer.num_indices(), self.max_num_particles, 0, 0, 0) };
     }
 }
 

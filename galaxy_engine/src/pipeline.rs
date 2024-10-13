@@ -1,11 +1,11 @@
 use std::slice;
 use std::sync::Arc;
 
+use crate::device::{Device, DeviceExt, PhysicalDeviceProperties, SharedDeviceLoader};
+use crate::shader::{ComputeShaderStage, ShaderModule};
 use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::vk;
-use crate::device::{Device, DeviceExt, PhysicalDeviceProperties, SharedDeviceLoader};
-use crate::shader::{ComputeShaderStage, ShaderModule};
 
 pub trait Pipeline {
     fn handle(&self) -> vk::Pipeline;
@@ -82,7 +82,7 @@ impl GraphicsPipeline {
             .rasterizer_discard_enable(false)
             .polygon_mode(vk::PolygonMode::FILL)
             .line_width(1.0)
-            .cull_mode(vk::CullModeFlags::NONE) // TODO.
+            .cull_mode(vk::CullModeFlags::BACK)
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false);
 

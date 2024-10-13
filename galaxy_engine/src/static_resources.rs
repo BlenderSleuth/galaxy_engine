@@ -1,18 +1,19 @@
-use crate::buffer::{Buffer, GpuOnly};
-use crate::device::{Device, QueueFamily};
+use crate::device::Device;
 use crate::gpu_alloc::MemResult;
-use crate::mesh::{Vertex, VertexIndexBuffer};
-use arrayvec::ArrayVec;
+use crate::mesh::{MeshBuffer, Vertex};
 use ash::vk;
 use nalgebra as na;
+use parking_lot::RwLock;
+use std::f32::consts::FRAC_1_SQRT_2;
 use std::ops::Deref;
 use std::sync::Arc;
-use parking_lot::RwLock;
+
+const FRAC_1_SQRT_8: f32 = FRAC_1_SQRT_2 * 0.5;
 
 pub(crate) type StaticResourcesLock = RwLock<Option<StaticResources>>;
 pub(crate) type StaticResourcesRef = &'static StaticResourcesLock;
 pub(crate) struct StaticResourcesGuard {
-    resources: StaticResourcesRef
+    resources: StaticResourcesRef,
 }
 
 impl StaticResourcesGuard {
@@ -28,23 +29,38 @@ impl Drop for StaticResourcesGuard {
 }
 
 pub struct StaticResources {
-    quad_buffer: Arc<VertexIndexBuffer>,
+    quad_buffer: Arc<MeshBuffer>,
+    octagon_buffer: Arc<MeshBuffer>,
 }
+
 
 impl StaticResources {
     /// Initialisation of static resources.
     pub(crate) fn new(device: &Device, gfx_cmd_pool: vk::CommandPool) -> MemResult<Self> {
+        // TODO: upload with same command buffer?
         Ok(Self {
-            quad_buffer: Arc::new(Self::new_quad(device, gfx_cmd_pool)?),
+            quad_buffer: Arc::new(MeshBuffer::new_from_vertices_and_indices(
+                "Quad",
+                &Self::QUAD_VERTICES,
+                &Self::QUAD_INDICES,
+                device,
+                gfx_cmd_pool,
+            )?),
+            octagon_buffer: Arc::new(MeshBuffer::new_from_vertices_and_indices(
+                "Octagon",
+                &Self::OCTAGON_VERTICES,
+                &Self::OCTAGON_INDICES,
+                device,
+                gfx_cmd_pool,
+            )?),
         })
     }
 
     /// Quad vertex/index buffer.
-    #[allow(dead_code)] // TODO: make library.
-    pub fn get_quad(&self) -> &VertexIndexBuffer {
+    pub fn get_quad(&self) -> &MeshBuffer {
         self.quad_buffer.deref()
     }
-    pub fn get_quad_cloned(&self) -> Arc<VertexIndexBuffer> {
+    pub fn get_quad_cloned(&self) -> Arc<MeshBuffer> {
         Arc::clone(&self.quad_buffer)
     }
 
@@ -67,30 +83,60 @@ impl StaticResources {
         },
     ];
 
-    const QUAD_INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
+    const QUAD_INDICES: [u16; 6] = [
+        0, 1, 2,
+        2, 3, 0,
+    ];
 
-    fn new_quad(device: &Device, gfx_cmd_pool: vk::CommandPool) -> MemResult<VertexIndexBuffer> {
-        let data = bytemuck::must_cast_slice(&Self::QUAD_VERTICES).iter()
-            .chain(bytemuck::must_cast_slice(&Self::QUAD_INDICES).iter())
-            .copied()
-            .collect::<ArrayVec<u8, { std::mem::size_of::<[Vertex; 4]>() + std::mem::size_of::<[u16; 6]>() }>>();
-
-        let mut buffer = Buffer::<GpuOnly>::new(
-            "Quad vertex/index buffer",
-            &device,
-            data.len() as u32,
-            std::mem::size_of::<u8>(),
-            vk::BufferUsageFlags::TRANSFER_DST |
-                vk::BufferUsageFlags::VERTEX_BUFFER |
-                vk::BufferUsageFlags::INDEX_BUFFER,
-            vk::SharingMode::EXCLUSIVE,
-        )?;
-        buffer.copy_via_staging_buffer(&device, &data, gfx_cmd_pool, QueueFamily::Graphics)?;
-
-        Ok(VertexIndexBuffer::new(buffer,
-                                  Self::QUAD_INDICES.len() as u32,
-                                  vk::IndexType::UINT16,
-                                  std::mem::size_of_val(&Self::QUAD_VERTICES) as vk::DeviceSize))
+    /// Octagon vertex/index buffer.
+    pub fn get_octagon(&self) -> &MeshBuffer {
+        self.octagon_buffer.deref()
     }
-}
+    pub fn get_octagon_cloned(&self) -> Arc<MeshBuffer> {
+        Arc::clone(&self.octagon_buffer)
+    }
 
+    const OCTAGON_VERTICES: [Vertex; 8] = [
+        Vertex {
+            position: na::Vector3::new(1.0, 0.0, 0.0),
+            tex_coord: na::Vector2::new(1.0, 0.5),
+        },
+        Vertex {
+            position: na::Vector3::new(FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0),
+            tex_coord: na::Vector2::new(0.5 + FRAC_1_SQRT_8, 0.5 + FRAC_1_SQRT_8),
+        },
+        Vertex {
+            position: na::Vector3::new(0.0, 1.0, 0.0),
+            tex_coord: na::Vector2::new(0.5, 1.0),
+        },
+        Vertex {
+            position: na::Vector3::new(-FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0),
+            tex_coord: na::Vector2::new(0.5 - FRAC_1_SQRT_8, 0.5 + FRAC_1_SQRT_8),
+        },
+        Vertex {
+            position: na::Vector3::new(-1.0, 0.0, 0.0),
+            tex_coord: na::Vector2::new(0.0, 0.5),
+        },
+        Vertex {
+            position: na::Vector3::new(-FRAC_1_SQRT_2, -FRAC_1_SQRT_2, 0.0),
+            tex_coord: na::Vector2::new(0.5 - FRAC_1_SQRT_8, 0.5 - FRAC_1_SQRT_8),
+        },
+        Vertex {
+            position: na::Vector3::new(0.0, -1.0, 0.0),
+            tex_coord: na::Vector2::new(0.5, 0.0),
+        },
+        Vertex {
+            position: na::Vector3::new(FRAC_1_SQRT_2, -FRAC_1_SQRT_2, 0.0),
+            tex_coord: na::Vector2::new(0.5 + FRAC_1_SQRT_8, 0.5 - FRAC_1_SQRT_8),
+        },
+    ];
+
+    const OCTAGON_INDICES: [u16; 18] = [
+        0, 1, 2,
+        0, 2, 7,
+        2, 3, 7,
+        3, 6, 7,
+        3, 4, 6,
+        4, 5, 6,
+    ];
+}

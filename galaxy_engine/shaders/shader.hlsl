@@ -3,7 +3,7 @@ struct PushConstants {
 };
 
 [[vk::push_constant]]
-ConstantBuffer<PushConstants> push_constants;
+PushConstants push_constants;
 
 struct SceneUniforms {
     float3 sun_direction;
@@ -15,8 +15,7 @@ ConstantBuffer<SceneUniforms> scene;
 
 struct VSInput {
     [[vk::location(0)]] float3 position: POSITION;
-    [[vk::location(1)]] float3 colour: COLOR;
-    [[vk::location(2)]] float2 tex_coord: TEXCOORD0;
+    [[vk::location(1)]] float2 tex_coord: TEXCOORD0;
 };
 
 struct VSToFS {
@@ -28,7 +27,7 @@ struct VSToFS {
 VSToFS mainVS(VSInput input) {
     VSToFS output;
     output.position = mul(push_constants.mvp, float4(input.position, 1.));
-    output.colour = scene.sun_direction * input.colour;
+    output.colour = scene.sun_direction;
     output.tex_coord = input.tex_coord;
     return output;
 }

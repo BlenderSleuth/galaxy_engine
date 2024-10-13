@@ -15,5 +15,9 @@
 # Don't commit references
 ref/*
 
+# IDE files
 .vscode/*
 .idea/*
+
+# Generated files
+*.spv

@@ -176,8 +176,7 @@ impl Image {
         let mut image_buffer = Buffer::<CpuToGpu>::new(
             debug::debug_only_name!("{name} staging buffer"),
             &device,
-            total_mip_size,
-            std::mem::size_of::<u8>(),
+            total_mip_size as vk::DeviceSize,
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::SharingMode::EXCLUSIVE,
         )?;

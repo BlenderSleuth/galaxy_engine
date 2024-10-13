@@ -1,3 +1,4 @@
+use std::alloc::Layout;
 use ash::vk;
 use meshopt::VertexDataAdapter;
 use nalgebra as na;
@@ -6,14 +7,15 @@ use std::io::BufReader;
 use std::slice;
 use std::sync::Arc;
 
-use crate::buffer::{Buffer, GpuOnly};
+use crate::buffer::{Buffer, CpuToGpu, GpuOnly};
+use crate::command_buffer::CommandBuffer;
 use crate::descriptors::DescriptorPool;
 use crate::device::{Device, QueueFamily, SharedDeviceLoader};
-use crate::gpu_alloc::MemoryError;
+use crate::gpu_alloc::{MemResult, MemoryError};
 use crate::material::{Material, MaterialError};
 use crate::pipeline::{GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout};
 use crate::uniform_buffer::VolatileUniformBuffer;
-use crate::maths;
+use crate::{debug, maths};
 
 // For vertices with N attributes.
 pub trait BindableVertex<const N: usize> {
@@ -52,23 +54,64 @@ impl BindableVertex<2> for Vertex {
     }
 }
 
-pub struct VertexIndexBuffer {
-    // Buffer contains vertices followed by indices. TODO: How to ensure proper alignment?
+pub trait IndexTypeTrait: bytemuck::Pod {
+    fn index_type() -> vk::IndexType;
+}
+impl IndexTypeTrait for u16 {
+    fn index_type() -> vk::IndexType { vk::IndexType::UINT16 }
+}
+impl IndexTypeTrait for u32 {
+    fn index_type() -> vk::IndexType { vk::IndexType::UINT32 }
+}
+
+pub struct MeshBuffer {
+    // Buffer contains vertices followed by indices.
     buffer: Buffer<GpuOnly>,
     num_indices: u32,
     index_type: vk::IndexType,
-    index_buffer_offset: vk::DeviceSize,
+    vertices_offset: vk::DeviceSize,
 }
 
-impl VertexIndexBuffer {
-    // TODO: Better initialisation.
-    pub fn new(buffer: Buffer<GpuOnly>, num_indices: u32, index_type: vk::IndexType, index_buffer_offset: vk::DeviceSize) -> Self {
-        Self {
+impl MeshBuffer {
+    pub fn new_from_vertices_and_indices<V: bytemuck::Pod, I: IndexTypeTrait>(
+        name: &str,
+        vertices: &[V],
+        indices: &[I],
+        device: &Device,
+        transfer_cmd_pool: vk::CommandPool,
+    ) -> MemResult<MeshBuffer> {
+        // Ensure proper alignment.
+        let indices_layout = Layout::for_value(indices);
+        let vertices_offset = indices_layout.align_to(std::mem::align_of::<V>()).unwrap().pad_to_align().size();
+        let buffer_size = (vertices_offset + std::mem::size_of_val(vertices)) as vk::DeviceSize;
+
+        let mut buffer = Buffer::<GpuOnly>::new(
+            debug::debug_only_name!("{name} mesh buffer"),
+            &device,
+            buffer_size,
+            vk::BufferUsageFlags::TRANSFER_DST |
+                vk::BufferUsageFlags::VERTEX_BUFFER |
+                vk::BufferUsageFlags::INDEX_BUFFER,
+            vk::SharingMode::EXCLUSIVE,
+        )?;
+
+        let mut staging_buffer = Buffer::<CpuToGpu>::new(
+            debug::debug_only_name!("{name} mesh staging buffer"),
+            &device,
+            buffer_size,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::SharingMode::EXCLUSIVE,
+        )?;
+        staging_buffer.copy_into_buffer(indices, 0)?;
+        staging_buffer.copy_into_buffer(vertices, vertices_offset)?;
+        staging_buffer.copy_to_buffer(CommandBuffer::one_time_transient(device, transfer_cmd_pool)?, &device, &mut buffer, staging_buffer.size(), QueueFamily::Graphics)?;
+
+        Ok(Self {
             buffer,
-            num_indices,
-            index_type,
-            index_buffer_offset,
-        }
+            num_indices: indices.len() as u32,
+            index_type: I::index_type(),
+            vertices_offset: vertices_offset as vk::DeviceSize,
+        })
     }
 
     pub fn num_indices(&self) -> u32 {
@@ -76,8 +119,8 @@ impl VertexIndexBuffer {
     }
 
     pub fn bind(&self, loader: &ash::Device, command_buffer: vk::CommandBuffer) {
-        unsafe { loader.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.buffer.handle()), &[0]) };
-        unsafe { loader.cmd_bind_index_buffer(command_buffer, self.buffer.handle(), self.index_buffer_offset, self.index_type) };
+        unsafe { loader.cmd_bind_index_buffer(command_buffer, self.buffer.handle(), 0, self.index_type) };
+        unsafe { loader.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.buffer.handle()), &[self.vertices_offset]) };
     }
 }
 
@@ -134,9 +177,7 @@ pub enum MeshError {
 
 pub struct Mesh {
     loader: SharedDeviceLoader,
-    // TODO: Use a single buffer for both vertices and indices.
-    vertex_buffer: Buffer<GpuOnly>,
-    index_buffer: Buffer<GpuOnly>,
+    mesh_buffer: MeshBuffer,
     material: Material,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_set: vk::DescriptorSet,
@@ -146,6 +187,7 @@ pub struct Mesh {
 
 impl Mesh {
     pub fn new(
+        name: &str,
         device: &Device,
         gfx_cmd_pool: vk::CommandPool,
         mesh_path: &str,
@@ -155,7 +197,12 @@ impl Mesh {
         descriptor_pool: &DescriptorPool,
     ) -> Result<Self, MeshError> {
         // Load material.
-        let material = Material::new(device, texture_path, gfx_cmd_pool)?;
+        let material = Material::new(
+            debug::debug_only_name!("{name} material"),
+            device,
+            texture_path,
+            gfx_cmd_pool
+        )?;
 
         // Load model. The obj crate already does indexing for us.
         let obj_model: obj::Obj<obj::TexturedVertex, u32> = obj::load_obj(BufReader::new(File::open(mesh_path)?))?;
@@ -163,41 +210,28 @@ impl Mesh {
         let vertices = obj_model
             .vertices
             .iter()
-            .map(|v| ColouredVertex {
+            .map(|v| Vertex {
                 position: na::Vector3::new(v.position[0], v.position[1], v.position[2]),
-                colour: na::Vector3::new(1.0, 1.0, 1.0),
                 tex_coord: na::Vector2::new(v.texture[0], 1.0 - v.texture[1]),
             })
-            .collect::<Vec<ColouredVertex>>();
+            .collect::<Vec<Vertex>>();
 
         // Optimize model.
         let (vertex_count, vert_remap) = meshopt::generate_vertex_remap(&vertices, Some(&obj_model.indices));
         let mut vertices = meshopt::remap_vertex_buffer(&vertices, vertex_count, &vert_remap);
         let mut indices = meshopt::remap_index_buffer(Some(&obj_model.indices), vertex_count, &vert_remap);
         meshopt::optimize_vertex_cache_in_place(&mut indices, vertex_count);
-        let vertex_data_adapter = VertexDataAdapter::new(bytemuck::must_cast_slice(&vertices), std::mem::size_of::<ColouredVertex>(), std::mem::offset_of!(ColouredVertex, position)).unwrap();
+        let vertex_data_adapter = VertexDataAdapter::new(bytemuck::must_cast_slice(&vertices), std::mem::size_of::<Vertex>(), std::mem::offset_of!(Vertex, position)).unwrap();
         meshopt::optimize_overdraw_in_place(&mut indices, &vertex_data_adapter, 1.05);
         meshopt::optimize_vertex_fetch_in_place(&mut indices, &mut vertices);
 
-        // Vertex buffer.
-        let mut vertex_buffer = Buffer::<GpuOnly>::new_for_typed_data(
-            "Mesh vertex buffer",
-            &device,
+        let mesh_buffer = MeshBuffer::new_from_vertices_and_indices(
+            name,
             &vertices,
-            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
-            vk::SharingMode::EXCLUSIVE,
-        )?;
-        vertex_buffer.copy_via_staging_buffer(&device, bytemuck::must_cast_slice(vertices.as_slice()), gfx_cmd_pool, QueueFamily::Graphics)?;
-
-        // Index buffer.
-        let mut index_buffer = Buffer::<GpuOnly>::new_for_typed_data(
-            "Mesh index buffer",
-            &device,
             &indices,
-            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
-            vk::SharingMode::EXCLUSIVE,
+            device,
+            gfx_cmd_pool,
         )?;
-        index_buffer.copy_via_staging_buffer(&device, bytemuck::must_cast_slice(indices.as_slice()), gfx_cmd_pool, QueueFamily::Graphics)?;
 
         let layout_bindings = material.descriptor_set_layout_bindings();
         let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&layout_bindings);
@@ -209,8 +243,8 @@ impl Mesh {
         // Create pipeline.
         let pipeline_params = GraphicsPipelineParameters {
             layout: pipeline_layout,
-            vertex_binding_description: ColouredVertex::binding_description(),
-            vertex_attribute_descriptions: &ColouredVertex::attribute_descriptions(),
+            vertex_binding_description: Vertex::binding_description(),
+            vertex_attribute_descriptions: &Vertex::attribute_descriptions(),
             shader_stages: material.shader_stages(),
             samples,
             depth_test: true,
@@ -248,8 +282,7 @@ impl Mesh {
         unsafe { device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
         Ok(Self {
             loader: device.cloned_loader(),
-            vertex_buffer,
-            index_buffer,
+            mesh_buffer,
             material,
             descriptor_set_layout,
             descriptor_set,
@@ -268,13 +301,12 @@ impl Mesh {
 
     pub fn record_graphics(&self, loader: &ash::Device, command_buffer: vk::CommandBuffer, viewport: vk::Viewport, scissor: vk::Rect2D) {
         unsafe { loader.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.handle()) };
-        unsafe { loader.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.vertex_buffer.handle()), slice::from_ref(&0)) };
-        unsafe { loader.cmd_bind_index_buffer(command_buffer, self.index_buffer.handle(), 0, vk::IndexType::UINT32) };
+        self.mesh_buffer.bind(loader, command_buffer);
         unsafe { loader.cmd_push_constants(command_buffer, self.pipeline.layout().handle(), vk::ShaderStageFlags::VERTEX, 0, bytemuck::cast_slice(&[self.mvp.mvp()])) };
         unsafe { loader.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.layout().handle(), 0, slice::from_ref(&self.descriptor_set), &[]) };
         unsafe { loader.cmd_set_viewport(command_buffer, 0, &[viewport]) };
         unsafe { loader.cmd_set_scissor(command_buffer, 0, &[scissor]) };
-        unsafe { loader.cmd_draw_indexed(command_buffer, self.index_buffer.len(), 1, 0, 0, 0) };
+        unsafe { loader.cmd_draw_indexed(command_buffer, self.mesh_buffer.num_indices(), 1, 0, 0, 0) };
     }
 }
 

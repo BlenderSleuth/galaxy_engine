@@ -40,30 +40,29 @@ pub struct VolatileUniformBuffer {
 impl VolatileUniformBuffer {
     const N: usize = GalaxyEngine::MAX_FRAMES_IN_FLIGHT;
 
-    fn new_buffer<L: MemLocation>(name: &str, device: &Device, size: u32, usage: vk::BufferUsageFlags) -> MemResult<Buffer<L>> {
+    fn create_buffer<L: MemLocation>(name: &str, device: &Device, size: vk::DeviceSize, usage: vk::BufferUsageFlags) -> MemResult<Buffer<L>> {
         Buffer::new(
             name,
             device,
             size,
-            1,
             usage,
             vk::SharingMode::EXCLUSIVE,
         )
     }
 
     pub fn new_for_type<T: bytemuck::Pod>(name: &str, device: &Device) -> MemResult<Self> {
-        Self::new(name, device, std::mem::size_of::<T>() as u32)
+        Self::new(name, device, std::mem::size_of::<T>() as vk::DeviceSize)
     }
 
-    pub fn new(name: &str, device: &Device, size: u32) -> MemResult<Self> {
+    pub fn new(name: &str, device: &Device, size: vk::DeviceSize) -> MemResult<Self> {
         Ok(Self {
-            staging_buffer: Self::new_buffer(
+            staging_buffer: Self::create_buffer(
                 debug::debug_only_name!("{name} staging"),
                 device,
-                size * Self::N as u32,
+                size * Self::N as vk::DeviceSize,
                 vk::BufferUsageFlags::TRANSFER_SRC,
             )?,
-            gpu_buffer: Self::new_buffer(
+            gpu_buffer: Self::create_buffer(
                 debug::debug_only_name!("{name} GPU"),
                 device,
                 size,
@@ -78,7 +77,7 @@ impl VolatileUniformBuffer {
         self.size * frame as vk::DeviceSize
     }
 
-    pub fn update(&mut self, current_frame: usize, data: &[u8]) -> MemResult<()> {
+    pub fn update<T: bytemuck::Pod>(&mut self, current_frame: usize, data: &[T]) -> MemResult<()> {
         self.staging_buffer.copy_into_buffer(data, self.frame_offset(current_frame) as usize)
     }
 

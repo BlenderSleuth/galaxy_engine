@@ -33,8 +33,8 @@ fn main() -> Result<(), MainError> {
     #[cfg(not(feature = "debug_info"))]
     let flags = AppFlags::empty();
 
-    // Set up the renderer and run the application.
-    let app_info = AppInfo::new("Gravity Game", app::make_api_version(0, 0, 1, 0), flags);
+    // Set up the engine and run the application.
+    let app_info = AppInfo::new_from_package_version("Gravity Game", flags);
     let mut app = GalaxyApp::new(app_info);
     event_loop.run_app(&mut app)?;
 

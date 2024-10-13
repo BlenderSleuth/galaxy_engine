@@ -245,6 +245,7 @@ impl GalaxyEngine {
 
         // Load mesh.
         let mesh = Mesh::new(
+            "Viking room",
             &device,
             graphics_cmd_pool,
             "galaxy_engine/assets/viking_room.obj",

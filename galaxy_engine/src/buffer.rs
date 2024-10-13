@@ -34,30 +34,29 @@ pub struct Buffer<L: MemLocation> {
     alloc: SharedAllocator,
     handle: vk::Buffer,
     allocation: ManuallyFreeAllocation,
-    // TODO: Remove length and element size fields when buffers are used for multiple resources.
-    length: u32,
-    element_size: vk::DeviceSize,
+    size: vk::DeviceSize,
     _mem_location: std::marker::PhantomData<L>,
 }
 
 impl<L: MemLocation> Buffer<L> {
-    pub fn new_for_typed_data<T: bytemuck::Pod>(name: &str, device: &Device, data: &[T], usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode) -> MemResult<Self> {
-        Self::new(name, device, data.len() as u32, std::mem::size_of::<T>(), usage, sharing_mode)
+    pub fn new_for_type<T: bytemuck::Pod>(name: &str, device: &Device, usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode) -> MemResult<Self> {
+        Self::new(name, device, std::mem::size_of::<T>() as vk::DeviceSize, usage, sharing_mode)
+    }
+
+    pub fn new_for_slice<T: bytemuck::Pod>(name: &str, device: &Device, slice: &[T], usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode) -> MemResult<Self> {
+        Self::new(name, device, std::mem::size_of_val(slice) as vk::DeviceSize, usage, sharing_mode)
     }
 
     pub fn new(
         name: &str,
         device: &Device,
-        length: u32,
-        element_size: usize,
+        size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         sharing_mode: vk::SharingMode,
     ) -> MemResult<Self> {
         let device_properties = device.get_properties();
         let queue_indices = [device.get_properties().graphics_queue_family_idx, device_properties.transfer_queue_family_idx];
 
-        let element_size = element_size as vk::DeviceSize;
-        let size = element_size * length as vk::DeviceSize;
         let buffer_info = vk::BufferCreateInfo::default()
             .size(size)
             .usage(usage)
@@ -92,18 +91,13 @@ impl<L: MemLocation> Buffer<L> {
         };
         let allocation = device.allocate_and_bind_memory(&desc, handle)?;
 
-        Ok(Self { loader: device.cloned_loader(), alloc: device.cloned_allocator(), handle, allocation, length, element_size, _mem_location: std::marker::PhantomData })
+        Ok(Self { loader: device.cloned_loader(), alloc: device.cloned_allocator(), handle, allocation, size, _mem_location: std::marker::PhantomData })
     }
 
     pub fn handle(&self) -> vk::Buffer { self.handle }
 
     // The size of the buffer in bytes.
-    pub fn size(&self) -> vk::DeviceSize {
-        self.element_size * self.length as vk::DeviceSize
-    }
-
-    // The number of elements that can be stored in the buffer.
-    pub fn len(&self) -> u32 { self.length }
+    pub fn size(&self) -> vk::DeviceSize { self.size }
 
     // Descriptor buffer info for the whole buffer.
     pub fn descriptor_buffer_info(&self) -> vk::DescriptorBufferInfo {
@@ -134,25 +128,24 @@ impl<L: MemLocation> Drop for Buffer<L> {
 
 impl Buffer<GpuOnly> {
     pub fn copy_via_staging_buffer(&mut self, device: &Device, src_data: &[u8], cmd_pool: vk::CommandPool, queue_family: QueueFamily) -> MemResult<()> {
-        let mut staging_buffer = Buffer::<CpuToGpu>::new(
+        let mut staging_buffer = Buffer::<CpuToGpu>::new_for_slice(
             "Staging Buffer",
             &device,
-            src_data.len() as u32,
-            std::mem::size_of::<u8>(),
+            src_data,
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::SharingMode::EXCLUSIVE,
         )?;
-        staging_buffer.copy_into_buffer(&src_data, 0)?;
+        staging_buffer.copy_into_buffer(src_data, 0)?;
         staging_buffer.copy_to_buffer(CommandBuffer::one_time_transient(device, cmd_pool)?, &device, self, staging_buffer.size(), queue_family)?;
         Ok(())
     }
 }
 
 impl Buffer<CpuToGpu> {
-    pub fn copy_into_buffer(&mut self, data: &[u8], offset: usize) -> MemResult<()> {
+    pub fn copy_into_buffer<T: bytemuck::Pod>(&mut self, data: &[T], offset: usize) -> MemResult<()> {
         // CPU to GPU memory is always mappable.
         let mut memory = self.allocation.try_as_mapped_slab().unwrap();
-        presser::copy_from_slice_to_offset_with_align(data, &mut memory, offset, 1)?;
+        presser::copy_from_slice_to_offset_with_align(data, &mut memory, offset, align_of::<T>())?;
         Ok(())
     }
 }

@@ -9,6 +9,9 @@ macro_rules! print_warning {
     }
 }
 
+// The command for using glslc:
+// $ glslc particles.vert -o particles.vert.spv
+
 fn compile_stage(path: &Path, current_dir: &str, shader_model: &str, entry: &str, output_ext: &str, debug: bool) {
     let output_path = path.with_extension(format!("{output_ext}.spv").as_str());
     // DXC seems to change the output spv each time it's run, so we shouldn't rerun if the output changes.
@@ -33,6 +36,7 @@ fn compile_stage(path: &Path, current_dir: &str, shader_model: &str, entry: &str
                 for line in stderr.lines() {
                     print_warning!("{line}");
                 }
+                panic!("Shader compile failed.");
             }
             if output.stdout.len() > 0 {
                 let stdout = String::from_utf8_lossy(&output.stdout);
