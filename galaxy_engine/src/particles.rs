@@ -71,7 +71,7 @@ impl GpuParticleSystem {
         descriptor_pool: &DescriptorPool,
     ) -> MemResult<Self> {
         // Set up particle system compute pipeline.
-        let particle_shader_code = std::fs::read("shaders/particles.comp.spv").unwrap();
+        let particle_shader_code = std::fs::read("galaxy_engine/shaders/particles.comp.spv").unwrap();
         let particle_shader_module = ShaderModule::new(&device, &particle_shader_code)?;
 
         // Initial particle positions.
@@ -93,7 +93,7 @@ impl GpuParticleSystem {
         }).collect::<Vec<_>>();
 
         let mut particle_storage_buffer = Buffer::<GpuOnly>::new_for_typed_data(
-            utils::debug_only_name!("Particle storage buffer"),
+            "Particle storage buffer",
             &device,
             &initial_particles,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
@@ -183,8 +183,8 @@ impl GpuParticleSystem {
         let compute_pipeline = ComputePipeline::new(&device, compute_pipeline_params)?;
 
         // Graphics pipeline.
-        let vertex_shader_code = std::fs::read("shaders/particles.vert.spv").unwrap();
-        let fragment_shader_code = std::fs::read("shaders/particles.frag.spv").unwrap();
+        let vertex_shader_code = std::fs::read("galaxy_engine/shaders/particles.vert.spv").unwrap();
+        let fragment_shader_code = std::fs::read("galaxy_engine/shaders/particles.frag.spv").unwrap();
         let vertex_shader_module = ShaderModule::<VertexShaderStage>::new(device, &vertex_shader_code)?;
         let fragment_shader_module = ShaderModule::<FragmentShaderStage>::new(device, &fragment_shader_code)?;
         let particle_shader_stages = utils::arrayvec_from_array([

@@ -2,12 +2,30 @@ use crate::buffer::{Buffer, GpuOnly};
 use crate::device::{Device, QueueFamily};
 use crate::gpu_alloc::MemResult;
 use crate::mesh::{Vertex, VertexIndexBuffer};
-use crate::utils;
 use arrayvec::ArrayVec;
 use ash::vk;
 use nalgebra as na;
 use std::ops::Deref;
 use std::sync::Arc;
+use parking_lot::RwLock;
+
+pub(crate) type StaticResourcesLock = RwLock<Option<StaticResources>>;
+pub(crate) type StaticResourcesRef = &'static StaticResourcesLock;
+pub(crate) struct StaticResourcesGuard {
+    resources: StaticResourcesRef
+}
+
+impl StaticResourcesGuard {
+    pub fn new(resources: StaticResourcesRef) -> Self {
+        Self { resources }
+    }
+}
+
+impl Drop for StaticResourcesGuard {
+    fn drop(&mut self) {
+        *self.resources.write() = None;
+    }
+}
 
 pub struct StaticResources {
     quad_buffer: Arc<VertexIndexBuffer>,
@@ -58,7 +76,7 @@ impl StaticResources {
             .collect::<ArrayVec<u8, { std::mem::size_of::<[Vertex; 4]>() + std::mem::size_of::<[u16; 6]>() }>>();
 
         let mut buffer = Buffer::<GpuOnly>::new(
-            utils::debug_only_name!("Quad vertex/index buffer"),
+            "Quad vertex/index buffer",
             &device,
             data.len() as u32,
             std::mem::size_of::<u8>(),

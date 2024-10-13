@@ -137,7 +137,7 @@ pub struct Mesh {
     // TODO: Use a single buffer for both vertices and indices.
     vertex_buffer: Buffer<GpuOnly>,
     index_buffer: Buffer<GpuOnly>,
-    _material: Material,
+    material: Material,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_set: vk::DescriptorSet,
     pipeline: GraphicsPipeline,
@@ -250,7 +250,7 @@ impl Mesh {
             loader: device.cloned_loader(),
             vertex_buffer,
             index_buffer,
-            _material: material,
+            material,
             descriptor_set_layout,
             descriptor_set,
             pipeline,
@@ -258,13 +258,13 @@ impl Mesh {
         })
     }
 
-    //pub fn material(&self) -> &Material {
-    //    &self.material
-    //}
+    pub fn material(&self) -> &Material {
+        &self.material
+    }
 
-    //pub fn descriptor_set_layout(&self) -> vk::DescriptorSetLayout {
-    //    self.descriptor_set_layout
-    //}
+    pub fn descriptor_set_layout(&self) -> vk::DescriptorSetLayout {
+        self.descriptor_set_layout
+    }
 
     pub fn record_graphics(&self, loader: &ash::Device, command_buffer: vk::CommandBuffer, viewport: vk::Viewport, scissor: vk::Rect2D) {
         unsafe { loader.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.handle()) };

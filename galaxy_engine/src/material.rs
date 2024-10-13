@@ -62,8 +62,8 @@ impl Material {
         let sampler = unsafe { device.loader().create_sampler(&sampler_info, None) }?;
 
         // Load shaders.
-        let vertex_shader_code = std::fs::read("shaders/shader.vert.spv")?;
-        let fragment_shader_code = std::fs::read("shaders/shader.frag.spv")?;
+        let vertex_shader_code = std::fs::read("galaxy_engine/shaders/shader.vert.spv")?;
+        let fragment_shader_code = std::fs::read("galaxy_engine/shaders/shader.frag.spv")?;
 
         let vertex_shader_module = ShaderModule::new(&device, &vertex_shader_code)?;
         let fragment_shader_module = ShaderModule::new(&device, &fragment_shader_code)?;

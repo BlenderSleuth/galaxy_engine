@@ -8,7 +8,10 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
+pub use ash::vk::make_api_version;
+
 use crate::engine::GalaxyEngine;
+use crate::utils;
 
 bitflags! {
     pub struct AppFlags: u32 {
@@ -28,6 +31,13 @@ impl AppInfo {
         AppInfo {
             name: CString::new(name).unwrap_or(c"Unknown".into()),
             version,
+            flags,
+        }
+    }
+    pub fn new_from_package_version(name: &str, flags: AppFlags) -> AppInfo {
+        AppInfo {
+            name: CString::new(name).unwrap_or(c"Unknown".into()),
+            version: utils::parse_version(env!("CARGO_PKG_VERSION")),
             flags,
         }
     }

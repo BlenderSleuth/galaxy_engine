@@ -1,18 +1,18 @@
-use std::ffi::CStr;
 use crate::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
 use crate::surface::Surface;
-use crate::{debug, utils};
 use crate::utils::ArcFinalOwner;
+use crate::{debug, utils};
 use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
+use ash::vk::Handle;
 use ash::{ext, khr, vk, RawPtr};
 use gpu_allocator::vulkan::{AllocationCreateDesc, Allocator, AllocatorCreateDesc};
+use gpu_allocator::AllocatorDebugSettings;
 use itertools::Itertools;
+use std::ffi::CStr;
 use std::mem;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::sync::{Arc, Mutex, OnceLock};
-use ash::vk::Handle;
-use gpu_allocator::AllocatorDebugSettings;
 
 // Initialised by the engine.
 static DEVICE_LOADER: OnceLock<ash::Device> = OnceLock::new();
@@ -55,7 +55,7 @@ impl LoadedExtensions {
             #[cfg(feature = "debug_info")]
             debug,
             sync2,
-            dyn_cmd
+            dyn_cmd,
         }
     }
 
@@ -461,10 +461,10 @@ impl Device {
 impl Drop for Device {
     fn drop(&mut self) {
         // Drop allocator. Allocator has drop semantics, so we don't need a custom destroy closure.
-        unsafe { self.allocator.destroy_as_final(|_| {}) }.expect("Allocator not final owner");
+        unsafe { self.allocator.destroy_as_final(|_| {}) }.unwrap_or_else(|_| log::error!("Allocator not final owner."));
 
         // Drop device.
-        unsafe { self.loader.destroy_as_final(|device| device.destroy_device(None)) }.expect("Device not final owner");
+        unsafe { self.loader.destroy_as_final(|device| device.destroy_device(None)) }.unwrap_or_else(|_| log::error!("Device not final owner."));
     }
 }
 
@@ -493,7 +493,7 @@ pub trait DeviceExt {
     unsafe fn allocate_command_buffer(
         &self,
         cmd_pool: vk::CommandPool,
-        level: vk::CommandBufferLevel
+        level: vk::CommandBufferLevel,
     ) -> VkResult<vk::CommandBuffer>;
     unsafe fn allocate_command_buffers_av<const N: usize>(
         &self,
@@ -529,7 +529,7 @@ impl DeviceExt for ash::Device {
     unsafe fn allocate_command_buffer(
         &self,
         cmd_pool: vk::CommandPool,
-        level: vk::CommandBufferLevel
+        level: vk::CommandBufferLevel,
     ) -> VkResult<vk::CommandBuffer> {
         let allocate_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(cmd_pool)
@@ -557,5 +557,4 @@ impl DeviceExt for ash::Device {
             buffers.as_mut_ptr(),
         ).set_array_vec_len_on_success(buffers, allocate_info.command_buffer_count as usize)
     }
-
 }

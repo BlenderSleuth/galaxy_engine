@@ -4,7 +4,7 @@ use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme};
 use crate::command_buffer::{CommandBuffer, TransientOrPersistentCommandBuffer};
 use crate::device::{Device, QueueFamily, SharedDeviceLoader};
 use crate::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
-use crate::{debug, gpu_alloc, utils};
+use crate::{debug, gpu_alloc};
 
 use gpu_allocator::MemoryLocation;
 
@@ -77,14 +77,14 @@ impl<L: MemLocation> Buffer<L> {
         unsafe { device.loader().get_buffer_memory_requirements2(&requirements_info, &mut requirements) };
 
         let requirements = requirements.memory_requirements;
-        let allocation_scheme = if utils::use_dedicated_allocation(dedicated_requirements) {
+        let allocation_scheme = if gpu_alloc::use_dedicated_allocation(dedicated_requirements) {
             AllocationScheme::DedicatedBuffer(handle)
         } else {
             AllocationScheme::GpuAllocatorManaged
         };
 
         let desc = AllocationCreateDesc {
-            name: utils::debug_only_name!(name),
+            name: debug::debug_only_name!(name),
             requirements,
             location: L::location(),
             linear: true,
@@ -103,9 +103,7 @@ impl<L: MemLocation> Buffer<L> {
     }
 
     // The number of elements that can be stored in the buffer.
-    pub fn len(&self) -> u32 {
-        self.length
-    }
+    pub fn len(&self) -> u32 { self.length }
 
     // Descriptor buffer info for the whole buffer.
     pub fn descriptor_buffer_info(&self) -> vk::DescriptorBufferInfo {

@@ -107,14 +107,14 @@ impl Image {
         unsafe { device.loader().get_image_memory_requirements2(&requirements_info, &mut requirements) };
 
         let requirements = requirements.memory_requirements;
-        let allocation_scheme = if utils::use_dedicated_allocation(dedicated_requirements) {
+        let allocation_scheme = if gpu_alloc::use_dedicated_allocation(dedicated_requirements) {
             AllocationScheme::DedicatedImage(handle)
         } else {
             AllocationScheme::GpuAllocatorManaged
         };
 
         let alloc_desc = AllocationCreateDesc {
-            name: utils::debug_only_name!(name),
+            name: debug::debug_only_name!(name),
             requirements,
             location: MemoryLocation::GpuOnly,
             linear: false,
@@ -174,7 +174,7 @@ impl Image {
         let mut image = Image::new(name, device, &image_info, subresource)?;
 
         let mut image_buffer = Buffer::<CpuToGpu>::new(
-            utils::debug_only_name!("{name} staging buffer"),
+            debug::debug_only_name!("{name} staging buffer"),
             &device,
             total_mip_size,
             std::mem::size_of::<u8>(),

@@ -17,6 +17,11 @@ pub enum MemoryError {
 }
 pub type MemResult<T> = Result<T, MemoryError>;
 
+pub(crate) fn use_dedicated_allocation(dedicated_requirements: vk::MemoryDedicatedRequirements) -> bool {
+    dedicated_requirements.requires_dedicated_allocation == vk::TRUE
+        || dedicated_requirements.prefers_dedicated_allocation == vk::TRUE
+}
+
 pub unsafe fn free_or_log_on_fail(allocator: &SharedAllocator, allocation: &mut ManuallyFreeAllocation) {
     // Lock allocator.
     let Ok(mut allocator) = allocator.lock() else {

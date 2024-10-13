@@ -11,7 +11,7 @@ use crate::gpu_alloc::{MemResult, MemoryError};
 use crate::maths::ModelViewProjection;
 use crate::mesh::{Mesh, MeshError};
 use crate::particles::GpuParticleSystem;
-use crate::static_resources::StaticResources;
+use crate::static_resources::{StaticResources, StaticResourcesGuard, StaticResourcesLock};
 use crate::sync::{BinarySemaphore, Fence};
 use crate::uniform_buffer::VolatileUniformBuffer;
 use crate::{app, device, engine, surface, swapchain, utils};
@@ -21,7 +21,7 @@ use device::Device;
 use device::QueueFamily;
 use engine::MainLoopError::VulkanError;
 use nalgebra as na;
-use parking_lot::{MappedRwLockReadGuard, RwLock, RwLockReadGuard};
+use parking_lot::{MappedRwLockReadGuard, RwLockReadGuard};
 use raw_window_handle::{DisplayHandle, WindowHandle};
 use surface::Surface;
 use swapchain::Swapchain;
@@ -54,8 +54,8 @@ pub enum EngineInitError {
     IoError(#[from] std::io::Error),
     #[error("Memory error: {0}")]
     MemoryError(#[from] MemoryError),
-    #[error("Model error: {0}")]
-    ModelError(#[from] MeshError),
+    #[error("Mesh error: {0}")]
+    MeshError(#[from] MeshError),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -83,7 +83,7 @@ pub struct UniformData {
 }
 
 // Static resources. These are available while the engine instance is alive.
-static STATIC_RESOURCES: RwLock<Option<StaticResources>> = RwLock::new(None);
+static STATIC_RESOURCES: StaticResourcesLock = StaticResourcesLock::new(None);
 
 /// Requires that the engine is alive. Currently using parking_lot as a stable polyfill for `MappedRwLockReadGuard`.
 pub fn static_resources() -> MappedRwLockReadGuard<'static, StaticResources> {
@@ -98,6 +98,7 @@ pub struct GalaxyEngine {
     surface: ManuallyDrop<Surface>,
     device: ManuallyDrop<Device>,
     swapchain: ManuallyDrop<Swapchain>,
+    static_resources_guard: ManuallyDrop<StaticResourcesGuard>,
     mesh: ManuallyDrop<Mesh>,
     descriptor_pool: ManuallyDrop<DescriptorPool>,
     graphics_cmd_pool: vk::CommandPool,
@@ -211,6 +212,7 @@ impl GalaxyEngine {
 
         // Initialise engine static resources.
         *STATIC_RESOURCES.write() = Some(StaticResources::new(&device, graphics_cmd_pool)?);
+        let static_resources_guard = StaticResourcesGuard::new(&STATIC_RESOURCES);
 
         // Create swapchain.
         let window_size = vk::Extent2D { width, height };
@@ -245,8 +247,8 @@ impl GalaxyEngine {
         let mesh = Mesh::new(
             &device,
             graphics_cmd_pool,
-            "assets/viking_room.obj",
-            "assets/viking_room.ktx2",
+            "galaxy_engine/assets/viking_room.obj",
+            "galaxy_engine/assets/viking_room.ktx2",
             swapchain.samples(),
             &uniform_buffer,
             &descriptor_pool,
@@ -291,6 +293,7 @@ impl GalaxyEngine {
             surface: ManuallyDrop::new(surface),
             device: ManuallyDrop::new(device),
             swapchain: ManuallyDrop::new(swapchain),
+            static_resources_guard: ManuallyDrop::new(static_resources_guard),
             mesh: ManuallyDrop::new(mesh),
             descriptor_pool: ManuallyDrop::new(descriptor_pool),
             particle_system: ManuallyDrop::new(particle_system),
@@ -587,11 +590,10 @@ impl Drop for GalaxyEngine {
         unsafe { ManuallyDrop::drop(&mut self.swapchain) };
 
         // Drop static resources.
-        *STATIC_RESOURCES.write() = None;
+        unsafe { ManuallyDrop::drop(&mut self.static_resources_guard) };
 
         // Drop device.
         unsafe { ManuallyDrop::drop(&mut self.device) };
-
 
         // Drop surface.
         unsafe { ManuallyDrop::drop(&mut self.surface) };

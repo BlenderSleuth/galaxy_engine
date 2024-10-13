@@ -4,7 +4,7 @@ use crate::buffer::{Buffer, CpuToGpu, GpuOnly, MemLocation};
 use crate::device::Device;
 use crate::engine::GalaxyEngine;
 use crate::gpu_alloc::MemResult;
-use crate::utils;
+use crate::debug;
 
 // How often is this resource updated?
 // #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,13 +58,13 @@ impl VolatileUniformBuffer {
     pub fn new(name: &str, device: &Device, size: u32) -> MemResult<Self> {
         Ok(Self {
             staging_buffer: Self::new_buffer(
-                utils::debug_only_name!("{name} staging"),
+                debug::debug_only_name!("{name} staging"),
                 device,
                 size * Self::N as u32,
                 vk::BufferUsageFlags::TRANSFER_SRC,
             )?,
             gpu_buffer: Self::new_buffer(
-                utils::debug_only_name!("{name} GPU"),
+                debug::debug_only_name!("{name} GPU"),
                 device,
                 size,
                 vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::UNIFORM_BUFFER,
