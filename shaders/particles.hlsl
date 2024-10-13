@@ -1,47 +1,91 @@
-// struct Particle {
-//     float3 position;
-//     float3 velocity;
-//     float3 color;
-// };
-//
-// [[vk::binding(0)]]
-// RWStructuredBuffer<Particle> Particles;
-//
-// [numthreads(256, 1, 1)]
-// void main() {
-// }
+// TODO: include common structs from another file.
 
-[[vk::binding(0)]]
-cbuffer Binding0 {
-    float3 sun_direction;
+struct PushConstants {
+    float4x4 mvp;
 };
 
+[[vk::push_constant]]
+ConstantBuffer<PushConstants> push_constants;
+
+struct SceneUniforms {
+    float3 sun_direction;
+    float delta_time;
+};
+
+[[vk::binding(0)]]
+ConstantBuffer<SceneUniforms> scene_uniforms;
+
+struct Particle {
+    float3 position;
+    float age;
+    float3 velocity;
+    float radius;
+    float4 colour;
+};
+
+[[vk::binding(1)]]
+RWStructuredBuffer<Particle> Particles;
+
+// https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkDrawIndexedIndirectCommand.html
+struct VkDrawIndexedIndirectCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int  vertexOffset;
+    uint firstInstance;
+};
+
+[[vk::binding(3)]]
+RWStructuredBuffer<VkDrawIndexedIndirectCommand> draw_commands;
+
+[numthreads(256, 1, 1)]
+void mainCS(uint index: SV_DispatchThreadID) {
+    Particle particle = Particles[index];
+
+    // Update position and velocity.
+    particle.position += particle.velocity * scene_uniforms.delta_time;
+    //Particles[index].velocity.z -= 9.8 * scene_uniforms.delta_time;
+
+    // Update age.
+    particle.age += scene_uniforms.delta_time;
+
+    // Update colour and radius.
+    float age = Particles[index].age;
+    particle.colour = float4(abs(sin(age)), abs(sin(age + 0.3)), abs(sin(age + 0.6)), 1.0);
+    //particle.colour = float4(index / 1024., 0, 0, 1);
+    particle.radius = 0.01 + ((1 + sin(age)) * 0.5) * 0.02;
+
+    if (dot(particle.position.xy, particle.position.xy) >= 1.0) {
+        particle.velocity.xy = -particle.velocity.xy;
+    }
+
+    Particles[index] = particle;
+}
+
+[[vk::binding(1)]]
+StructuredBuffer<Particle> DrawnParticles;
+
 struct VSInput {
-    [[vk::location(0)]] float2 position: POSITION;
-    [[vk::location(1)]] float4 color: COLOR;
+    [[vk::location(0)]] float3 position: POSITION;
+    [[vk::location(1)]] float2 tex_coord: TEXCOORD0;
 };
 
 struct VSToFS {
-    float4 position : SV_POSITION;
-    float3 color : COLOR;
-    [[vk::builtin("PointSize")]]
-    float point_size : PSIZE;
+    float4 position : SV_Position;
+    float2 tex_coord : TEXCOORD0;
 };
 
-struct FSInput {
-    [[vk::builtin("PointCoord")]]
-    float2 point_coord : POINTCOORD;
-};
+VSToFS mainVS(VSInput input, inout uint instance_id: SV_InstanceID) {
+    float3 position1 = DrawnParticles[instance_id].position + input.position * DrawnParticles[instance_id].radius;
+    float4 position = mul(push_constants.mvp, float4(position1, 1.));
 
-VSToFS mainVS(VSInput input) {
     VSToFS output;
-    output.position = float4(input.position, 1., 1.);
-    output.color = input.color.xyz;
-    output.point_size = 14;
+    output.position = position;
+    output.tex_coord = input.tex_coord;
     return output;
 }
 
-float4 mainFS(VSToFS input, FSInput point_coord): SV_TARGET0 {
-    float2 coord = point_coord.point_coord - float2(0.5, 0.5);
-    return float4(input.color, 0.5 - length(coord));
+float4 mainFS(VSToFS input, uint instance_id: SV_InstanceID): SV_TARGET0 {
+    //return float4(input.tex_coord, 0, 1.);
+    return DrawnParticles[instance_id].colour;
 }

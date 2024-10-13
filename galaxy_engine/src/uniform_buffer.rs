@@ -58,13 +58,13 @@ impl VolatileUniformBuffer {
     pub fn new(name: &str, device: &Device, size: u32) -> MemResult<Self> {
         Ok(Self {
             staging_buffer: Self::new_buffer(
-                &utils::debug_only_name!(format!("{name} staging buffer")),
+                utils::debug_only_name!("{name} staging"),
                 device,
                 size * Self::N as u32,
                 vk::BufferUsageFlags::TRANSFER_SRC,
             )?,
             gpu_buffer: Self::new_buffer(
-                &utils::debug_only_name!(format!("{name} gpu buffer")),
+                utils::debug_only_name!("{name} GPU"),
                 device,
                 size,
                 vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::UNIFORM_BUFFER,
@@ -90,14 +90,11 @@ impl VolatileUniformBuffer {
         unsafe { loader.cmd_copy_buffer(cmd_buffer, self.staging_buffer.handle(), self.gpu_buffer.handle(), &[copy_region]) };
     }
 
-    pub fn gpu_buffer_handle(&self) -> vk::Buffer {
-        self.gpu_buffer.handle()
-    }
+    //pub fn gpu_buffer_handle(&self) -> vk::Buffer {
+    //    self.gpu_buffer.handle()
+    //}
 
     pub fn descriptor_buffer_info(&self) -> vk::DescriptorBufferInfo {
-        vk::DescriptorBufferInfo::default()
-            .buffer(self.gpu_buffer_handle())
-            .offset(0)
-            .range(self.size)
+        self.gpu_buffer.descriptor_buffer_info()
     }
 }

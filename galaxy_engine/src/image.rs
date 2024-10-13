@@ -10,7 +10,7 @@ use crate::buffer::{Buffer, CpuToGpu};
 use crate::command_buffer::{CommandBuffer, TransientOrPersistentCommandBuffer};
 use crate::device::{Device, QueueFamily, SharedDeviceLoader};
 use crate::gpu_alloc::{MemResult, ManuallyFreeAllocation, SharedAllocator};
-use crate::{gpu_alloc, utils};
+use crate::{debug, gpu_alloc, utils};
 
 pub struct ImageView {
     loader: SharedDeviceLoader,
@@ -95,6 +95,9 @@ impl Image {
     pub fn new(name: &str, device: &Device, info: &vk::ImageCreateInfo, subresource: vk::ImageSubresourceRange) -> MemResult<Self> {
         let handle = unsafe { device.loader().create_image(&info, None) }?;
 
+        // Debug name image object.
+        debug::set_object_name(device, handle, name)?;
+
         // Allocate memory for image.
         let mut dedicated_requirements = vk::MemoryDedicatedRequirements::default();
         let mut requirements = vk::MemoryRequirements2::default()
@@ -117,8 +120,7 @@ impl Image {
             linear: false,
             allocation_scheme,
         };
-        let allocation = device.allocate_memory(&alloc_desc)?;
-        unsafe { device.loader().bind_image_memory(handle, allocation.memory(), 0) }?;
+        let allocation = device.allocate_and_bind_memory(&alloc_desc, handle)?;
 
         let view_info = vk::ImageViewCreateInfo::default()
             .image(handle)
@@ -172,7 +174,7 @@ impl Image {
         let mut image = Image::new(name, device, &image_info, subresource)?;
 
         let mut image_buffer = Buffer::<CpuToGpu>::new(
-            &utils::debug_only_name!(format!("{name} staging buffer")),
+            utils::debug_only_name!("{name} staging buffer"),
             &device,
             total_mip_size,
             std::mem::size_of::<u8>(),

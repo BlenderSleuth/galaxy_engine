@@ -1,30 +1,34 @@
+use ash::vk;
+use meshopt::VertexDataAdapter;
+use nalgebra as na;
 use std::fs::File;
 use std::io::BufReader;
 use std::slice;
 use std::sync::Arc;
-
-use ash::vk;
-use meshopt::VertexDataAdapter;
-use nalgebra as na;
 
 use crate::buffer::{Buffer, GpuOnly};
 use crate::descriptors::DescriptorPool;
 use crate::device::{Device, QueueFamily, SharedDeviceLoader};
 use crate::gpu_alloc::MemoryError;
 use crate::material::{Material, MaterialError};
-use crate::maths;
 use crate::pipeline::{GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout};
 use crate::uniform_buffer::VolatileUniformBuffer;
+use crate::maths;
+
+// For vertices with N attributes.
+pub trait BindableVertex<const N: usize> {
+    fn binding_description() -> vk::VertexInputBindingDescription;
+    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; N];
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
-struct Vertex {
-    position: na::Vector3<f32>,
-    color: na::Vector3<f32>,
-    tex_coord: na::Vector2<f32>,
+pub struct Vertex {
+    pub position: na::Vector3<f32>,
+    pub tex_coord: na::Vector2<f32>,
 }
 
-impl Vertex {
+impl BindableVertex<2> for Vertex {
     fn binding_description() -> vk::VertexInputBindingDescription {
         vk::VertexInputBindingDescription::default()
             .binding(0)
@@ -32,7 +36,7 @@ impl Vertex {
             .input_rate(vk::VertexInputRate::VERTEX)
     }
 
-    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
+    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
         [
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
@@ -42,13 +46,74 @@ impl Vertex {
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .location(1)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(std::mem::offset_of!(Vertex, tex_coord) as u32),
+        ]
+    }
+}
+
+pub struct VertexIndexBuffer {
+    // Buffer contains vertices followed by indices. TODO: How to ensure proper alignment?
+    buffer: Buffer<GpuOnly>,
+    num_indices: u32,
+    index_type: vk::IndexType,
+    index_buffer_offset: vk::DeviceSize,
+}
+
+impl VertexIndexBuffer {
+    // TODO: Better initialisation.
+    pub fn new(buffer: Buffer<GpuOnly>, num_indices: u32, index_type: vk::IndexType, index_buffer_offset: vk::DeviceSize) -> Self {
+        Self {
+            buffer,
+            num_indices,
+            index_type,
+            index_buffer_offset,
+        }
+    }
+
+    pub fn num_indices(&self) -> u32 {
+        self.num_indices
+    }
+
+    pub fn bind(&self, loader: &ash::Device, command_buffer: vk::CommandBuffer) {
+        unsafe { loader.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.buffer.handle()), &[0]) };
+        unsafe { loader.cmd_bind_index_buffer(command_buffer, self.buffer.handle(), self.index_buffer_offset, self.index_type) };
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
+struct ColouredVertex {
+    pub position: na::Vector3<f32>,
+    pub colour: na::Vector3<f32>,
+    pub tex_coord: na::Vector2<f32>,
+}
+
+impl BindableVertex<3> for ColouredVertex {
+    fn binding_description() -> vk::VertexInputBindingDescription {
+        vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(std::mem::size_of::<ColouredVertex>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX)
+    }
+
+    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
+        [
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(0)
                 .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(std::mem::offset_of!(Vertex, color) as u32),
+                .offset(std::mem::offset_of!(ColouredVertex, position) as u32),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(1)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(std::mem::offset_of!(ColouredVertex, colour) as u32),
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
                 .location(2)
                 .format(vk::Format::R32G32_SFLOAT)
-                .offset(std::mem::offset_of!(Vertex, tex_coord) as u32),
+                .offset(std::mem::offset_of!(ColouredVertex, tex_coord) as u32),
         ]
     }
 }
@@ -98,19 +163,19 @@ impl Mesh {
         let vertices = obj_model
             .vertices
             .iter()
-            .map(|v| Vertex {
+            .map(|v| ColouredVertex {
                 position: na::Vector3::new(v.position[0], v.position[1], v.position[2]),
-                color: na::Vector3::new(1.0, 1.0, 1.0),
+                colour: na::Vector3::new(1.0, 1.0, 1.0),
                 tex_coord: na::Vector2::new(v.texture[0], 1.0 - v.texture[1]),
             })
-            .collect::<Vec<Vertex>>();
+            .collect::<Vec<ColouredVertex>>();
 
         // Optimize model.
         let (vertex_count, vert_remap) = meshopt::generate_vertex_remap(&vertices, Some(&obj_model.indices));
         let mut vertices = meshopt::remap_vertex_buffer(&vertices, vertex_count, &vert_remap);
         let mut indices = meshopt::remap_index_buffer(Some(&obj_model.indices), vertex_count, &vert_remap);
         meshopt::optimize_vertex_cache_in_place(&mut indices, vertex_count);
-        let vertex_data_adapter = VertexDataAdapter::new(bytemuck::must_cast_slice(&vertices), std::mem::size_of::<Vertex>(), std::mem::offset_of!(Vertex, position)).unwrap();
+        let vertex_data_adapter = VertexDataAdapter::new(bytemuck::must_cast_slice(&vertices), std::mem::size_of::<ColouredVertex>(), std::mem::offset_of!(ColouredVertex, position)).unwrap();
         meshopt::optimize_overdraw_in_place(&mut indices, &vertex_data_adapter, 1.05);
         meshopt::optimize_vertex_fetch_in_place(&mut indices, &mut vertices);
 
@@ -138,24 +203,17 @@ impl Mesh {
         let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&layout_bindings);
         let descriptor_set_layout = unsafe { device.loader().create_descriptor_set_layout(&descriptor_set_layout_info, None) }?;
 
-        // Create push constant range.
-        let push_constant_range = vk::PushConstantRange::default()
-            .stage_flags(vk::ShaderStageFlags::VERTEX)
-            .offset(0)
-            .size(std::mem::size_of::<maths::Mat4>() as u32);
-
         // Create pipeline layout.
-        let pipeline_layout = Arc::new(PipelineLayout::new(&device, Some(&descriptor_set_layout), Some(&push_constant_range))?);
+        let pipeline_layout = Arc::new(PipelineLayout::new(&device, Some(&descriptor_set_layout), Some(&maths::ModelViewProjection::push_constant_range()))?);
 
         // Create pipeline.
         let pipeline_params = GraphicsPipelineParameters {
             layout: pipeline_layout,
-            vertex_binding_description: Vertex::binding_description(),
-            vertex_attribute_descriptions: &Vertex::attribute_descriptions(),
+            vertex_binding_description: ColouredVertex::binding_description(),
+            vertex_attribute_descriptions: &ColouredVertex::attribute_descriptions(),
             shader_stages: material.shader_stages(),
             samples,
             depth_test: true,
-            topology: vk::PrimitiveTopology::TRIANGLE_LIST,
         };
         let pipeline = GraphicsPipeline::new(&device, pipeline_params)?;
 
@@ -224,7 +282,6 @@ impl Drop for Mesh {
     fn drop(&mut self) {
         unsafe {
             self.loader.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-            //self.loader.free_descriptor_sets(self.descriptor_pool, slice::from_ref(&self.descriptor_set));
         }
     }
 }

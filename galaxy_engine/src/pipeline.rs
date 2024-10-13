@@ -51,7 +51,6 @@ pub struct GraphicsPipelineParameters<'a> {
     pub shader_stages: GraphicsShaderStageArray<'a>,
     pub samples: vk::SampleCountFlags,
     pub depth_test: bool,
-    pub topology: vk::PrimitiveTopology,
 }
 
 pub struct GraphicsPipeline {
@@ -68,8 +67,7 @@ impl GraphicsPipeline {
 
         // Create graphics pipeline.
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-            //.topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .topology(params.topology)
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
 
         let pipeline_dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
@@ -84,8 +82,7 @@ impl GraphicsPipeline {
             .rasterizer_discard_enable(false)
             .polygon_mode(vk::PolygonMode::FILL)
             .line_width(1.0)
-            .cull_mode(vk::CullModeFlags::BACK)
-            //.front_face(vk::FrontFace::CLOCKWISE)
+            .cull_mode(vk::CullModeFlags::NONE) // TODO.
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false);
 

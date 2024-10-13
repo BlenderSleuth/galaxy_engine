@@ -3,7 +3,7 @@ use std::slice;
 use ash::prelude::VkResult;
 use ash::vk;
 
-use crate::device::{Device, SharedDeviceLoader};
+use crate::device::{Device, DeviceExt, SharedDeviceLoader};
 
 // Either use a specific command buffer, or allocate a new one-time buffer from a pool.
 // TODO: unify queue / pool system.
@@ -38,7 +38,7 @@ impl CommandBuffer {
         Ok(TransientOrPersistentCommandBuffer::Transient(Self::begin_one_time(device, cmd_pool)?))
     }
     pub fn begin_one_time(device: &Device, cmd_pool: vk::CommandPool) -> VkResult<Self> {
-        let cmd_buffer = unsafe { device.allocate_command_buffer(cmd_pool, vk::CommandBufferLevel::PRIMARY) }?;
+        let cmd_buffer = unsafe { device.loader().allocate_command_buffer(cmd_pool, vk::CommandBufferLevel::PRIMARY) }?;
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         unsafe { device.loader().begin_command_buffer(cmd_buffer, &begin_info) }?;

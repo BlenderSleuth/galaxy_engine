@@ -43,9 +43,9 @@ impl<S: ShaderStageType> ShaderModule<S> {
             .stage(self.stage())
             .module(self.handle)
             .name(match self.stage() {
-                vk::ShaderStageFlags::VERTEX => c"main",
-                vk::ShaderStageFlags::FRAGMENT => c"main",
-                vk::ShaderStageFlags::COMPUTE => c"main", // TODO: mainCS?
+                vk::ShaderStageFlags::VERTEX => c"mainVS",
+                vk::ShaderStageFlags::FRAGMENT => c"mainFS",
+                vk::ShaderStageFlags::COMPUTE => c"mainCS",
                 _ => panic!("Unsupported shader stage: {:?}", self.stage()),
             })
     }

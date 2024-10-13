@@ -4,7 +4,7 @@ use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme};
 use crate::command_buffer::{CommandBuffer, TransientOrPersistentCommandBuffer};
 use crate::device::{Device, QueueFamily, SharedDeviceLoader};
 use crate::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
-use crate::{gpu_alloc, utils};
+use crate::{debug, gpu_alloc, utils};
 
 use gpu_allocator::MemoryLocation;
 
@@ -34,13 +34,13 @@ pub struct Buffer<L: MemLocation> {
     alloc: SharedAllocator,
     handle: vk::Buffer,
     allocation: ManuallyFreeAllocation,
+    // TODO: Remove length and element size fields when buffers are used for multiple resources.
     length: u32,
     element_size: vk::DeviceSize,
     _mem_location: std::marker::PhantomData<L>,
 }
 
 impl<L: MemLocation> Buffer<L> {
-    // NOTE: When buffers are being used for multiple resources, should we remove the length and element size fields?
     pub fn new_for_typed_data<T: bytemuck::Pod>(name: &str, device: &Device, data: &[T], usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode) -> MemResult<Self> {
         Self::new(name, device, data.len() as u32, std::mem::size_of::<T>(), usage, sharing_mode)
     }
@@ -65,6 +65,9 @@ impl<L: MemLocation> Buffer<L> {
             .queue_family_indices(if sharing_mode == vk::SharingMode::CONCURRENT { &queue_indices } else { &[] });
         let handle = unsafe { device.loader().create_buffer(&buffer_info, None) }?;
 
+        // Debug name object.
+        debug::set_object_name(device, handle, name)?;
+
         // Allocate memory for buffer. Check if the buffer requires dedicated allocation.
         let mut dedicated_requirements = vk::MemoryDedicatedRequirements::default();
         let mut requirements = vk::MemoryRequirements2::default()
@@ -87,17 +90,12 @@ impl<L: MemLocation> Buffer<L> {
             linear: true,
             allocation_scheme,
         };
-        let allocation = device.allocate_memory(&desc)?;
-
-        // Bind buffer memory.
-        unsafe { device.loader().bind_buffer_memory(handle, allocation.memory(), allocation.offset()) }?;
+        let allocation = device.allocate_and_bind_memory(&desc, handle)?;
 
         Ok(Self { loader: device.cloned_loader(), alloc: device.cloned_allocator(), handle, allocation, length, element_size, _mem_location: std::marker::PhantomData })
     }
 
-    pub fn handle(&self) -> vk::Buffer {
-        self.handle
-    }
+    pub fn handle(&self) -> vk::Buffer { self.handle }
 
     // The size of the buffer in bytes.
     pub fn size(&self) -> vk::DeviceSize {
@@ -107,6 +105,14 @@ impl<L: MemLocation> Buffer<L> {
     // The number of elements that can be stored in the buffer.
     pub fn len(&self) -> u32 {
         self.length
+    }
+
+    // Descriptor buffer info for the whole buffer.
+    pub fn descriptor_buffer_info(&self) -> vk::DescriptorBufferInfo {
+        vk::DescriptorBufferInfo::default()
+            .buffer(self.handle())
+            .offset(0)
+            .range(self.size())
     }
 
     pub fn copy_to_buffer<L2: MemLocation>(&self, cmd: TransientOrPersistentCommandBuffer, device: &Device, dst_buffer: &mut Buffer<L2>, size: vk::DeviceSize, queue_family: QueueFamily) -> MemResult<()> {

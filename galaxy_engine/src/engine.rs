@@ -3,31 +3,35 @@ use std::mem::ManuallyDrop;
 use std::slice;
 
 use ash::prelude::VkResult;
-use ash::{ext, vk};
-use nalgebra as na;
-use raw_window_handle::{DisplayHandle, WindowHandle};
-use arrayvec::ArrayVec;
+use ash::vk;
 
+use crate::descriptors::DescriptorPool;
+use crate::device::DeviceExt;
 use crate::gpu_alloc::{MemResult, MemoryError};
 use crate::maths::ModelViewProjection;
 use crate::mesh::{Mesh, MeshError};
-use crate::particles::ParticleSystem;
+use crate::particles::GpuParticleSystem;
+use crate::static_resources::StaticResources;
+use crate::sync::{BinarySemaphore, Fence};
 use crate::uniform_buffer::VolatileUniformBuffer;
-use crate::{app, device, engine,  surface, swapchain, utils};
+use crate::{app, device, engine, surface, swapchain, utils};
 use app::AppInfo;
+use arrayvec::ArrayVec;
 use device::Device;
 use device::QueueFamily;
 use engine::MainLoopError::VulkanError;
+use nalgebra as na;
+use parking_lot::{MappedRwLockReadGuard, RwLock, RwLockReadGuard};
+use raw_window_handle::{DisplayHandle, WindowHandle};
 use surface::Surface;
 use swapchain::Swapchain;
-use crate::descriptors::DescriptorPool;
-use crate::device::DeviceExt;
-use crate::sync::{BinarySemaphore, Fence};
 
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
 pub enum EngineInitError {
+    #[error("Engine is already initialised.")]
+    AlreadyInitialised,
     #[error("Library load failed: {0}")]
     LibraryLoadFailed(#[from] ash::LoadingError),
     #[error("Vulkan function failed with the error: {0}")]
@@ -70,73 +74,6 @@ pub enum InstanceExtensionError {
     ExtensionNotFound(&'static CStr),
 }
 
-struct DebugMessenger {
-    messenger: vk::DebugUtilsMessengerEXT,
-    loader: ext::debug_utils::Instance,
-}
-
-impl DebugMessenger {
-    fn new(entry: &ash::Entry, instance: &ash::Instance) -> VkResult<Self> {
-        let debug_utils_ci = vk::DebugUtilsMessengerCreateInfoEXT::default()
-            .message_severity(
-                vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE |
-                    vk::DebugUtilsMessageSeverityFlagsEXT::WARNING |
-                    vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
-            )
-            .message_type(
-                vk::DebugUtilsMessageTypeFlagsEXT::GENERAL |
-                    vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION |
-                    vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
-            )
-            .pfn_user_callback(Some(Self::debug_callback));
-
-        let loader = ext::debug_utils::Instance::new(entry, instance);
-        let messenger = unsafe { loader.create_debug_utils_messenger(&debug_utils_ci, None) }?;
-
-        Ok(Self { messenger, loader })
-    }
-
-    unsafe extern "system" fn debug_callback(
-        message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
-        message_type: vk::DebugUtilsMessageTypeFlagsEXT,
-        p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
-        _user_data: *mut std::ffi::c_void,
-    ) -> vk::Bool32 {
-        use std::borrow::Cow;
-
-        let level = match message_severity {
-            vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => log::Level::Debug,
-            vk::DebugUtilsMessageSeverityFlagsEXT::INFO => log::Level::Info,
-            vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => log::Level::Warn,
-            vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => log::Level::Error,
-            _ => log::Level::Warn,
-        };
-
-        if std::thread::panicking() {
-            return vk::FALSE;
-        }
-
-        let cd = unsafe { *p_callback_data };
-
-        let message_id_name =
-            unsafe { cd.message_id_name_as_c_str() }.map_or(Cow::Borrowed(""), CStr::to_string_lossy);
-        let message = unsafe { cd.message_as_c_str() }.map_or(Cow::Borrowed(""), CStr::to_string_lossy);
-        let message_id_number = cd.message_id_number;
-
-        let _ = std::panic::catch_unwind(|| {
-            log::log!(level, "{message_type:?} [{message_id_name} (0x{message_id_number:x})]\n\t{message}");
-        });
-
-        vk::FALSE
-    }
-}
-
-impl Drop for DebugMessenger {
-    fn drop(&mut self) {
-        unsafe { self.loader.destroy_debug_utils_messenger(self.messenger, None) };
-    }
-}
-
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
@@ -145,10 +82,19 @@ pub struct UniformData {
     delta_time: f32,
 }
 
+// Static resources. These are available while the engine instance is alive.
+static STATIC_RESOURCES: RwLock<Option<StaticResources>> = RwLock::new(None);
+
+/// Requires that the engine is alive. Currently using parking_lot as a stable polyfill for `MappedRwLockReadGuard`.
+pub fn static_resources() -> MappedRwLockReadGuard<'static, StaticResources> {
+    RwLockReadGuard::map(STATIC_RESOURCES.read(), |r| r.as_ref().unwrap())
+}
+
 pub struct GalaxyEngine {
     _entry: ash::Entry,
     instance: ash::Instance,
-    debug_messenger: Option<DebugMessenger>,
+    #[cfg(feature = "debug_info")]
+    debug_messenger: Option<crate::debug::DebugMessenger>,
     surface: ManuallyDrop<Surface>,
     device: ManuallyDrop<Device>,
     swapchain: ManuallyDrop<Swapchain>,
@@ -158,7 +104,7 @@ pub struct GalaxyEngine {
     compute_cmd_pool: vk::CommandPool,
     transfer_cmd_pool: vk::CommandPool,
     uniform_buffer: ManuallyDrop<VolatileUniformBuffer>,
-    particle_system: ManuallyDrop<ParticleSystem>,
+    particle_system: ManuallyDrop<GpuParticleSystem>,
     cmd_buffers: ArrayVec<vk::CommandBuffer, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     compute_cmd_buffers: ArrayVec<vk::CommandBuffer, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     image_available_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
@@ -178,7 +124,7 @@ impl GalaxyEngine {
     const ENGINE_NAME: &'static CStr = c"Galaxy Engine";
     const ENGINE_VERSION_STR: &'static str = env!("CARGO_PKG_VERSION");
     pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
-    pub(crate) const NUM_PARTICLES: u32 = 1024;
+    pub(crate) const MAX_NUM_PARTICLES: u32 = 1024;
 
     // TODO: Compute cleanup:
     // - Convert to HLSL.
@@ -190,6 +136,13 @@ impl GalaxyEngine {
     // - Command buffer and pool management.
     // - Use a single buffer for both vertices and indices.
     pub fn new(app_info: &AppInfo, display: DisplayHandle, window: WindowHandle, width: u32, height: u32) -> Result<Self, EngineInitError> {
+        // Currently the engine can only be initialised once.
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        if ONCE.is_completed() {
+            return Err(EngineInitError::AlreadyInitialised);
+        }
+        ONCE.call_once(|| {});
+
         // Setup Vulkan.
         let entry = unsafe { ash::Entry::load() }?;
 
@@ -227,8 +180,9 @@ impl GalaxyEngine {
         let instance = unsafe { entry.create_instance(&instance_info, None) }?;
 
         // Create debug messenger.
+        #[cfg(feature = "debug_info")]
         let debug_messenger = if app_info.flags.contains(app::AppFlags::DEBUG) {
-            Some(DebugMessenger::new(&entry, &instance)?)
+            Some(crate::debug::DebugMessenger::new(&entry, &instance)?)
         } else {
             None
         };
@@ -249,7 +203,14 @@ impl GalaxyEngine {
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
             .queue_family_index(device_properties.compute_queue_family_idx);
         let compute_cmd_pool = unsafe { device.loader().create_command_pool(&command_pool_info, None) }?;
-        let transfer_cmd_pool = device.create_transient_command_pool(QueueFamily::Transfer)?;
+
+        let command_pool_info = vk::CommandPoolCreateInfo::default()
+            .flags(vk::CommandPoolCreateFlags::TRANSIENT)
+            .queue_family_index(device.get_queue_family_idx(QueueFamily::Graphics));
+        let transfer_cmd_pool = unsafe { device.loader().create_command_pool(&command_pool_info, None) }?;
+
+        // Initialise engine static resources.
+        *STATIC_RESOURCES.write() = Some(StaticResources::new(&device, graphics_cmd_pool)?);
 
         // Create swapchain.
         let window_size = vk::Extent2D { width, height };
@@ -271,12 +232,12 @@ impl GalaxyEngine {
                 .descriptor_count(1),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32 * 2),
+                .descriptor_count(6),
         ];
 
         let descriptor_pool_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(&pool_sizes)
-            .max_sets(1 + Self::MAX_FRAMES_IN_FLIGHT as u32); // Allocator 1 set for graphics and 2 sets for compute.
+            .max_sets(1 + 2); // Allocator 1 set for graphics and 2 sets for compute.
 
         let descriptor_pool = DescriptorPool::new(&device, &descriptor_pool_info)?;
 
@@ -318,13 +279,14 @@ impl GalaxyEngine {
             compute_in_flight_fences.push(Fence::new(&device, true)?);
         }
 
-        let particle_system = ParticleSystem::new(&device, swapchain.samples(), Self::NUM_PARTICLES, window_size, &uniform_buffer, graphics_cmd_pool, &descriptor_pool)?;
+        let particle_system = GpuParticleSystem::new(&device, swapchain.samples(), Self::MAX_NUM_PARTICLES, window_size, &uniform_buffer, graphics_cmd_pool, &descriptor_pool)?;
 
         device.print_allocator_report();
 
         Ok(Self {
             _entry: entry,
             instance,
+            #[cfg(feature = "debug_info")]
             debug_messenger,
             surface: ManuallyDrop::new(surface),
             device: ManuallyDrop::new(device),
@@ -364,7 +326,7 @@ impl GalaxyEngine {
 
         // Update uniform buffer.
         let time = self.start_time.elapsed().as_secs_f32();
-        self.mesh.mvp = ModelViewProjection::spin(self.window_size, time, 20.0);
+        self.mesh.mvp = ModelViewProjection::spin(self.window_size, time.sin() * 0.5, 20.0);
 
         let delta_time = self.last_frame_time.elapsed().as_secs_f32();
         self.last_frame_time = std::time::Instant::now();
@@ -384,7 +346,7 @@ impl GalaxyEngine {
         unsafe { loader.reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty()) }?;
         unsafe { loader.begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default()) }?;
         self.uniform_buffer.copy_to_gpu(loader, current_frame, command_buffer);
-        self.particle_system.record_compute(loader, command_buffer, current_frame);
+        self.particle_system.record_compute(command_buffer);
         unsafe { loader.end_command_buffer(command_buffer) }?;
 
         let submit_info = vk::SubmitInfo::default()
@@ -462,9 +424,8 @@ impl GalaxyEngine {
             .layer_count(1)
             .color_attachments(slice::from_ref(&color_attachment_info))
             .depth_attachment(&depth_attachment_info);
-
         unsafe { ext.dyn_cmd.cmd_begin_rendering(command_buffer, &rendering_info) }
-        self.particle_system.record_graphics(loader, command_buffer, current_frame, viewport, scissor);
+        self.particle_system.record_graphics(command_buffer, time, viewport, scissor);
         self.mesh.record_graphics(loader, command_buffer, viewport, scissor);
         unsafe { ext.dyn_cmd.cmd_end_rendering(command_buffer) };
 
@@ -524,12 +485,13 @@ impl GalaxyEngine {
         self.window_resized = true;
     }
 
-    fn get_instance_layers(entry: &ash::Entry, flags: &app::AppFlags) -> VkResult<Vec<*const c_char>> {
+    fn get_instance_layers(entry: &ash::Entry, _flags: &app::AppFlags) -> VkResult<Vec<*const c_char>> {
         // Query available layers.
         let available_layers = unsafe { entry.enumerate_instance_layer_properties() }?;
 
         let mut required_layers = Vec::new();
-        if flags.contains(app::AppFlags::DEBUG) {
+        #[cfg(feature = "debug_info")]
+        if _flags.contains(app::AppFlags::DEBUG) {
             required_layers.push(c"VK_LAYER_KHRONOS_validation");
         }
 
@@ -548,12 +510,13 @@ impl GalaxyEngine {
         Ok(utils::cstr_to_ptrs(&required_layers))
     }
 
-    fn get_required_instance_extensions(entry: &ash::Entry, flags: &app::AppFlags, display: DisplayHandle) -> Result<Vec<*const c_char>, InstanceExtensionError> {
+    fn get_required_instance_extensions(entry: &ash::Entry, _flags: &app::AppFlags, display: DisplayHandle) -> Result<Vec<*const c_char>, InstanceExtensionError> {
         // Query available extensions
         let available_extensions = unsafe { entry.enumerate_instance_extension_properties(None) }?;
 
         // Require platform windowing extensions. 
         // The returned extensions are pointers to static strings, so we can safely convert them back to CStr.
+        #[allow(unused_mut)]
         let mut required_extensions = ash_window::enumerate_required_extensions(display.as_raw())?
             .iter()
             .map(|&ext| unsafe { CStr::from_ptr(ext) })
@@ -566,9 +529,10 @@ impl GalaxyEngine {
             extension_names.push(ash::khr::get_physical_device_properties2::NAME);
         }
 
-        if flags.contains(app::AppFlags::DEBUG) {
+        #[cfg(feature = "debug_info")]
+        if _flags.contains(app::AppFlags::DEBUG) {
             // Add debug messenger extension.
-            required_extensions.push(ext::debug_utils::NAME);
+            required_extensions.push(ash::ext::debug_utils::NAME);
         }
 
         // Check all required extensions are available.
@@ -622,6 +586,9 @@ impl Drop for GalaxyEngine {
         // Drop swapchain.
         unsafe { ManuallyDrop::drop(&mut self.swapchain) };
 
+        // Drop static resources.
+        *STATIC_RESOURCES.write() = None;
+
         // Drop device.
         unsafe { ManuallyDrop::drop(&mut self.device) };
 
@@ -630,7 +597,10 @@ impl Drop for GalaxyEngine {
         unsafe { ManuallyDrop::drop(&mut self.surface) };
 
         // Drop debug messenger.
-        self.debug_messenger = None;
+        #[cfg(feature = "debug_info")]
+        {
+            self.debug_messenger = None;
+        }
 
         // Drop instance.
         unsafe { self.instance.destroy_instance(None) };

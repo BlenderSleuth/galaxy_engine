@@ -1,5 +1,4 @@
 use std::ffi::CString;
-
 use bitflags::bitflags;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::application::ApplicationHandler;
@@ -13,6 +12,7 @@ use crate::engine::GalaxyEngine;
 
 bitflags! {
     pub struct AppFlags: u32 {
+        #[cfg(feature = "debug_info")]
         const DEBUG = 1 << 0;
     }
 }
@@ -112,7 +112,7 @@ impl ApplicationHandler for GalaxyApp {
         }
         
         if let Some(engine) = self.engine.as_mut() {
-            unwrap_or_exit!(engine.main_loop(), "Main loop error: {}\nExiting.", event_loop);
+            unwrap_or_exit!(engine.main_loop(), "Main loop error: {}.\nExiting.", event_loop);
         }
     }
 }

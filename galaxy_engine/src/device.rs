@@ -1,20 +1,24 @@
-use std::mem;
-use crate::gpu_alloc::{AllocResult, ManuallyFreeAllocation, SharedAllocator};
+use std::ffi::CStr;
+use crate::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
 use crate::surface::Surface;
-use crate::utils;
+use crate::{debug, utils};
+use crate::utils::ArcFinalOwner;
 use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
-use ash::{khr, vk, RawPtr};
+use ash::{ext, khr, vk, RawPtr};
 use gpu_allocator::vulkan::{AllocationCreateDesc, Allocator, AllocatorCreateDesc};
 use itertools::Itertools;
+use std::mem;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::sync::{Arc, Mutex, OnceLock};
+use ash::vk::Handle;
+use gpu_allocator::AllocatorDebugSettings;
 
 // Initialised by the engine.
 static DEVICE_LOADER: OnceLock<ash::Device> = OnceLock::new();
 
 // Can be called once the device is initialised by the engine. Device will be destroyed when the engine is dropped.
-pub fn get_device() -> &'static ash::Device {
+pub unsafe fn get_device() -> &'static ash::Device {
     DEVICE_LOADER.get().unwrap()
 }
 
@@ -31,22 +35,44 @@ pub enum DeviceInitError {
 }
 
 pub struct LoadedExtensions {
+    #[cfg(feature = "debug_info")]
+    pub debug: Option<ext::debug_utils::Device>,
     pub sync2: khr::synchronization2::Device,
     pub dyn_cmd: khr::dynamic_rendering::Device,
 }
 
 impl LoadedExtensions {
-    fn new(instance: &ash::Instance, device: &ash::Device) -> Self {
+    fn new(instance: &ash::Instance, device: &ash::Device, _optional_extensions: &[&CStr]) -> Self {
+        #[cfg(feature = "debug_info")]
+        let debug = if _optional_extensions.iter().any(|&ext| ext == ext::debug_utils::NAME) {
+            Some(ext::debug_utils::Device::new(&instance, &device))
+        } else {
+            None
+        };
         let sync2 = khr::synchronization2::Device::new(&instance, &device);
         let dyn_cmd = khr::dynamic_rendering::Device::new(&instance, &device);
-        Self { sync2, dyn_cmd }
+        Self {
+            #[cfg(feature = "debug_info")]
+            debug,
+            sync2,
+            dyn_cmd
+        }
+    }
+
+    #[cfg(feature = "debug_info")]
+    pub fn run_debug(&self, f: impl FnOnce(&ext::debug_utils::Device) -> VkResult<()>) -> VkResult<()> {
+        if let Some(debug) = &self.debug {
+            f(debug)
+        } else {
+            Ok(())
+        }
     }
 }
 
 pub enum QueueFamily {
     Graphics,
     Present,
-    Transfer,
+    // Transfer,
     Compute,
 }
 
@@ -85,32 +111,6 @@ impl PhysicalDeviceProperties {
     }
 }
 
-// Used to allow sharing of objects, but also ensuring that it is destroyed at the appropriate time.
-struct ArcFinalOwner<T>(ManuallyDrop<Arc<T>>);
-
-impl<T> ArcFinalOwner<T> {
-    pub fn new(value: T) -> Self {
-        Self(ManuallyDrop::new(Arc::new(value)))
-    }
-
-    pub unsafe fn destroy_as_final(&mut self, destroy: impl FnOnce(&mut T)) {
-        // Get shared item and drop it. Ensure we are the last owner of the shared reference.
-        let Some(mut object) = (unsafe { Arc::into_inner(ManuallyDrop::take(&mut self.0)) }) else {
-            log::error!("Not last owner of Vulkan object.");
-            return;
-        };
-        destroy(&mut object);
-    }
-}
-
-impl<T> std::ops::Deref for ArcFinalOwner<T> {
-    type Target = Arc<T>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 pub type SharedDeviceLoader = Arc<ash::Device>;
 
 pub struct Device {
@@ -119,7 +119,7 @@ pub struct Device {
     allocator: ArcFinalOwner<Mutex<Allocator>>,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
-    transfer_queue: vk::Queue,
+    //transfer_queue: vk::Queue,
     compute_queue: vk::Queue,
     properties: PhysicalDeviceProperties,
 }
@@ -133,6 +133,8 @@ impl Device {
         }
 
         let required_device_extensions = &[khr::swapchain::NAME, khr::synchronization2::NAME, khr::dynamic_rendering::NAME];
+        // TODO: debug only.
+        let debug_device_extensions = &[khr::shader_non_semantic_info::NAME];
 
         let mut current_device_properties = None;
         for physical_device in physical_devices.iter() {
@@ -150,6 +152,21 @@ impl Device {
                 }
             }
             if !has_required_extensions {
+                continue;
+            }
+
+            // Check debug extensions.
+            let mut has_debug_extensions = true;
+            for debug_extension in debug_device_extensions.iter() {
+                if !available_extensions.iter().any(|&available_extension| {
+                    available_extension.extension_name_as_c_str() == Ok(debug_extension)
+                }) {
+                    log::warn!("Debug extension not found: {:?}", debug_extension);
+                    has_debug_extensions = false;
+                    break;
+                }
+            }
+            if !has_debug_extensions {
                 continue;
             }
 
@@ -308,7 +325,9 @@ impl Device {
         let mut device_features_12 = vk::PhysicalDeviceVulkan12Features::default()
             .buffer_device_address(true);
 
-        let device_extensions = utils::cstr_to_ptrs(required_device_extensions);
+        // TODO: Debug only.
+        let device_extensions = [required_device_extensions.as_slice(), debug_device_extensions.as_slice()].concat();
+        let device_extensions = utils::cstr_to_ptrs(&device_extensions);
         let device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_infos)
             .enabled_features(&device_features)
@@ -319,28 +338,47 @@ impl Device {
 
         let device = unsafe { instance.create_device(current_device_properties.physical_device, &device_info, None) }?;
 
-        // Ensure that this is the only device.
+        // Ensure that this is the only device, then set static.
         assert!(DEVICE_LOADER.get().is_none());
         DEVICE_LOADER.get_or_init(|| device.clone());
 
         // Get queues.
         let graphics_queue = unsafe { device.get_device_queue(current_device_properties.graphics_queue_family_idx, 0) };
         let present_queue = unsafe { device.get_device_queue(current_device_properties.present_queue_family_idx, 0) };
-        let transfer_queue = unsafe { device.get_device_queue(current_device_properties.transfer_queue_family_idx, 0) };
+        //let transfer_queue = unsafe { device.get_device_queue(current_device_properties.transfer_queue_family_idx, 0) };
         let compute_queue = unsafe { device.get_device_queue(current_device_properties.compute_queue_family_idx, 0) };
+
+        let debug_settings = if cfg!(feature = "debug_info") {
+            AllocatorDebugSettings {
+                log_memory_information: true,
+                log_leaks_on_shutdown: true,
+                store_stack_traces: false,
+                log_allocations: false,
+                log_frees: false,
+                log_stack_traces: false,
+            }
+        } else {
+            AllocatorDebugSettings::default()
+        };
 
         // TODO: This allocator keeps a copy of the device and instance, which is not ideal.
         let allocator = Allocator::new(&AllocatorCreateDesc {
             instance: instance.clone(),
             device: device.clone(),
             physical_device: current_device_properties.physical_device,
-            debug_settings: Default::default(),
+            debug_settings,
             buffer_device_address: true,  // Ideally, check the BufferDeviceAddressFeatures struct.
             allocation_sizes: Default::default(),
         })?;
 
         // Load extensions.
-        let ext = LoadedExtensions::new(&instance, &device);
+        let ext = LoadedExtensions::new(&instance, &device, &[ext::debug_utils::NAME]);
+
+        // Name objects
+        debug::set_object_name_with_ext(&ext, graphics_queue, "Graphics Queue")?;
+        debug::set_object_name_with_ext(&ext, present_queue, "Present Queue")?;
+        //debug::set_object_name_with_ext(&ext, transfer_queue, "Transfer Queue")?;
+        debug::set_object_name_with_ext(&ext, compute_queue, "Compute Queue")?;
 
         Ok(Self {
             loader: ArcFinalOwner::new(device),
@@ -348,7 +386,7 @@ impl Device {
             allocator: ArcFinalOwner::new(Mutex::new(allocator)),
             graphics_queue,
             present_queue,
-            transfer_queue,
+            //transfer_queue,
             compute_queue,
             properties: current_device_properties,
         })
@@ -377,7 +415,7 @@ impl Device {
         match queue {
             QueueFamily::Graphics => self.graphics_queue,
             QueueFamily::Present => self.present_queue,
-            QueueFamily::Transfer => self.transfer_queue,
+            //QueueFamily::Transfer => self.transfer_queue,
             QueueFamily::Compute => self.compute_queue,
         }
     }
@@ -385,52 +423,48 @@ impl Device {
         match queue {
             QueueFamily::Graphics => self.properties.graphics_queue_family_idx,
             QueueFamily::Present => self.properties.present_queue_family_idx,
-            QueueFamily::Transfer => self.properties.transfer_queue_family_idx,
+            //QueueFamily::Transfer => self.properties.transfer_queue_family_idx,
             QueueFamily::Compute => self.properties.compute_queue_family_idx,
         }
     }
 
-    pub fn allocate_memory(&self, desc: &AllocationCreateDesc) -> AllocResult<ManuallyFreeAllocation> {
-        Ok(ManuallyDrop::new(self.allocator.lock().map_err(|_| {
+    pub fn allocate_and_bind_memory<H: Handle>(&self, desc: &AllocationCreateDesc, handle: H) -> MemResult<ManuallyFreeAllocation> {
+        let allocation = ManuallyDrop::new(self.allocator.lock().map_err(|_| {
             gpu_allocator::AllocationError::Internal("Mutex Poisoned".to_string())
-        })?.allocate(desc)?))
+        })?.allocate(desc)?);
+
+        // Workaround while const pattern matching is not stable.
+        const BUFFER_TYPE: i32 = vk::ObjectType::BUFFER.as_raw();
+        const IMAGE_TYPE: i32 = vk::ObjectType::IMAGE.as_raw();
+        match const { H::TYPE.as_raw() } {
+            BUFFER_TYPE => {
+                unsafe { self.loader.bind_buffer_memory(vk::Buffer::from_raw(handle.as_raw()), allocation.memory(), allocation.offset()) }?;
+            }
+            IMAGE_TYPE => {
+                unsafe { self.loader.bind_image_memory(vk::Image::from_raw(handle.as_raw()), allocation.memory(), allocation.offset()) }?;
+            }
+            _ => {
+                // Can this be a compile time error?
+                panic!("Invalid handle type.");
+            }
+        }
+
+        Ok(allocation)
     }
 
     pub fn print_allocator_report(&self) {
+        #[cfg(feature = "debug_info")]
         log::info!("{:?}", self.allocator.lock().unwrap().generate_report());
-    }
-
-    // Doesn't allocate a vec for the single buffer case.
-    pub unsafe fn allocate_command_buffer(&self, cmd_pool: vk::CommandPool, level: vk::CommandBufferLevel) -> VkResult<vk::CommandBuffer> {
-        let allocate_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(cmd_pool)
-            .level(level)
-            .command_buffer_count(1);
-        let mut buffer = MaybeUninit::uninit();
-        (self.loader.fp_v1_0().allocate_command_buffers)(
-            self.loader.handle(),
-            &allocate_info,
-            buffer.as_mut_ptr(),
-        ).result()?;
-        Ok(buffer.assume_init())
-    }
-
-    pub fn create_transient_command_pool(&self, queue_family: QueueFamily) -> VkResult<vk::CommandPool> {
-        // Create command pool.
-        let command_pool_info = vk::CommandPoolCreateInfo::default()
-            .flags(vk::CommandPoolCreateFlags::TRANSIENT)
-            .queue_family_index(self.get_queue_family_idx(queue_family));
-        unsafe { self.loader.create_command_pool(&command_pool_info, None) }
     }
 }
 
 impl Drop for Device {
     fn drop(&mut self) {
         // Drop allocator. Allocator has drop semantics, so we don't need a custom destroy closure.
-        unsafe { self.allocator.destroy_as_final(|_| {}) };
+        unsafe { self.allocator.destroy_as_final(|_| {}) }.expect("Allocator not final owner");
 
         // Drop device.
-        unsafe { self.loader.destroy_as_final(|device| device.destroy_device(None)) };
+        unsafe { self.loader.destroy_as_final(|device| device.destroy_device(None)) }.expect("Device not final owner");
     }
 }
 
@@ -456,6 +490,11 @@ pub trait DeviceExt {
         create_info: &vk::GraphicsPipelineCreateInfo<'_>,
         allocation_callbacks: Option<&vk::AllocationCallbacks<'_>>,
     ) -> VkResult<vk::Pipeline>;
+    unsafe fn allocate_command_buffer(
+        &self,
+        cmd_pool: vk::CommandPool,
+        level: vk::CommandBufferLevel
+    ) -> VkResult<vk::CommandBuffer>;
     unsafe fn allocate_command_buffers_av<const N: usize>(
         &self,
         allocate_info: &vk::CommandBufferAllocateInfo<'_>,
@@ -485,6 +524,26 @@ impl DeviceExt for ash::Device {
     }
 
     /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkAllocateCommandBuffers.html>
+    /// Non-allocating version of allocate_command_buffers for single buffer creation.
+    #[inline]
+    unsafe fn allocate_command_buffer(
+        &self,
+        cmd_pool: vk::CommandPool,
+        level: vk::CommandBufferLevel
+    ) -> VkResult<vk::CommandBuffer> {
+        let allocate_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(cmd_pool)
+            .level(level)
+            .command_buffer_count(1);
+        let mut buffer = MaybeUninit::uninit();
+        (self.fp_v1_0().allocate_command_buffers)(
+            self.handle(),
+            &allocate_info,
+            buffer.as_mut_ptr(),
+        ).assume_init_on_success(buffer)
+    }
+
+    /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkAllocateCommandBuffers.html>
     #[inline]
     unsafe fn allocate_command_buffers_av<const N: usize>(
         &self,
@@ -498,4 +557,5 @@ impl DeviceExt for ash::Device {
             buffers.as_mut_ptr(),
         ).set_array_vec_len_on_success(buffers, allocate_info.command_buffer_count as usize)
     }
+
 }

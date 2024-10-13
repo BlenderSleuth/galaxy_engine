@@ -1,6 +1,15 @@
 use std::ffi::{c_char, CStr};
+use std::mem::ManuallyDrop;
 use std::str::from_utf8;
+use std::sync::Arc;
 use ash::vk;
+
+pub fn viewport_extent(viewport: vk::Viewport) -> vk::Extent2D {
+    vk::Extent2D {
+        width: viewport.width as u32,
+        height: viewport.height as u32,
+    }
+}
 
 struct AssertLessThanOrEqual<const N1: usize, const N2: usize>;
 impl<const N1: usize, const N2: usize> AssertLessThanOrEqual<N1, N2> {
@@ -14,11 +23,52 @@ pub(crate) fn arrayvec_from_array<T, const N1: usize, const N2: usize>(array: [T
 
 // Strip names in release builds.
 macro_rules! debug_only_name {
+    ($format:literal$(,)? $($args: tt)*) => {
+        &if cfg!(feature = "debug_info") { format!($format, $($args)*) } else { String::new() }
+    };
     ($name:expr) => {
-        if cfg!(feature = "debug") { $name } else { "".into() }
+        if cfg!(feature = "debug_info") { $name } else { "".into() }
     };
 }
 pub(crate) use debug_only_name;
+
+// Used to allow sharing of objects, but also ensuring that it is destroyed at the appropriate time.
+pub struct ArcFinalOwner<T>(ManuallyDrop<Arc<T>>);
+
+#[derive(Debug)]
+pub enum FinalOwnerError {
+    NotLastOwner,
+}
+
+impl<T> ArcFinalOwner<T> {
+    pub fn new(value: T) -> Self {
+        Self(ManuallyDrop::new(Arc::new(value)))
+    }
+
+    pub unsafe fn destroy_as_final(&mut self, destroy: impl FnOnce(&mut T)) -> Result<(), FinalOwnerError> {
+        // Get shared item and drop it. Ensure we are the last owner of the shared reference.
+        let object = unsafe { ManuallyDrop::take(&mut self.0) };
+        match Arc::try_unwrap(object) {
+            Ok(mut object) => {
+                destroy(&mut object);
+                Ok(())
+            },
+            Err(arc) => {
+                log::error!("Not last owner of Vulkan object.");
+                self.0 = ManuallyDrop::new(arc);
+                Err(FinalOwnerError::NotLastOwner)
+            }
+        }
+    }
+}
+
+impl<T> std::ops::Deref for ArcFinalOwner<T> {
+    type Target = Arc<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 pub(crate) const DEFAULT_SUBRESOURCE_RANGE: vk::ImageSubresourceRange =
     vk::ImageSubresourceRange {
