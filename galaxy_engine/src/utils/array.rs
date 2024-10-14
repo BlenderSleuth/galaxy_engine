@@ -1,3 +1,5 @@
+// Copyright (c) 2024. Ben Sutherland
+
 use arrayvec::ArrayVec;
 
 struct AssertLessThanOrEqual<const N1: usize, const N2: usize>;

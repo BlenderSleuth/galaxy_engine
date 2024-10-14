@@ -1,12 +1,16 @@
-use crate::device::Device;
-use crate::gpu_alloc::MemResult;
-use crate::mesh::{MeshBuffer, Vertex};
-use ash::vk;
-use nalgebra as na;
-use parking_lot::RwLock;
+// Copyright (c) 2024. Ben Sutherland
+
 use std::f32::consts::FRAC_1_SQRT_2;
 use std::ops::Deref;
 use std::sync::Arc;
+
+use ash::vk;
+use nalgebra as na;
+use parking_lot::RwLock;
+
+use crate::device::Device;
+use crate::gpu_alloc::MemResult;
+use crate::mesh::{MeshBuffer, Vertex};
 
 const FRAC_1_SQRT_8: f32 = FRAC_1_SQRT_2 * 0.5;
 
@@ -32,7 +36,6 @@ pub struct StaticResources {
     quad_buffer: Arc<MeshBuffer>,
     octagon_buffer: Arc<MeshBuffer>,
 }
-
 
 impl StaticResources {
     /// Initialisation of static resources.
@@ -83,10 +86,7 @@ impl StaticResources {
         },
     ];
 
-    const QUAD_INDICES: [u16; 6] = [
-        0, 1, 2,
-        2, 3, 0,
-    ];
+    const QUAD_INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
     /// Octagon vertex/index buffer.
     pub fn get_octagon(&self) -> &MeshBuffer {
@@ -131,12 +131,5 @@ impl StaticResources {
         },
     ];
 
-    const OCTAGON_INDICES: [u16; 18] = [
-        0, 1, 2,
-        0, 2, 7,
-        2, 3, 7,
-        3, 6, 7,
-        3, 4, 6,
-        4, 5, 6,
-    ];
+    const OCTAGON_INDICES: [u16; 18] = [0, 1, 2, 0, 2, 7, 2, 3, 7, 3, 6, 7, 3, 4, 6, 4, 5, 6];
 }

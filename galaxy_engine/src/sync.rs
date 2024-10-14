@@ -1,6 +1,9 @@
-use crate::device::{get_device, Device};
+// Copyright (c) 2024. Ben Sutherland
+
 use ash::prelude::VkResult;
 use ash::vk;
+
+use crate::device::{get_device, Device};
 
 pub struct BinarySemaphore {
     handle: vk::Semaphore,
@@ -11,8 +14,12 @@ impl BinarySemaphore {
         let handle = unsafe { device.loader().create_semaphore(&Default::default(), None) }?;
         Ok(Self { handle })
     }
-    pub fn handle(&self) -> vk::Semaphore { self.handle }
-    pub fn ref_handle(&self) -> &vk::Semaphore { &self.handle }
+    pub fn handle(&self) -> vk::Semaphore {
+        self.handle
+    }
+    pub fn ref_handle(&self) -> &vk::Semaphore {
+        &self.handle
+    }
 }
 
 impl Drop for BinarySemaphore {
@@ -38,12 +45,16 @@ impl Fence {
                     vk::FenceCreateFlags::SIGNALED
                 } else {
                     vk::FenceCreateFlags::empty()
-                }), None)
+                }),
+                None,
+            )
         }?;
         Ok(Self { handle })
     }
 
-    pub fn handle(&self) -> vk::Fence { self.handle }
+    pub fn handle(&self) -> vk::Fence {
+        self.handle
+    }
 
     pub fn reset(&self) -> VkResult<()> {
         unsafe { get_device().reset_fences(&[self.handle]) }

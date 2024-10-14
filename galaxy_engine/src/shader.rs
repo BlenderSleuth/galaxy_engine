@@ -1,5 +1,8 @@
+// Copyright (c) 2024. Ben Sutherland
+
 use ash::prelude::VkResult;
 use ash::vk;
+
 use crate::device::{Device, SharedDeviceLoader};
 
 // Shader stage type state pattern.
@@ -8,15 +11,21 @@ pub trait ShaderStageType {
 }
 pub struct VertexShaderStage;
 impl ShaderStageType for VertexShaderStage {
-    fn stage() -> vk::ShaderStageFlags { vk::ShaderStageFlags::VERTEX }
+    fn stage() -> vk::ShaderStageFlags {
+        vk::ShaderStageFlags::VERTEX
+    }
 }
 pub struct FragmentShaderStage;
 impl ShaderStageType for FragmentShaderStage {
-    fn stage() -> vk::ShaderStageFlags { vk::ShaderStageFlags::FRAGMENT }
+    fn stage() -> vk::ShaderStageFlags {
+        vk::ShaderStageFlags::FRAGMENT
+    }
 }
 pub struct ComputeShaderStage;
 impl ShaderStageType for ComputeShaderStage {
-    fn stage() -> vk::ShaderStageFlags { vk::ShaderStageFlags::COMPUTE }
+    fn stage() -> vk::ShaderStageFlags {
+        vk::ShaderStageFlags::COMPUTE
+    }
 }
 
 pub struct ShaderModule<S: ShaderStageType> {

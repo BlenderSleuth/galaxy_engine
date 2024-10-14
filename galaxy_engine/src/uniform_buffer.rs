@@ -1,10 +1,12 @@
+// Copyright (c) 2024. Ben Sutherland
+
 use ash::vk;
 
 use crate::buffer::{Buffer, CpuToGpu, GpuOnly, MemLocation};
+use crate::debug;
 use crate::device::Device;
 use crate::engine::GalaxyEngine;
 use crate::gpu_alloc::MemResult;
-use crate::debug;
 
 // How often is this resource updated?
 // #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,14 +42,13 @@ pub struct VolatileUniformBuffer {
 impl VolatileUniformBuffer {
     const N: usize = GalaxyEngine::MAX_FRAMES_IN_FLIGHT;
 
-    fn create_buffer<L: MemLocation>(name: &str, device: &Device, size: vk::DeviceSize, usage: vk::BufferUsageFlags) -> MemResult<Buffer<L>> {
-        Buffer::new(
-            name,
-            device,
-            size,
-            usage,
-            vk::SharingMode::EXCLUSIVE,
-        )
+    fn create_buffer<L: MemLocation>(
+        name: &str,
+        device: &Device,
+        size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+    ) -> MemResult<Buffer<L>> {
+        Buffer::new(name, device, size, usage, vk::SharingMode::EXCLUSIVE)
     }
 
     pub fn new_for_type<T: bytemuck::Pod>(name: &str, device: &Device) -> MemResult<Self> {
@@ -78,7 +79,8 @@ impl VolatileUniformBuffer {
     }
 
     pub fn update<T: bytemuck::Pod>(&mut self, current_frame: usize, data: &[T]) -> MemResult<()> {
-        self.staging_buffer.copy_into_buffer(data, self.frame_offset(current_frame) as usize)
+        self.staging_buffer
+            .copy_into_buffer(data, self.frame_offset(current_frame) as usize)
     }
 
     pub fn copy_to_gpu(&self, loader: &ash::Device, current_frame: usize, cmd_buffer: vk::CommandBuffer) {
@@ -86,7 +88,14 @@ impl VolatileUniformBuffer {
             .src_offset(self.frame_offset(current_frame))
             .size(self.size);
 
-        unsafe { loader.cmd_copy_buffer(cmd_buffer, self.staging_buffer.handle(), self.gpu_buffer.handle(), &[copy_region]) };
+        unsafe {
+            loader.cmd_copy_buffer(
+                cmd_buffer,
+                self.staging_buffer.handle(),
+                self.gpu_buffer.handle(),
+                &[copy_region],
+            )
+        };
     }
 
     //pub fn gpu_buffer_handle(&self) -> vk::Buffer {

@@ -1,4 +1,7 @@
+// Copyright (c) 2024. Ben Sutherland
+
 use ash::vk;
+
 use crate::device::{Device, SharedDeviceLoader};
 use crate::gpu_alloc::MemoryError;
 use crate::image::{Image, ImageDimensions};
@@ -25,20 +28,31 @@ pub struct Material {
 }
 
 impl Material {
-    pub fn new(name: &str, device: &Device, texture_path: &str, gfx_cmd_pool: vk::CommandPool) -> Result<Self, MaterialError> {
+    pub fn new(
+        name: &str,
+        device: &Device,
+        texture_path: &str,
+        gfx_cmd_pool: vk::CommandPool,
+    ) -> Result<Self, MaterialError> {
         // Load texture.
         let image_file = std::fs::read(texture_path)?;
         let image = ktx2::Reader::new(image_file).unwrap();
         let header = image.header();
         let mip_levels = image.levels().collect::<Vec<_>>();
-        let extent = vk::Extent2D { width: header.pixel_width, height: header.pixel_height };
+        let extent = vk::Extent2D {
+            width: header.pixel_width,
+            height: header.pixel_height,
+        };
         let texture_image = Image::new_from_mip_levels(
             debug::debug_only_name!("{name} texture"),
             device,
             gfx_cmd_pool,
             &mip_levels,
             ImageDimensions::Type2D(extent),
-            header.format.map(utils::ktx_to_vulkan_format).unwrap_or(vk::Format::R8G8B8A8_SRGB),
+            header
+                .format
+                .map(utils::ktx_to_vulkan_format)
+                .unwrap_or(vk::Format::R8G8B8A8_SRGB),
         )?;
 
         // Create texture sampler.

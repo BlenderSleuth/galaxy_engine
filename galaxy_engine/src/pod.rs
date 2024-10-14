@@ -1,10 +1,13 @@
+// Copyright (c) 2024. Ben Sutherland
+
 use bytemuck::{Pod, Zeroable};
 
 // New-type wrappers to mark external crate types as Pod.
 
 pub(crate) mod vk {
-    use super::*;
     use ash::vk;
+
+    use super::*;
 
     #[repr(transparent)]
     #[derive(Clone, Copy)]

@@ -1,4 +1,8 @@
+// Copyright (c) 2024. Ben Sutherland
+
 use std::ffi::CString;
+
+pub use ash::vk::make_api_version;
 use bitflags::bitflags;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::application::ApplicationHandler;
@@ -7,8 +11,6 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
-
-pub use ash::vk::make_api_version;
 
 use crate::engine::GalaxyEngine;
 use crate::utils;
@@ -45,17 +47,17 @@ impl AppInfo {
 
 // Unwrap macro to log an error and exit the event loop on error.
 macro_rules! unwrap_or_exit {
-        ($result:expr, $message:literal, $event_loop:ident) => {
-            match $result {
-                Ok(value) => value,
-                Err(err) => {
-                    log::error!($message, err);
-                    $event_loop.exit();
-                    return;
-                }
+    ($result:expr, $message:literal, $event_loop:ident) => {
+        match $result {
+            Ok(value) => value,
+            Err(err) => {
+                log::error!($message, err);
+                $event_loop.exit();
+                return;
             }
-        };
-    }
+        }
+    };
+}
 
 pub struct GalaxyApp {
     app_info: AppInfo,
@@ -80,13 +82,29 @@ impl ApplicationHandler for GalaxyApp {
         let title = unwrap_or_exit!(self.app_info.name.to_str(), "Title is not valid UTF-8: {}", event_loop);
         let window_attributes = Window::default_attributes().with_title(title);
 
-        let window = unwrap_or_exit!(event_loop.create_window(window_attributes), "Failed to create window: {}\nExiting.", event_loop);
-        let display_handle = unwrap_or_exit!(window.display_handle(), "Failed to get display handle: {}\nExiting.", event_loop);
-        let window_handle = unwrap_or_exit!(window.window_handle(), "Failed to get window handle: {}\nExiting.", event_loop);
+        let window = unwrap_or_exit!(
+            event_loop.create_window(window_attributes),
+            "Failed to create window: {}\nExiting.",
+            event_loop
+        );
+        let display_handle = unwrap_or_exit!(
+            window.display_handle(),
+            "Failed to get display handle: {}\nExiting.",
+            event_loop
+        );
+        let window_handle = unwrap_or_exit!(
+            window.window_handle(),
+            "Failed to get window handle: {}\nExiting.",
+            event_loop
+        );
 
-        let PhysicalSize {width, height} = window.inner_size();
-        
-        self.engine = Some(unwrap_or_exit!(GalaxyEngine::new(&self.app_info, display_handle, window_handle, width, height), "Failed to create engine: {}\nExiting.", event_loop));
+        let PhysicalSize { width, height } = window.inner_size();
+
+        self.engine = Some(unwrap_or_exit!(
+            GalaxyEngine::new(&self.app_info, display_handle, window_handle, width, height),
+            "Failed to create engine: {}\nExiting.",
+            event_loop
+        ));
         self.window = Some(window);
         self.last_frame_time = std::time::Instant::now();
     }
@@ -101,17 +119,15 @@ impl ApplicationHandler for GalaxyApp {
                     engine.notify_window_resize(size.width, size.height);
                 }
             }
-            WindowEvent::KeyboardInput { event, .. } => {
-                match event.logical_key {
-                    Key::Named(key) => match key {
-                        NamedKey::Escape => {
-                            event_loop.exit();
-                        }
-                        _ => {}
+            WindowEvent::KeyboardInput { event, .. } => match event.logical_key {
+                Key::Named(key) => match key {
+                    NamedKey::Escape => {
+                        event_loop.exit();
                     }
                     _ => {}
-                }
-            }
+                },
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -120,7 +136,7 @@ impl ApplicationHandler for GalaxyApp {
         if event_loop.exiting() {
             return;
         }
-        
+
         if let Some(engine) = self.engine.as_mut() {
             unwrap_or_exit!(engine.main_loop(), "Main loop error: {}.\nExiting.", event_loop);
         }

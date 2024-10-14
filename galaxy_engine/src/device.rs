@@ -1,7 +1,10 @@
-use crate::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
-use crate::surface::Surface;
-use crate::utils::ArcFinalOwner;
-use crate::{debug, utils};
+// Copyright (c) 2024. Ben Sutherland
+
+use std::ffi::CStr;
+use std::mem;
+use std::mem::{ManuallyDrop, MaybeUninit};
+use std::sync::{Arc, Mutex, OnceLock};
+
 use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::vk::Handle;
@@ -9,10 +12,11 @@ use ash::{ext, khr, vk, RawPtr};
 use gpu_allocator::vulkan::{AllocationCreateDesc, Allocator, AllocatorCreateDesc};
 use gpu_allocator::AllocatorDebugSettings;
 use itertools::Itertools;
-use std::ffi::CStr;
-use std::mem;
-use std::mem::{ManuallyDrop, MaybeUninit};
-use std::sync::{Arc, Mutex, OnceLock};
+
+use crate::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
+use crate::surface::Surface;
+use crate::utils::ArcFinalOwner;
+use crate::{debug, utils};
 
 // Initialised by the engine.
 static DEVICE_LOADER: OnceLock<ash::Device> = OnceLock::new();
@@ -132,7 +136,11 @@ impl Device {
             return Err(DeviceInitError::NoPhysicalDevices);
         }
 
-        let required_device_extensions = &[khr::swapchain::NAME, khr::synchronization2::NAME, khr::dynamic_rendering::NAME];
+        let required_device_extensions = &[
+            khr::swapchain::NAME,
+            khr::synchronization2::NAME,
+            khr::dynamic_rendering::NAME,
+        ];
         // TODO: debug only.
         let debug_device_extensions = &[khr::shader_non_semantic_info::NAME];
 
@@ -143,9 +151,10 @@ impl Device {
 
             let mut has_required_extensions = true;
             for required_extension in required_device_extensions.iter() {
-                if !available_extensions.iter().any(|&available_extension| {
-                    available_extension.extension_name_as_c_str() == Ok(required_extension)
-                }) {
+                if !available_extensions
+                    .iter()
+                    .any(|&available_extension| available_extension.extension_name_as_c_str() == Ok(required_extension))
+                {
                     log::warn!("Required extension not found: {:?}", required_extension);
                     has_required_extensions = false;
                     break;
@@ -158,9 +167,10 @@ impl Device {
             // Check debug extensions.
             let mut has_debug_extensions = true;
             for debug_extension in debug_device_extensions.iter() {
-                if !available_extensions.iter().any(|&available_extension| {
-                    available_extension.extension_name_as_c_str() == Ok(debug_extension)
-                }) {
+                if !available_extensions
+                    .iter()
+                    .any(|&available_extension| available_extension.extension_name_as_c_str() == Ok(debug_extension))
+                {
                     log::warn!("Debug extension not found: {:?}", debug_extension);
                     has_debug_extensions = false;
                     break;
@@ -178,7 +188,8 @@ impl Device {
 
             for (queue_family_idx, queue_family) in queue_families.iter().enumerate() {
                 let queue_family_idx = queue_family_idx as u32;
-                let is_present_supported = surface.get_physical_device_surface_support(*physical_device, queue_family_idx)?;
+                let is_present_supported =
+                    surface.get_physical_device_surface_support(*physical_device, queue_family_idx)?;
 
                 if queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
                     // Prefer queue family that supports both graphics and present.
@@ -200,26 +211,39 @@ impl Device {
             }
 
             // Require all queue families.
-            let (Some(graphics_queue_family_idx), Some(present_queue_family_idx), Some(compute_queue_family_idx)) =
-                (graphics_queue_family_idx, present_queue_family_idx, compute_queue_family_idx) else {
+            let (Some(graphics_queue_family_idx), Some(present_queue_family_idx), Some(compute_queue_family_idx)) = (
+                graphics_queue_family_idx,
+                present_queue_family_idx,
+                compute_queue_family_idx,
+            ) else {
                 continue;
             };
 
-            // Find separate transfer queue family. 
+            // Find separate transfer queue family.
             // Default to graphics queue family, which implicitly supports transfer operations.
             let mut transfer_queue_family_idx = graphics_queue_family_idx;
             for (queue_family_idx, queue_family) in queue_families.iter().enumerate() {
                 // Choose first queue family that supports transfer operations but is not a graphics queue.
                 let queue_family_idx = queue_family_idx as u32;
-                if queue_family.queue_flags.contains(vk::QueueFlags::TRANSFER) && !queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
+                if queue_family.queue_flags.contains(vk::QueueFlags::TRANSFER)
+                    && !queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+                {
                     transfer_queue_family_idx = queue_family_idx;
                     break;
                 }
             }
 
             // Require VK_FORMAT_D32_SFLOAT_S8_UINT for depth/stencil.
-            let format_properties = unsafe { instance.get_physical_device_format_properties(*physical_device, PhysicalDeviceProperties::DEPTH_STENCIL_FORMAT) };
-            if !format_properties.optimal_tiling_features.contains(vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT) {
+            let format_properties = unsafe {
+                instance.get_physical_device_format_properties(
+                    *physical_device,
+                    PhysicalDeviceProperties::DEPTH_STENCIL_FORMAT,
+                )
+            };
+            if !format_properties
+                .optimal_tiling_features
+                .contains(vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT)
+            {
                 continue;
             }
 
@@ -239,7 +263,10 @@ impl Device {
                 continue;
             };
             const REQUESTED_PRESENTATION_MODE: vk::PresentModeKHR = vk::PresentModeKHR::FIFO; // FIFO = waits for VSync, MAILBOX = waits for vsync, but will keep rendering (some frames will be thrown away).
-            let Some(presentation_mode) = surface_present_modes.into_iter().find(|&mode| mode == REQUESTED_PRESENTATION_MODE) else {
+            let Some(presentation_mode) = surface_present_modes
+                .into_iter()
+                .find(|&mode| mode == REQUESTED_PRESENTATION_MODE)
+            else {
                 continue;
             };
 
@@ -254,7 +281,11 @@ impl Device {
             let physical_device_properties = physical_device_properties.properties;
 
             // Require 8 MSAA samples.
-            if !physical_device_properties.limits.framebuffer_color_sample_counts.contains(PhysicalDeviceProperties::MSAA_SAMPLES) {
+            if !physical_device_properties
+                .limits
+                .framebuffer_color_sample_counts
+                .contains(PhysicalDeviceProperties::MSAA_SAMPLES)
+            {
                 continue;
             }
 
@@ -264,8 +295,8 @@ impl Device {
             }
 
             let mut buffer_device_address_features = vk::PhysicalDeviceVulkan12Features::default();
-            let mut physical_device_features = vk::PhysicalDeviceFeatures2::default()
-                .push_next(&mut buffer_device_address_features);
+            let mut physical_device_features =
+                vk::PhysicalDeviceFeatures2::default().push_next(&mut buffer_device_address_features);
             unsafe { instance.get_physical_device_features2(*physical_device, &mut physical_device_features) };
 
             // Require anisotropic filtering support.
@@ -306,27 +337,30 @@ impl Device {
         // Create logical device.
         let mut queue_infos = Vec::with_capacity(unique_queue_families.len());
         for unique_queue_family in unique_queue_families.iter() {
-            queue_infos.push(vk::DeviceQueueCreateInfo::default()
-                .queue_family_index(*unique_queue_family)
-                .queue_priorities(&[1.0])
+            queue_infos.push(
+                vk::DeviceQueueCreateInfo::default()
+                    .queue_family_index(*unique_queue_family)
+                    .queue_priorities(&[1.0]),
             );
         }
 
         // Enable dynamic rendering.
-        let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default()
-            .dynamic_rendering(true);
+        let mut dynamic_rendering_features =
+            vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
 
         // Enable synchronization2.
-        let mut synchronization2_features = vk::PhysicalDeviceSynchronization2Features::default()
-            .synchronization2(true);
+        let mut synchronization2_features =
+            vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
 
-        let device_features = vk::PhysicalDeviceFeatures::default()
-            .sampler_anisotropy(true);
-        let mut device_features_12 = vk::PhysicalDeviceVulkan12Features::default()
-            .buffer_device_address(true);
+        let device_features = vk::PhysicalDeviceFeatures::default().sampler_anisotropy(true);
+        let mut device_features_12 = vk::PhysicalDeviceVulkan12Features::default().buffer_device_address(true);
 
         // TODO: Debug only.
-        let device_extensions = [required_device_extensions.as_slice(), debug_device_extensions.as_slice()].concat();
+        let device_extensions = [
+            required_device_extensions.as_slice(),
+            debug_device_extensions.as_slice(),
+        ]
+        .concat();
         let device_extensions = utils::cstr_to_ptrs(&device_extensions);
         let device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_infos)
@@ -367,7 +401,7 @@ impl Device {
             device: device.clone(),
             physical_device: current_device_properties.physical_device,
             debug_settings,
-            buffer_device_address: true,  // Ideally, check the BufferDeviceAddressFeatures struct.
+            buffer_device_address: true, // Ideally, check the BufferDeviceAddressFeatures struct.
             allocation_sizes: Default::default(),
         })?;
 
@@ -428,20 +462,39 @@ impl Device {
         }
     }
 
-    pub fn allocate_and_bind_memory<H: Handle>(&self, desc: &AllocationCreateDesc, handle: H) -> MemResult<ManuallyFreeAllocation> {
-        let allocation = ManuallyDrop::new(self.allocator.lock().map_err(|_| {
-            gpu_allocator::AllocationError::Internal("Mutex Poisoned".to_string())
-        })?.allocate(desc)?);
+    pub fn allocate_and_bind_memory<H: Handle>(
+        &self,
+        desc: &AllocationCreateDesc,
+        handle: H,
+    ) -> MemResult<ManuallyFreeAllocation> {
+        let allocation = ManuallyDrop::new(
+            self.allocator
+                .lock()
+                .map_err(|_| gpu_allocator::AllocationError::Internal("Mutex Poisoned".to_string()))?
+                .allocate(desc)?,
+        );
 
         // Workaround while const pattern matching is not stable.
         const BUFFER_TYPE: i32 = vk::ObjectType::BUFFER.as_raw();
         const IMAGE_TYPE: i32 = vk::ObjectType::IMAGE.as_raw();
         match const { H::TYPE.as_raw() } {
             BUFFER_TYPE => {
-                unsafe { self.loader.bind_buffer_memory(vk::Buffer::from_raw(handle.as_raw()), allocation.memory(), allocation.offset()) }?;
+                unsafe {
+                    self.loader.bind_buffer_memory(
+                        vk::Buffer::from_raw(handle.as_raw()),
+                        allocation.memory(),
+                        allocation.offset(),
+                    )
+                }?;
             }
             IMAGE_TYPE => {
-                unsafe { self.loader.bind_image_memory(vk::Image::from_raw(handle.as_raw()), allocation.memory(), allocation.offset()) }?;
+                unsafe {
+                    self.loader.bind_image_memory(
+                        vk::Image::from_raw(handle.as_raw()),
+                        allocation.memory(),
+                        allocation.offset(),
+                    )
+                }?;
             }
             _ => {
                 // Can this be a compile time error?
@@ -461,21 +514,31 @@ impl Device {
 impl Drop for Device {
     fn drop(&mut self) {
         // Drop allocator. Allocator has drop semantics, so we don't need a custom destroy closure.
-        unsafe { self.allocator.destroy_as_final(|_| {}) }.unwrap_or_else(|_| log::error!("Allocator not final owner."));
+        unsafe { self.allocator.destroy_as_final(|_| {}) }
+            .unwrap_or_else(|_| log::error!("Allocator not final owner."));
 
         // Drop device.
-        unsafe { self.loader.destroy_as_final(|device| device.destroy_device(None)) }.unwrap_or_else(|_| log::error!("Device not final owner."));
+        unsafe { self.loader.destroy_as_final(|device| device.destroy_device(None)) }
+            .unwrap_or_else(|_| log::error!("Device not final owner."));
     }
 }
 
 // Extension trait for compatibility with arrayvec.
 pub trait VkResultExt {
-    unsafe fn set_array_vec_len_on_success<T, const N: usize>(self, v: ArrayVec<T, N>, len: usize) -> VkResult<ArrayVec<T, N>>;
+    unsafe fn set_array_vec_len_on_success<T, const N: usize>(
+        self,
+        v: ArrayVec<T, N>,
+        len: usize,
+    ) -> VkResult<ArrayVec<T, N>>;
 }
 
 impl VkResultExt for vk::Result {
     #[inline]
-    unsafe fn set_array_vec_len_on_success<T, const N: usize>(self, mut v: ArrayVec<T, N>, len: usize) -> VkResult<ArrayVec<T, N>> {
+    unsafe fn set_array_vec_len_on_success<T, const N: usize>(
+        self,
+        mut v: ArrayVec<T, N>,
+        len: usize,
+    ) -> VkResult<ArrayVec<T, N>> {
         self.result().map(move |()| {
             v.set_len(len);
             v
@@ -520,7 +583,8 @@ impl DeviceExt for ash::Device {
             create_info,
             allocation_callbacks.as_raw_ptr(),
             pipeline.as_mut_ptr(),
-        ).assume_init_on_success(pipeline)
+        )
+        .assume_init_on_success(pipeline)
     }
 
     /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkAllocateCommandBuffers.html>
@@ -536,11 +600,8 @@ impl DeviceExt for ash::Device {
             .level(level)
             .command_buffer_count(1);
         let mut buffer = MaybeUninit::uninit();
-        (self.fp_v1_0().allocate_command_buffers)(
-            self.handle(),
-            &allocate_info,
-            buffer.as_mut_ptr(),
-        ).assume_init_on_success(buffer)
+        (self.fp_v1_0().allocate_command_buffers)(self.handle(), &allocate_info, buffer.as_mut_ptr())
+            .assume_init_on_success(buffer)
     }
 
     /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkAllocateCommandBuffers.html>
@@ -551,10 +612,7 @@ impl DeviceExt for ash::Device {
     ) -> VkResult<ArrayVec<vk::CommandBuffer, N>> {
         assert!(allocate_info.command_buffer_count <= N as u32);
         let mut buffers = ArrayVec::new();
-        (self.fp_v1_0().allocate_command_buffers)(
-            self.handle(),
-            allocate_info,
-            buffers.as_mut_ptr(),
-        ).set_array_vec_len_on_success(buffers, allocate_info.command_buffer_count as usize)
+        (self.fp_v1_0().allocate_command_buffers)(self.handle(), allocate_info, buffers.as_mut_ptr())
+            .set_array_vec_len_on_success(buffers, allocate_info.command_buffer_count as usize)
     }
 }

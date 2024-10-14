@@ -1,9 +1,20 @@
+// Copyright (c) 2024. Ben Sutherland
+
 use std::ffi::{c_char, CStr};
 use std::mem::ManuallyDrop;
 use std::slice;
 
+use app::AppInfo;
+use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::vk;
+use device::{Device, QueueFamily};
+use engine::MainLoopError::VulkanError;
+use nalgebra as na;
+use parking_lot::{MappedRwLockReadGuard, RwLockReadGuard};
+use raw_window_handle::{DisplayHandle, WindowHandle};
+use surface::Surface;
+use swapchain::Swapchain;
 
 use crate::descriptors::DescriptorPool;
 use crate::device::DeviceExt;
@@ -15,17 +26,6 @@ use crate::static_resources::{StaticResources, StaticResourcesGuard, StaticResou
 use crate::sync::{BinarySemaphore, Fence};
 use crate::uniform_buffer::VolatileUniformBuffer;
 use crate::{app, device, engine, surface, swapchain, utils};
-use app::AppInfo;
-use arrayvec::ArrayVec;
-use device::Device;
-use device::QueueFamily;
-use engine::MainLoopError::VulkanError;
-use nalgebra as na;
-use parking_lot::{MappedRwLockReadGuard, RwLockReadGuard};
-use raw_window_handle::{DisplayHandle, WindowHandle};
-use surface::Surface;
-use swapchain::Swapchain;
-
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
@@ -73,7 +73,6 @@ pub enum InstanceExtensionError {
     #[error("Unable to find Vulkan extension: {0:?}")]
     ExtensionNotFound(&'static CStr),
 }
-
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
@@ -136,7 +135,13 @@ impl GalaxyEngine {
     // - Queue object.
     // - Command buffer and pool management.
     // - Use a single buffer for both vertices and indices.
-    pub fn new(app_info: &AppInfo, display: DisplayHandle, window: WindowHandle, width: u32, height: u32) -> Result<Self, EngineInitError> {
+    pub fn new(
+        app_info: &AppInfo,
+        display: DisplayHandle,
+        window: WindowHandle,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, EngineInitError> {
         // Currently the engine can only be initialised once.
         static ONCE: std::sync::Once = std::sync::Once::new();
         if ONCE.is_completed() {
@@ -219,10 +224,7 @@ impl GalaxyEngine {
         let swapchain = Swapchain::new(&instance, &device, graphics_cmd_pool, &surface, window_size, None)?;
 
         // Create uniform buffer.
-        let uniform_buffer = VolatileUniformBuffer::new_for_type::<UniformData>(
-            "Uniform buffer",
-            &device,
-        )?;
+        let uniform_buffer = VolatileUniformBuffer::new_for_type::<UniformData>("Uniform buffer", &device)?;
 
         // Create descriptor pool.
         let pool_sizes = [
@@ -282,7 +284,15 @@ impl GalaxyEngine {
             compute_in_flight_fences.push(Fence::new(&device, true)?);
         }
 
-        let particle_system = GpuParticleSystem::new(&device, swapchain.samples(), Self::MAX_NUM_PARTICLES, window_size, &uniform_buffer, graphics_cmd_pool, &descriptor_pool)?;
+        let particle_system = GpuParticleSystem::new(
+            &device,
+            swapchain.samples(),
+            Self::MAX_NUM_PARTICLES,
+            window_size,
+            &uniform_buffer,
+            graphics_cmd_pool,
+            &descriptor_pool,
+        )?;
 
         device.print_allocator_report();
 
@@ -340,7 +350,8 @@ impl GalaxyEngine {
             delta_time,
         };
         // Copy data to uniform buffer.
-        self.uniform_buffer.update(current_frame, bytemuck::bytes_of(&uniform_data))?;
+        self.uniform_buffer
+            .update(current_frame, bytemuck::bytes_of(&uniform_data))?;
 
         // Wait for compute fence.
         self.compute_in_flight_fences[current_frame].wait(u64::MAX)?;
@@ -355,14 +366,25 @@ impl GalaxyEngine {
 
         let submit_info = vk::SubmitInfo::default()
             .command_buffers(slice::from_ref(&command_buffer))
-            .signal_semaphores(slice::from_ref(self.compute_finished_semaphores[current_frame].ref_handle()));
-        unsafe { loader.queue_submit(self.device.get_queue(QueueFamily::Compute), &[submit_info], self.compute_in_flight_fences[current_frame].handle()) }?;
+            .signal_semaphores(slice::from_ref(
+                self.compute_finished_semaphores[current_frame].ref_handle(),
+            ));
+        unsafe {
+            loader.queue_submit(
+                self.device.get_queue(QueueFamily::Compute),
+                &[submit_info],
+                self.compute_in_flight_fences[current_frame].handle(),
+            )
+        }?;
 
         // Wait for graphics fence.
         self.in_flight_fences[current_frame].wait(u64::MAX)?;
 
         // Acquire image from swapchain.
-        let (image_idx, _is_suboptimal) = match self.swapchain.acquire_next_image(self.image_available_semaphores[current_frame].handle(), vk::Fence::null()) {
+        let (image_idx, _is_suboptimal) = match self.swapchain.acquire_next_image(
+            self.image_available_semaphores[current_frame].handle(),
+            vk::Fence::null(),
+        ) {
             Ok(x) => x,
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 self.recreate_swapchain()?;
@@ -385,8 +407,7 @@ impl GalaxyEngine {
             .min_depth(0.0)
             .max_depth(1.0);
 
-        let scissor = vk::Rect2D::default()
-            .extent(swapchain_extent);
+        let scissor = vk::Rect2D::default().extent(swapchain_extent);
 
         // Record command buffer.
         let begin_info = vk::CommandBufferBeginInfo::default();
@@ -402,8 +423,8 @@ impl GalaxyEngine {
             .image(self.swapchain.get_images()[image_idx as usize])
             .subresource_range(Swapchain::get_subresource_range());
 
-        let dependency_info = vk::DependencyInfo::default()
-            .image_memory_barriers(slice::from_ref(&color_optimal_transition));
+        let dependency_info =
+            vk::DependencyInfo::default().image_memory_barriers(slice::from_ref(&color_optimal_transition));
         unsafe { ext.sync2.cmd_pipeline_barrier2(command_buffer, &dependency_info) };
 
         let color_attachment_info = vk::RenderingAttachmentInfo::default()
@@ -411,7 +432,11 @@ impl GalaxyEngine {
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::STORE)
-            .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } })
+            .clear_value(vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                },
+            })
             .resolve_mode(vk::ResolveModeFlags::AVERAGE)
             .resolve_image_view(self.swapchain.get_image_views()[image_idx as usize].handle())
             .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
@@ -421,15 +446,21 @@ impl GalaxyEngine {
             .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .clear_value(vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 } });
+            .clear_value(vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
+            });
 
         let rendering_info = vk::RenderingInfo::default()
-            .render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent: swapchain_extent })
+            .render_area(vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: swapchain_extent,
+            })
             .layer_count(1)
             .color_attachments(slice::from_ref(&color_attachment_info))
             .depth_attachment(&depth_attachment_info);
         unsafe { ext.dyn_cmd.cmd_begin_rendering(command_buffer, &rendering_info) }
-        self.particle_system.record_graphics(command_buffer, time, viewport, scissor);
+        self.particle_system
+            .record_graphics(command_buffer, time, viewport, scissor);
         self.mesh.record_graphics(loader, command_buffer, viewport, scissor);
         unsafe { ext.dyn_cmd.cmd_end_rendering(command_buffer) };
 
@@ -449,17 +480,35 @@ impl GalaxyEngine {
         unsafe { loader.end_command_buffer(command_buffer) }?;
 
         // Submit command buffer.
-        let wait_semaphores = [self.compute_finished_semaphores[current_frame].handle(), self.image_available_semaphores[current_frame].handle()];
-        let wait_stages = [vk::PipelineStageFlags::VERTEX_INPUT, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let wait_semaphores = [
+            self.compute_finished_semaphores[current_frame].handle(),
+            self.image_available_semaphores[current_frame].handle(),
+        ];
+        let wait_stages = [
+            vk::PipelineStageFlags::VERTEX_INPUT,
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        ];
         let submit_info = vk::SubmitInfo::default()
             .command_buffers(slice::from_ref(&command_buffer))
             .wait_semaphores(&wait_semaphores)
             .wait_dst_stage_mask(&wait_stages)
-            .signal_semaphores(slice::from_ref(self.render_finished_semaphores[current_frame].ref_handle()));
+            .signal_semaphores(slice::from_ref(
+                self.render_finished_semaphores[current_frame].ref_handle(),
+            ));
 
-        unsafe { loader.queue_submit(self.device.get_queue(QueueFamily::Graphics), slice::from_ref(&submit_info), self.in_flight_fences[current_frame].handle()) }?;
+        unsafe {
+            loader.queue_submit(
+                self.device.get_queue(QueueFamily::Graphics),
+                slice::from_ref(&submit_info),
+                self.in_flight_fences[current_frame].handle(),
+            )
+        }?;
 
-        match self.swapchain.queue_present(self.device.get_queue(QueueFamily::Present), image_idx, &[self.render_finished_semaphores[current_frame].handle()]) {
+        match self.swapchain.queue_present(
+            self.device.get_queue(QueueFamily::Present),
+            image_idx,
+            &[self.render_finished_semaphores[current_frame].handle()],
+        ) {
             Ok(_) => {}
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
                 self.recreate_swapchain()?;
@@ -474,7 +523,14 @@ impl GalaxyEngine {
 
     fn recreate_swapchain(&mut self) -> MemResult<()> {
         unsafe { self.device.loader().device_wait_idle() }?;
-        let new_swapchain = Swapchain::new(&self.instance, &self.device, self.graphics_cmd_pool, &self.surface, self.window_size, Some(&self.swapchain))?;
+        let new_swapchain = Swapchain::new(
+            &self.instance,
+            &self.device,
+            self.graphics_cmd_pool,
+            &self.surface,
+            self.window_size,
+            Some(&self.swapchain),
+        )?;
         unsafe { ManuallyDrop::drop(&mut self.swapchain) };
         self.swapchain = ManuallyDrop::new(new_swapchain);
         Ok(())
@@ -501,9 +557,10 @@ impl GalaxyEngine {
 
         // Check all required layers are available. Not fatal if not found.
         required_layers.retain(|&required_layer| {
-            if available_layers.iter().any(|&available_layer| {
-                available_layer.layer_name_as_c_str() == Ok(required_layer)
-            }) {
+            if available_layers
+                .iter()
+                .any(|&available_layer| available_layer.layer_name_as_c_str() == Ok(required_layer))
+            {
                 true
             } else {
                 log::warn!("Required layer not found: {:?}.", required_layer);
@@ -514,11 +571,15 @@ impl GalaxyEngine {
         Ok(utils::cstr_to_ptrs(&required_layers))
     }
 
-    fn get_required_instance_extensions(entry: &ash::Entry, _flags: &app::AppFlags, display: DisplayHandle) -> Result<Vec<*const c_char>, InstanceExtensionError> {
+    fn get_required_instance_extensions(
+        entry: &ash::Entry,
+        _flags: &app::AppFlags,
+        display: DisplayHandle,
+    ) -> Result<Vec<*const c_char>, InstanceExtensionError> {
         // Query available extensions
         let available_extensions = unsafe { entry.enumerate_instance_extension_properties(None) }?;
 
-        // Require platform windowing extensions. 
+        // Require platform windowing extensions.
         // The returned extensions are pointers to static strings, so we can safely convert them back to CStr.
         #[allow(unused_mut)]
         let mut required_extensions = ash_window::enumerate_required_extensions(display.as_raw())?
@@ -541,9 +602,10 @@ impl GalaxyEngine {
 
         // Check all required extensions are available.
         for required_extension in required_extensions.iter() {
-            if !available_extensions.iter().any(|&available_extension| {
-                available_extension.extension_name_as_c_str() == Ok(required_extension)
-            }) {
+            if !available_extensions
+                .iter()
+                .any(|&available_extension| available_extension.extension_name_as_c_str() == Ok(required_extension))
+            {
                 return Err(InstanceExtensionError::ExtensionNotFound(required_extension));
             }
         }
@@ -556,7 +618,8 @@ impl Drop for GalaxyEngine {
     fn drop(&mut self) {
         let device_loader = self.device.loader();
 
-        unsafe { device_loader.device_wait_idle() }.unwrap_or_else(|e| log::error!("Failed to wait for device idle: {:?}", e));
+        unsafe { device_loader.device_wait_idle() }
+            .unwrap_or_else(|e| log::error!("Failed to wait for device idle: {:?}", e));
 
         self.device.print_allocator_report();
 

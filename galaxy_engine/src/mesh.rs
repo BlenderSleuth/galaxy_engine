@@ -1,11 +1,14 @@
+// Copyright (c) 2024. Ben Sutherland
+
 use std::alloc::Layout;
-use ash::vk;
-use meshopt::VertexDataAdapter;
-use nalgebra as na;
 use std::fs::File;
 use std::io::BufReader;
 use std::slice;
 use std::sync::Arc;
+
+use ash::vk;
+use meshopt::VertexDataAdapter;
+use nalgebra as na;
 
 use crate::buffer::{Buffer, CpuToGpu, GpuOnly};
 use crate::command_buffer::CommandBuffer;
@@ -58,10 +61,14 @@ pub trait IndexTypeTrait: bytemuck::Pod {
     fn index_type() -> vk::IndexType;
 }
 impl IndexTypeTrait for u16 {
-    fn index_type() -> vk::IndexType { vk::IndexType::UINT16 }
+    fn index_type() -> vk::IndexType {
+        vk::IndexType::UINT16
+    }
 }
 impl IndexTypeTrait for u32 {
-    fn index_type() -> vk::IndexType { vk::IndexType::UINT32 }
+    fn index_type() -> vk::IndexType {
+        vk::IndexType::UINT32
+    }
 }
 
 pub struct MeshBuffer {
@@ -82,16 +89,20 @@ impl MeshBuffer {
     ) -> MemResult<MeshBuffer> {
         // Ensure proper alignment.
         let indices_layout = Layout::for_value(indices);
-        let vertices_offset = indices_layout.align_to(std::mem::align_of::<V>()).unwrap().pad_to_align().size();
+        let vertices_offset = indices_layout
+            .align_to(std::mem::align_of::<V>())
+            .unwrap()
+            .pad_to_align()
+            .size();
         let buffer_size = (vertices_offset + std::mem::size_of_val(vertices)) as vk::DeviceSize;
 
         let mut buffer = Buffer::<GpuOnly>::new(
             debug::debug_only_name!("{name} mesh buffer"),
             &device,
             buffer_size,
-            vk::BufferUsageFlags::TRANSFER_DST |
-                vk::BufferUsageFlags::VERTEX_BUFFER |
-                vk::BufferUsageFlags::INDEX_BUFFER,
+            vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::VERTEX_BUFFER
+                | vk::BufferUsageFlags::INDEX_BUFFER,
             vk::SharingMode::EXCLUSIVE,
         )?;
 
@@ -104,7 +115,13 @@ impl MeshBuffer {
         )?;
         staging_buffer.copy_into_buffer(indices, 0)?;
         staging_buffer.copy_into_buffer(vertices, vertices_offset)?;
-        staging_buffer.copy_to_buffer(CommandBuffer::one_time_transient(device, transfer_cmd_pool)?, &device, &mut buffer, staging_buffer.size(), QueueFamily::Graphics)?;
+        staging_buffer.copy_to_buffer(
+            CommandBuffer::one_time_transient(device, transfer_cmd_pool)?,
+            &device,
+            &mut buffer,
+            staging_buffer.size(),
+            QueueFamily::Graphics,
+        )?;
 
         Ok(Self {
             buffer,
@@ -120,7 +137,14 @@ impl MeshBuffer {
 
     pub fn bind(&self, loader: &ash::Device, command_buffer: vk::CommandBuffer) {
         unsafe { loader.cmd_bind_index_buffer(command_buffer, self.buffer.handle(), 0, self.index_type) };
-        unsafe { loader.cmd_bind_vertex_buffers(command_buffer, 0, slice::from_ref(&self.buffer.handle()), &[self.vertices_offset]) };
+        unsafe {
+            loader.cmd_bind_vertex_buffers(
+                command_buffer,
+                0,
+                slice::from_ref(&self.buffer.handle()),
+                &[self.vertices_offset],
+            )
+        };
     }
 }
 
@@ -201,7 +225,7 @@ impl Mesh {
             debug::debug_only_name!("{name} material"),
             device,
             texture_path,
-            gfx_cmd_pool
+            gfx_cmd_pool,
         )?;
 
         // Load model. The obj crate already does indexing for us.
@@ -221,24 +245,31 @@ impl Mesh {
         let mut vertices = meshopt::remap_vertex_buffer(&vertices, vertex_count, &vert_remap);
         let mut indices = meshopt::remap_index_buffer(Some(&obj_model.indices), vertex_count, &vert_remap);
         meshopt::optimize_vertex_cache_in_place(&mut indices, vertex_count);
-        let vertex_data_adapter = VertexDataAdapter::new(bytemuck::must_cast_slice(&vertices), std::mem::size_of::<Vertex>(), std::mem::offset_of!(Vertex, position)).unwrap();
+        let vertex_data_adapter = VertexDataAdapter::new(
+            bytemuck::must_cast_slice(&vertices),
+            std::mem::size_of::<Vertex>(),
+            std::mem::offset_of!(Vertex, position),
+        )
+        .unwrap();
         meshopt::optimize_overdraw_in_place(&mut indices, &vertex_data_adapter, 1.05);
         meshopt::optimize_vertex_fetch_in_place(&mut indices, &mut vertices);
 
-        let mesh_buffer = MeshBuffer::new_from_vertices_and_indices(
-            name,
-            &vertices,
-            &indices,
-            device,
-            gfx_cmd_pool,
-        )?;
+        let mesh_buffer = MeshBuffer::new_from_vertices_and_indices(name, &vertices, &indices, device, gfx_cmd_pool)?;
 
         let layout_bindings = material.descriptor_set_layout_bindings();
         let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&layout_bindings);
-        let descriptor_set_layout = unsafe { device.loader().create_descriptor_set_layout(&descriptor_set_layout_info, None) }?;
+        let descriptor_set_layout = unsafe {
+            device
+                .loader()
+                .create_descriptor_set_layout(&descriptor_set_layout_info, None)
+        }?;
 
         // Create pipeline layout.
-        let pipeline_layout = Arc::new(PipelineLayout::new(&device, Some(&descriptor_set_layout), Some(&maths::ModelViewProjection::push_constant_range()))?);
+        let pipeline_layout = Arc::new(PipelineLayout::new(
+            &device,
+            Some(&descriptor_set_layout),
+            Some(&maths::ModelViewProjection::push_constant_range()),
+        )?);
 
         // Create pipeline.
         let pipeline_params = GraphicsPipelineParameters {
@@ -299,11 +330,34 @@ impl Mesh {
         self.descriptor_set_layout
     }
 
-    pub fn record_graphics(&self, loader: &ash::Device, command_buffer: vk::CommandBuffer, viewport: vk::Viewport, scissor: vk::Rect2D) {
+    pub fn record_graphics(
+        &self,
+        loader: &ash::Device,
+        command_buffer: vk::CommandBuffer,
+        viewport: vk::Viewport,
+        scissor: vk::Rect2D,
+    ) {
         unsafe { loader.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.handle()) };
         self.mesh_buffer.bind(loader, command_buffer);
-        unsafe { loader.cmd_push_constants(command_buffer, self.pipeline.layout().handle(), vk::ShaderStageFlags::VERTEX, 0, bytemuck::cast_slice(&[self.mvp.mvp()])) };
-        unsafe { loader.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.layout().handle(), 0, slice::from_ref(&self.descriptor_set), &[]) };
+        unsafe {
+            loader.cmd_push_constants(
+                command_buffer,
+                self.pipeline.layout().handle(),
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                bytemuck::cast_slice(&[self.mvp.mvp()]),
+            )
+        };
+        unsafe {
+            loader.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline.layout().handle(),
+                0,
+                slice::from_ref(&self.descriptor_set),
+                &[],
+            )
+        };
         unsafe { loader.cmd_set_viewport(command_buffer, 0, &[viewport]) };
         unsafe { loader.cmd_set_scissor(command_buffer, 0, &[scissor]) };
         unsafe { loader.cmd_draw_indexed(command_buffer, self.mesh_buffer.num_indices(), 1, 0, 0, 0) };
@@ -313,7 +367,8 @@ impl Mesh {
 impl Drop for Mesh {
     fn drop(&mut self) {
         unsafe {
-            self.loader.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+            self.loader
+                .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
         }
     }
 }

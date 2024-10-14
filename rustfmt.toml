@@ -1,0 +1,5 @@
+max_width = 120
+
+# Import formatting
+group_imports = "StdExternalCrate"
+imports_granularity = "Module"

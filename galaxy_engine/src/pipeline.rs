@@ -1,11 +1,14 @@
+// Copyright (c) 2024. Ben Sutherland
+
 use std::slice;
 use std::sync::Arc;
 
-use crate::device::{Device, DeviceExt, PhysicalDeviceProperties, SharedDeviceLoader};
-use crate::shader::{ComputeShaderStage, ShaderModule};
 use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::vk;
+
+use crate::device::{Device, DeviceExt, PhysicalDeviceProperties, SharedDeviceLoader};
+use crate::shader::{ComputeShaderStage, ShaderModule};
 
 pub trait Pipeline {
     fn handle(&self) -> vk::Pipeline;
@@ -18,7 +21,11 @@ pub struct PipelineLayout {
 }
 
 impl PipelineLayout {
-    pub fn new(device: &Device, descriptor_set_layout: Option<&vk::DescriptorSetLayout>, push_constant_range: Option<&vk::PushConstantRange>) -> VkResult<Self> {
+    pub fn new(
+        device: &Device,
+        descriptor_set_layout: Option<&vk::DescriptorSetLayout>,
+        push_constant_range: Option<&vk::PushConstantRange>,
+    ) -> VkResult<Self> {
         let loader = device.cloned_loader();
 
         let mut pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
@@ -32,7 +39,9 @@ impl PipelineLayout {
 
         Ok(Self { loader, handle })
     }
-    pub fn handle(&self) -> vk::PipelineLayout { self.handle }
+    pub fn handle(&self) -> vk::PipelineLayout {
+        self.handle
+    }
 }
 
 impl Drop for PipelineLayout {
@@ -113,10 +122,9 @@ impl GraphicsPipeline {
             .depth_attachment_format(PhysicalDeviceProperties::DEPTH_STENCIL_FORMAT);
 
         // Vertex binding.
-        let vertex_input_info =
-            vk::PipelineVertexInputStateCreateInfo::default()
-                .vertex_binding_descriptions(slice::from_ref(&params.vertex_binding_description))
-                .vertex_attribute_descriptions(&params.vertex_attribute_descriptions);
+        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(slice::from_ref(&params.vertex_binding_description))
+            .vertex_attribute_descriptions(&params.vertex_attribute_descriptions);
         let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&params.shader_stages)
             .vertex_input_state(&vertex_input_info)
@@ -132,13 +140,21 @@ impl GraphicsPipeline {
 
         let handle = unsafe { loader.create_graphics_pipeline(vk::PipelineCache::null(), &pipeline_info, None) }?;
 
-        Ok(Self { loader, handle, layout: params.layout })
+        Ok(Self {
+            loader,
+            handle,
+            layout: params.layout,
+        })
     }
 }
 
 impl Pipeline for GraphicsPipeline {
-    fn handle(&self) -> vk::Pipeline { self.handle }
-    fn layout(&self) -> &Arc<PipelineLayout> { &self.layout }
+    fn handle(&self) -> vk::Pipeline {
+        self.handle
+    }
+    fn layout(&self) -> &Arc<PipelineLayout> {
+        &self.layout
+    }
 }
 
 impl Drop for GraphicsPipeline {
@@ -182,13 +198,21 @@ impl ComputePipeline {
         if err_code != vk::Result::SUCCESS {
             return Err(err_code);
         }
-        Ok(Self { loader, handle, layout: params.layout })
+        Ok(Self {
+            loader,
+            handle,
+            layout: params.layout,
+        })
     }
 }
 
 impl Pipeline for ComputePipeline {
-    fn handle(&self) -> vk::Pipeline { self.handle }
-    fn layout(&self) -> &Arc<PipelineLayout> { &self.layout }
+    fn handle(&self) -> vk::Pipeline {
+        self.handle
+    }
+    fn layout(&self) -> &Arc<PipelineLayout> {
+        &self.layout
+    }
 }
 
 impl Drop for ComputePipeline {

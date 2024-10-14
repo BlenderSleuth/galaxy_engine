@@ -1,18 +1,24 @@
+// Copyright (c) 2024. Ben Sutherland
+
+use std::ops::Deref;
+use std::slice;
+use std::sync::Arc;
+
+use ash::vk;
+use nalgebra as na;
+
 use crate::buffer::{Buffer, GpuOnly};
 use crate::descriptors::DescriptorPool;
 use crate::device::{Device, QueueFamily, SharedDeviceLoader};
 use crate::gpu_alloc::MemResult;
 use crate::maths::ModelViewProjection;
-use crate::mesh::{BindableVertex, Vertex, MeshBuffer};
-use crate::pipeline::{ComputePipeline, ComputePipelineParameters, GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout};
+use crate::mesh::{BindableVertex, MeshBuffer, Vertex};
+use crate::pipeline::{
+    ComputePipeline, ComputePipelineParameters, GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout,
+};
 use crate::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
 use crate::uniform_buffer::VolatileUniformBuffer;
 use crate::{engine, pod, utils};
-use ash::vk;
-use nalgebra as na;
-use std::ops::Deref;
-use std::sync::Arc;
-use std::{slice};
 
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
@@ -76,30 +82,39 @@ impl GpuParticleSystem {
 
         // Initial particle positions.
         let window_aspect_ratio = window_size.width as f32 / window_size.height as f32;
-        let initial_particles = (0..max_num_particles).map(|_| {
-            let r = 0.25 * fastrand::f32().sqrt();
-            let theta = 2.0 * std::f32::consts::PI * fastrand::f32();
-            let x = r * theta.cos() * window_aspect_ratio;
-            let y = r * theta.sin();
-            let position = r * na::Vector2::new(x, y);
-            let velocity = position.normalize() * fastrand::f32() * 0.25;
-            Particle {
-                position: na::Vector3::new(position.x, position.y, fastrand::f32()),
-                age: fastrand::f32() * 10.,
-                velocity: na::Vector3::new(velocity.x, velocity.y, 0.0),
-                radius: 0.01,
-                color: na::Vector4::new(fastrand::f32(), fastrand::f32(), fastrand::f32(), 1.0),
-            }
-        }).collect::<Vec<_>>();
+        let initial_particles = (0..max_num_particles)
+            .map(|_| {
+                let r = 0.25 * fastrand::f32().sqrt();
+                let theta = 2.0 * std::f32::consts::PI * fastrand::f32();
+                let x = r * theta.cos() * window_aspect_ratio;
+                let y = r * theta.sin();
+                let position = r * na::Vector2::new(x, y);
+                let velocity = position.normalize() * fastrand::f32() * 0.25;
+                Particle {
+                    position: na::Vector3::new(position.x, position.y, fastrand::f32()),
+                    age: fastrand::f32() * 10.,
+                    velocity: na::Vector3::new(velocity.x, velocity.y, 0.0),
+                    radius: 0.01,
+                    color: na::Vector4::new(fastrand::f32(), fastrand::f32(), fastrand::f32(), 1.0),
+                }
+            })
+            .collect::<Vec<_>>();
 
         let mut particle_storage_buffer = Buffer::<GpuOnly>::new_for_slice(
             "Particle storage buffer",
             &device,
             &initial_particles,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::VERTEX_BUFFER,
             vk::SharingMode::EXCLUSIVE,
         )?;
-        particle_storage_buffer.copy_via_staging_buffer(&device, bytemuck::must_cast_slice(&initial_particles), graphics_cmd_pool, QueueFamily::Graphics)?;
+        particle_storage_buffer.copy_via_staging_buffer(
+            &device,
+            bytemuck::must_cast_slice(&initial_particles),
+            graphics_cmd_pool,
+            QueueFamily::Graphics,
+        )?;
 
         // TODO: Don't allocate small buffers.
         let num_particles_buffer = Buffer::<GpuOnly>::new_for_type::<pod::vk::DrawIndexedIndirectCommand>(
@@ -121,16 +136,18 @@ impl GpuParticleSystem {
                 .binding(1)
                 .descriptor_count(1)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+                .stage_flags(
+                    vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                ),
             vk::DescriptorSetLayoutBinding::default()
                 .binding(2)
                 .descriptor_count(1)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
-        let compute_layout_info = vk::DescriptorSetLayoutCreateInfo::default()
-            .bindings(&compute_layout_bindings);
-        let compute_descriptor_set_layout = unsafe { device.loader().create_descriptor_set_layout(&compute_layout_info, None) }?;
+        let compute_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&compute_layout_bindings);
+        let compute_descriptor_set_layout =
+            unsafe { device.loader().create_descriptor_set_layout(&compute_layout_info, None) }?;
 
         // Allocate compute descriptor sets.
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
@@ -139,40 +156,42 @@ impl GpuParticleSystem {
         let compute_descriptor_set = unsafe { device.loader().allocate_descriptor_sets(&alloc_info) }?[0];
 
         // Write descriptor sets.
-        let buffer_infos =
-            [
-                uniform_buffer.descriptor_buffer_info(),
-                particle_storage_buffer.descriptor_buffer_info(),
-                num_particles_buffer.descriptor_buffer_info(),
-            ];
+        let buffer_infos = [
+            uniform_buffer.descriptor_buffer_info(),
+            particle_storage_buffer.descriptor_buffer_info(),
+            num_particles_buffer.descriptor_buffer_info(),
+        ];
 
-        let descriptor_writes =
-            [
-                vk::WriteDescriptorSet::default()
-                    .dst_set(compute_descriptor_set)
-                    .dst_binding(0)
-                    .dst_array_element(0)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(slice::from_ref(&buffer_infos[0])),
-                // Current frame's storage buffer.
-                vk::WriteDescriptorSet::default()
-                    .dst_set(compute_descriptor_set)
-                    .dst_binding(1)
-                    .dst_array_element(0)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(slice::from_ref(&buffer_infos[1])),
-                // Draw indirect buffer.
-                vk::WriteDescriptorSet::default()
-                    .dst_set(compute_descriptor_set)
-                    .dst_binding(2)
-                    .dst_array_element(0)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(slice::from_ref(&buffer_infos[2])),
-            ];
+        let descriptor_writes = [
+            vk::WriteDescriptorSet::default()
+                .dst_set(compute_descriptor_set)
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(slice::from_ref(&buffer_infos[0])),
+            // Current frame's storage buffer.
+            vk::WriteDescriptorSet::default()
+                .dst_set(compute_descriptor_set)
+                .dst_binding(1)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(slice::from_ref(&buffer_infos[1])),
+            // Draw indirect buffer.
+            vk::WriteDescriptorSet::default()
+                .dst_set(compute_descriptor_set)
+                .dst_binding(2)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(slice::from_ref(&buffer_infos[2])),
+        ];
 
         unsafe { device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
 
-        let compute_pipeline_layout = Arc::new(PipelineLayout::new(&device, Some(&compute_descriptor_set_layout), None)?);
+        let compute_pipeline_layout = Arc::new(PipelineLayout::new(
+            &device,
+            Some(&compute_descriptor_set_layout),
+            None,
+        )?);
 
         let compute_pipeline_params = ComputePipelineParameters {
             layout: Arc::clone(&compute_pipeline_layout),
@@ -185,12 +204,14 @@ impl GpuParticleSystem {
         let fragment_shader_code = std::fs::read("galaxy_engine/shaders/particles.frag.spv").unwrap();
         let vertex_shader_module = ShaderModule::<VertexShaderStage>::new(device, &vertex_shader_code)?;
         let fragment_shader_module = ShaderModule::<FragmentShaderStage>::new(device, &fragment_shader_code)?;
-        let particle_shader_stages = utils::arrayvec_from_array([
-            vertex_shader_module.stage_info(),
-            fragment_shader_module.stage_info(),
-        ]);
+        let particle_shader_stages =
+            utils::arrayvec_from_array([vertex_shader_module.stage_info(), fragment_shader_module.stage_info()]);
 
-        let graphics_pipeline_layout = Arc::new(PipelineLayout::new(device, Some(&compute_descriptor_set_layout), Some(&ModelViewProjection::push_constant_range()))?);
+        let graphics_pipeline_layout = Arc::new(PipelineLayout::new(
+            device,
+            Some(&compute_descriptor_set_layout),
+            Some(&ModelViewProjection::push_constant_range()),
+        )?);
 
         let pipeline_params = GraphicsPipelineParameters {
             layout: graphics_pipeline_layout,
@@ -216,30 +237,89 @@ impl GpuParticleSystem {
     }
 
     fn bind_descriptor_set(&self, command_buffer: vk::CommandBuffer, bind_point: vk::PipelineBindPoint) {
-        unsafe { self.loader.cmd_bind_descriptor_sets(command_buffer, bind_point, self.compute_pipeline.layout().handle(), 0, slice::from_ref(&self.compute_descriptor_set), &[]) };
+        unsafe {
+            self.loader.cmd_bind_descriptor_sets(
+                command_buffer,
+                bind_point,
+                self.compute_pipeline.layout().handle(),
+                0,
+                slice::from_ref(&self.compute_descriptor_set),
+                &[],
+            )
+        };
     }
 
     pub fn record_compute(&self, command_buffer: vk::CommandBuffer) {
-        unsafe { self.loader.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, self.compute_pipeline.handle()) };
+        unsafe {
+            self.loader.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::COMPUTE,
+                self.compute_pipeline.handle(),
+            )
+        };
         self.bind_descriptor_set(command_buffer, vk::PipelineBindPoint::COMPUTE);
-        unsafe { self.loader.cmd_dispatch(command_buffer, self.max_num_particles / 256, 1, 1) };
+        unsafe {
+            self.loader
+                .cmd_dispatch(command_buffer, self.max_num_particles / 256, 1, 1)
+        };
     }
 
-    pub fn record_graphics(&self, command_buffer: vk::CommandBuffer, time: f32, viewport: vk::Viewport, scissor: vk::Rect2D) {
+    pub fn record_graphics(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        time: f32,
+        viewport: vk::Viewport,
+        scissor: vk::Rect2D,
+    ) {
         let mvp = ModelViewProjection::spin(utils::viewport_extent(viewport), time.sin() * 0.5, 20.0).mvp();
-        unsafe { self.loader.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.graphics_pipeline.handle()) };
-        unsafe { self.loader.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.graphics_pipeline.layout().handle(), 0, slice::from_ref(&self.compute_descriptor_set), &[]) };
-        unsafe { self.loader.cmd_push_constants(command_buffer, self.graphics_pipeline.layout().handle(), vk::ShaderStageFlags::VERTEX, 0, bytemuck::bytes_of(&mvp)) };
+        unsafe {
+            self.loader.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.graphics_pipeline.handle(),
+            )
+        };
+        unsafe {
+            self.loader.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.graphics_pipeline.layout().handle(),
+                0,
+                slice::from_ref(&self.compute_descriptor_set),
+                &[],
+            )
+        };
+        unsafe {
+            self.loader.cmd_push_constants(
+                command_buffer,
+                self.graphics_pipeline.layout().handle(),
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                bytemuck::bytes_of(&mvp),
+            )
+        };
         self.mesh_buffer.bind(self.loader.deref(), command_buffer);
         unsafe { self.loader.cmd_set_viewport(command_buffer, 0, &[viewport]) };
         unsafe { self.loader.cmd_set_scissor(command_buffer, 0, &[scissor]) };
-        unsafe { self.loader.cmd_draw_indexed(command_buffer, self.mesh_buffer.num_indices(), self.max_num_particles, 0, 0, 0) };
+        unsafe {
+            self.loader.cmd_draw_indexed(
+                command_buffer,
+                self.mesh_buffer.num_indices(),
+                self.max_num_particles,
+                0,
+                0,
+                0,
+            )
+        };
     }
 }
 
 impl Drop for GpuParticleSystem {
     fn drop(&mut self) {
         // Drop descriptor set layouts.
-        unsafe { self.loader.destroy_descriptor_set_layout(self.compute_descriptor_set_layout, None) };
+        unsafe {
+            self.loader
+                .destroy_descriptor_set_layout(self.compute_descriptor_set_layout, None)
+        };
     }
 }

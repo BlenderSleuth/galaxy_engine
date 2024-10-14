@@ -1,6 +1,9 @@
-use glob::glob;
+// Copyright (c) 2024. Ben Sutherland
+
 use std::path::Path;
 use std::process::Command;
+
+use glob::glob;
 
 #[macro_export]
 macro_rules! print_warning {
@@ -79,7 +82,10 @@ impl ShaderStages {
 
     fn compile(&self, path: &Path, debug: bool) {
         let current_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-        println!("cargo::rerun-if-changed={}", current_dir.clone() + "/" + path.to_str().unwrap());
+        println!(
+            "cargo::rerun-if-changed={}",
+            current_dir.clone() + "/" + path.to_str().unwrap()
+        );
         if self.vertex {
             compile_stage(path, &current_dir, "vs_6_0", "mainVS", "vert", debug);
         }

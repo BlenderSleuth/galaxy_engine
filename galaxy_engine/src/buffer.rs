@@ -1,12 +1,13 @@
+// Copyright (c) 2024. Ben Sutherland
+
 use ash::vk;
 use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme};
+use gpu_allocator::MemoryLocation;
 
 use crate::command_buffer::{CommandBuffer, TransientOrPersistentCommandBuffer};
 use crate::device::{Device, QueueFamily, SharedDeviceLoader};
 use crate::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
 use crate::{debug, gpu_alloc};
-
-use gpu_allocator::MemoryLocation;
 
 // Type-state trait encoding of gpu_allocator::MemoryLocation for use in generic parameters.
 pub trait MemLocation {
@@ -14,19 +15,27 @@ pub trait MemLocation {
 }
 pub struct Unknown;
 impl MemLocation for Unknown {
-    fn location() -> MemoryLocation { MemoryLocation::Unknown }
+    fn location() -> MemoryLocation {
+        MemoryLocation::Unknown
+    }
 }
 pub struct GpuOnly;
 impl MemLocation for GpuOnly {
-    fn location() -> MemoryLocation { MemoryLocation::GpuOnly }
+    fn location() -> MemoryLocation {
+        MemoryLocation::GpuOnly
+    }
 }
 pub struct CpuToGpu;
 impl MemLocation for CpuToGpu {
-    fn location() -> MemoryLocation { MemoryLocation::CpuToGpu }
+    fn location() -> MemoryLocation {
+        MemoryLocation::CpuToGpu
+    }
 }
 pub struct GpuToCpu;
 impl MemLocation for GpuToCpu {
-    fn location() -> MemoryLocation { MemoryLocation::GpuToCpu }
+    fn location() -> MemoryLocation {
+        MemoryLocation::GpuToCpu
+    }
 }
 
 pub struct Buffer<L: MemLocation> {
@@ -39,12 +48,35 @@ pub struct Buffer<L: MemLocation> {
 }
 
 impl<L: MemLocation> Buffer<L> {
-    pub fn new_for_type<T: bytemuck::Pod>(name: &str, device: &Device, usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode) -> MemResult<Self> {
-        Self::new(name, device, std::mem::size_of::<T>() as vk::DeviceSize, usage, sharing_mode)
+    pub fn new_for_type<T: bytemuck::Pod>(
+        name: &str,
+        device: &Device,
+        usage: vk::BufferUsageFlags,
+        sharing_mode: vk::SharingMode,
+    ) -> MemResult<Self> {
+        Self::new(
+            name,
+            device,
+            std::mem::size_of::<T>() as vk::DeviceSize,
+            usage,
+            sharing_mode,
+        )
     }
 
-    pub fn new_for_slice<T: bytemuck::Pod>(name: &str, device: &Device, slice: &[T], usage: vk::BufferUsageFlags, sharing_mode: vk::SharingMode) -> MemResult<Self> {
-        Self::new(name, device, std::mem::size_of_val(slice) as vk::DeviceSize, usage, sharing_mode)
+    pub fn new_for_slice<T: bytemuck::Pod>(
+        name: &str,
+        device: &Device,
+        slice: &[T],
+        usage: vk::BufferUsageFlags,
+        sharing_mode: vk::SharingMode,
+    ) -> MemResult<Self> {
+        Self::new(
+            name,
+            device,
+            std::mem::size_of_val(slice) as vk::DeviceSize,
+            usage,
+            sharing_mode,
+        )
     }
 
     pub fn new(
@@ -55,13 +87,20 @@ impl<L: MemLocation> Buffer<L> {
         sharing_mode: vk::SharingMode,
     ) -> MemResult<Self> {
         let device_properties = device.get_properties();
-        let queue_indices = [device.get_properties().graphics_queue_family_idx, device_properties.transfer_queue_family_idx];
+        let queue_indices = [
+            device.get_properties().graphics_queue_family_idx,
+            device_properties.transfer_queue_family_idx,
+        ];
 
         let buffer_info = vk::BufferCreateInfo::default()
             .size(size)
             .usage(usage)
             .sharing_mode(sharing_mode)
-            .queue_family_indices(if sharing_mode == vk::SharingMode::CONCURRENT { &queue_indices } else { &[] });
+            .queue_family_indices(if sharing_mode == vk::SharingMode::CONCURRENT {
+                &queue_indices
+            } else {
+                &[]
+            });
         let handle = unsafe { device.loader().create_buffer(&buffer_info, None) }?;
 
         // Debug name object.
@@ -69,11 +108,13 @@ impl<L: MemLocation> Buffer<L> {
 
         // Allocate memory for buffer. Check if the buffer requires dedicated allocation.
         let mut dedicated_requirements = vk::MemoryDedicatedRequirements::default();
-        let mut requirements = vk::MemoryRequirements2::default()
-            .push_next(&mut dedicated_requirements);
-        let requirements_info = vk::BufferMemoryRequirementsInfo2::default()
-            .buffer(handle);
-        unsafe { device.loader().get_buffer_memory_requirements2(&requirements_info, &mut requirements) };
+        let mut requirements = vk::MemoryRequirements2::default().push_next(&mut dedicated_requirements);
+        let requirements_info = vk::BufferMemoryRequirementsInfo2::default().buffer(handle);
+        unsafe {
+            device
+                .loader()
+                .get_buffer_memory_requirements2(&requirements_info, &mut requirements)
+        };
 
         let requirements = requirements.memory_requirements;
         let allocation_scheme = if gpu_alloc::use_dedicated_allocation(dedicated_requirements) {
@@ -91,13 +132,24 @@ impl<L: MemLocation> Buffer<L> {
         };
         let allocation = device.allocate_and_bind_memory(&desc, handle)?;
 
-        Ok(Self { loader: device.cloned_loader(), alloc: device.cloned_allocator(), handle, allocation, size, _mem_location: std::marker::PhantomData })
+        Ok(Self {
+            loader: device.cloned_loader(),
+            alloc: device.cloned_allocator(),
+            handle,
+            allocation,
+            size,
+            _mem_location: std::marker::PhantomData,
+        })
     }
 
-    pub fn handle(&self) -> vk::Buffer { self.handle }
+    pub fn handle(&self) -> vk::Buffer {
+        self.handle
+    }
 
     // The size of the buffer in bytes.
-    pub fn size(&self) -> vk::DeviceSize { self.size }
+    pub fn size(&self) -> vk::DeviceSize {
+        self.size
+    }
 
     // Descriptor buffer info for the whole buffer.
     pub fn descriptor_buffer_info(&self) -> vk::DescriptorBufferInfo {
@@ -107,12 +159,22 @@ impl<L: MemLocation> Buffer<L> {
             .range(self.size())
     }
 
-    pub fn copy_to_buffer<L2: MemLocation>(&self, cmd: TransientOrPersistentCommandBuffer, device: &Device, dst_buffer: &mut Buffer<L2>, size: vk::DeviceSize, queue_family: QueueFamily) -> MemResult<()> {
+    pub fn copy_to_buffer<L2: MemLocation>(
+        &self,
+        cmd: TransientOrPersistentCommandBuffer,
+        device: &Device,
+        dst_buffer: &mut Buffer<L2>,
+        size: vk::DeviceSize,
+        queue_family: QueueFamily,
+    ) -> MemResult<()> {
         let cmd_buffer = cmd.command_buffer();
 
-        let copy_region = vk::BufferCopy::default()
-            .size(size);
-        unsafe { device.loader().cmd_copy_buffer(cmd_buffer.handle(), self.handle(), dst_buffer.handle(), &[copy_region]) };
+        let copy_region = vk::BufferCopy::default().size(size);
+        unsafe {
+            device
+                .loader()
+                .cmd_copy_buffer(cmd_buffer.handle(), self.handle(), dst_buffer.handle(), &[copy_region])
+        };
 
         Ok(cmd.maybe_end_submit_and_wait(device, device.get_queue(queue_family))?)
     }
@@ -121,13 +183,21 @@ impl<L: MemLocation> Buffer<L> {
 impl<L: MemLocation> Drop for Buffer<L> {
     fn drop(&mut self) {
         // Drop buffer.
-        unsafe { self.loader.destroy_buffer(self.handle, None); }
+        unsafe {
+            self.loader.destroy_buffer(self.handle, None);
+        }
         unsafe { gpu_alloc::free_or_log_on_fail(&self.alloc, &mut self.allocation) };
     }
 }
 
 impl Buffer<GpuOnly> {
-    pub fn copy_via_staging_buffer(&mut self, device: &Device, src_data: &[u8], cmd_pool: vk::CommandPool, queue_family: QueueFamily) -> MemResult<()> {
+    pub fn copy_via_staging_buffer(
+        &mut self,
+        device: &Device,
+        src_data: &[u8],
+        cmd_pool: vk::CommandPool,
+        queue_family: QueueFamily,
+    ) -> MemResult<()> {
         let mut staging_buffer = Buffer::<CpuToGpu>::new_for_slice(
             "Staging Buffer",
             &device,
@@ -136,7 +206,13 @@ impl Buffer<GpuOnly> {
             vk::SharingMode::EXCLUSIVE,
         )?;
         staging_buffer.copy_into_buffer(src_data, 0)?;
-        staging_buffer.copy_to_buffer(CommandBuffer::one_time_transient(device, cmd_pool)?, &device, self, staging_buffer.size(), queue_family)?;
+        staging_buffer.copy_to_buffer(
+            CommandBuffer::one_time_transient(device, cmd_pool)?,
+            &device,
+            self,
+            staging_buffer.size(),
+            queue_family,
+        )?;
         Ok(())
     }
 }

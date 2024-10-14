@@ -1,3 +1,5 @@
+// Copyright (c) 2024. Ben Sutherland
+
 use ash::vk;
 use nalgebra as na;
 use nalgebra::{Affine3, Isometry3, Perspective3, RealField, Rotation3};
@@ -30,9 +32,21 @@ pub struct ModelViewProjection {
 impl ModelViewProjection {
     pub fn spin(window_size: vk::Extent2D, time_s: f32, rpm: f32) -> Self {
         Self {
-            model: na::convert(Rotation3::from_axis_angle(&na::UnitVector3::new_normalize(na::Vector3::new(0., 0., 1.)), time_s * 360_f32.to_radians() * rpm / 60.)),
-            view: Isometry3::look_at_rh(&na::Point3::new(2., 2., 2.), &na::Point3::new(0., 0., 0.), &na::Vector3::new(0., 0., 1.)),
-            proj: Perspective3::vk_new(window_size.width as f32 / window_size.height as f32, 45_f32.to_radians(), 0.1, 10.0),
+            model: na::convert(Rotation3::from_axis_angle(
+                &na::UnitVector3::new_normalize(na::Vector3::new(0., 0., 1.)),
+                time_s * 360_f32.to_radians() * rpm / 60.,
+            )),
+            view: Isometry3::look_at_rh(
+                &na::Point3::new(2., 2., 2.),
+                &na::Point3::new(0., 0., 0.),
+                &na::Vector3::new(0., 0., 1.),
+            ),
+            proj: Perspective3::vk_new(
+                window_size.width as f32 / window_size.height as f32,
+                45_f32.to_radians(),
+                0.1,
+                10.0,
+            ),
         }
     }
 

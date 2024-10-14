@@ -1,5 +1,8 @@
+// Copyright (c) 2024. Ben Sutherland
+
 use std::mem::ManuallyDrop;
 use std::sync::{Arc, Mutex};
+
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, Allocator};
 
@@ -30,7 +33,7 @@ pub unsafe fn free_or_log_on_fail(allocator: &SharedAllocator, allocation: &mut 
     };
 
     // Free memory.
-    allocator.free(unsafe { ManuallyDrop::take(allocation) }).unwrap_or_else(|err| {
-        log::error!("Failed to free buffer memory: {err}")
-    });
+    allocator
+        .free(unsafe { ManuallyDrop::take(allocation) })
+        .unwrap_or_else(|err| log::error!("Failed to free buffer memory: {err}"));
 }

@@ -1,13 +1,14 @@
+// Copyright (c) 2024. Ben Sutherland
+
 mod arc_final_owner;
 pub use arc_final_owner::ArcFinalOwner;
 mod formats;
 pub use formats::*;
 mod array;
-pub use array::*;
-
 use std::ffi::{c_char, CStr};
 use std::str::from_utf8;
 
+pub use array::*;
 use ash::vk;
 
 pub fn viewport_extent(viewport: vk::Viewport) -> vk::Extent2D {
@@ -54,7 +55,7 @@ fn parse_num(bytes: &[u8]) -> u32 {
         Ok(num) => match u32::from_str_radix(num, 10) {
             Ok(num) => num,
             Err(_) => panic!("Failed to parse number."),
-        }
+        },
         Err(_) => panic!("Failed to convert to utf8."),
     }
 }

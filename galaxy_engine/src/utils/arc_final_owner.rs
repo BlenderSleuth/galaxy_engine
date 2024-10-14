@@ -1,3 +1,5 @@
+// Copyright (c) 2024. Ben Sutherland
+
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
 
@@ -21,7 +23,7 @@ impl<T> ArcFinalOwner<T> {
             Ok(mut object) => {
                 destroy(&mut object);
                 Ok(())
-            },
+            }
             Err(arc) => {
                 log::error!("Not last owner of Vulkan object.");
                 self.0 = ManuallyDrop::new(arc);

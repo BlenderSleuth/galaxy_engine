@@ -1,7 +1,10 @@
+// Copyright (c) 2024. Ben Sutherland
+
 use std::mem::ManuallyDrop;
 use std::slice;
-use ash::{khr, vk};
+
 use ash::prelude::VkResult;
+use ash::{khr, vk};
 
 use crate::command_buffer::CommandBuffer;
 use crate::device::{Device, PhysicalDeviceProperties, PropertyQueueList};
@@ -47,8 +50,14 @@ impl Swapchain {
             surface_capabilities.current_extent
         } else {
             vk::Extent2D {
-                width: window_size.width.clamp(surface_capabilities.min_image_extent.width, surface_capabilities.max_image_extent.width),
-                height: window_size.height.clamp(surface_capabilities.min_image_extent.height, surface_capabilities.max_image_extent.height),
+                width: window_size.width.clamp(
+                    surface_capabilities.min_image_extent.width,
+                    surface_capabilities.max_image_extent.width,
+                ),
+                height: window_size.height.clamp(
+                    surface_capabilities.min_image_extent.height,
+                    surface_capabilities.max_image_extent.height,
+                ),
             }
         };
         let swapchain_format = device_properties.swapchain_format;
@@ -81,10 +90,13 @@ impl Swapchain {
             .format(swapchain_format.format)
             .components(vk::ComponentMapping::default())
             .subresource_range(utils::DEFAULT_SUBRESOURCE_RANGE);
-        let image_views = images.iter().map(|swapchain_image| {
-            image_view_info.image = *swapchain_image;
-            unsafe { ImageView::new(device.cloned_loader(), &image_view_info) }
-        }).collect::<VkResult<Vec<_>>>()?;
+        let image_views = images
+            .iter()
+            .map(|swapchain_image| {
+                image_view_info.image = *swapchain_image;
+                unsafe { ImageView::new(device.cloned_loader(), &image_view_info) }
+            })
+            .collect::<VkResult<Vec<_>>>()?;
 
         let msaa_samples = PhysicalDeviceProperties::MSAA_SAMPLES;
 
@@ -110,7 +122,11 @@ impl Swapchain {
         // Create depth image.
         let depth_image_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
-            .extent(vk::Extent3D { width: swapchain_extent.width, height: swapchain_extent.height, depth: 1 })
+            .extent(vk::Extent3D {
+                width: swapchain_extent.width,
+                height: swapchain_extent.height,
+                depth: 1,
+            })
             .mip_levels(1)
             .array_layers(1)
             .format(PhysicalDeviceProperties::DEPTH_STENCIL_FORMAT)
@@ -185,7 +201,12 @@ impl Swapchain {
         unsafe { self.loader.acquire_next_image(self.handle, u64::MAX, semaphore, fence) }
     }
 
-    pub fn queue_present(&self, queue: vk::Queue, image_index: u32, wait_semaphores: &[vk::Semaphore]) -> VkResult<bool> {
+    pub fn queue_present(
+        &self,
+        queue: vk::Queue,
+        image_index: u32,
+        wait_semaphores: &[vk::Semaphore],
+    ) -> VkResult<bool> {
         let present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(wait_semaphores)
             .swapchains(slice::from_ref(&self.handle))

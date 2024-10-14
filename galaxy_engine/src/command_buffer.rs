@@ -1,3 +1,5 @@
+// Copyright (c) 2024. Ben Sutherland
+
 use std::slice;
 
 use ash::prelude::VkResult;
@@ -34,13 +36,21 @@ pub struct CommandBuffer {
 }
 
 impl CommandBuffer {
-    pub fn one_time_transient(device: &Device, cmd_pool: vk::CommandPool) -> VkResult<TransientOrPersistentCommandBuffer> {
-        Ok(TransientOrPersistentCommandBuffer::Transient(Self::begin_one_time(device, cmd_pool)?))
+    pub fn one_time_transient(
+        device: &Device,
+        cmd_pool: vk::CommandPool,
+    ) -> VkResult<TransientOrPersistentCommandBuffer> {
+        Ok(TransientOrPersistentCommandBuffer::Transient(Self::begin_one_time(
+            device, cmd_pool,
+        )?))
     }
     pub fn begin_one_time(device: &Device, cmd_pool: vk::CommandPool) -> VkResult<Self> {
-        let cmd_buffer = unsafe { device.loader().allocate_command_buffer(cmd_pool, vk::CommandBufferLevel::PRIMARY) }?;
-        let begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let cmd_buffer = unsafe {
+            device
+                .loader()
+                .allocate_command_buffer(cmd_pool, vk::CommandBufferLevel::PRIMARY)
+        }?;
+        let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         unsafe { device.loader().begin_command_buffer(cmd_buffer, &begin_info) }?;
         Ok(Self {
             loader: device.cloned_loader(),
@@ -55,8 +65,7 @@ impl CommandBuffer {
 
     pub fn end_and_submit(&self, device: &Device, queue: vk::Queue) -> VkResult<()> {
         unsafe { device.loader().end_command_buffer(self.handle) }?;
-        let submit_info = vk::SubmitInfo::default()
-            .command_buffers(slice::from_ref(&self.handle));
+        let submit_info = vk::SubmitInfo::default().command_buffers(slice::from_ref(&self.handle));
         unsafe { device.loader().queue_submit(queue, &[submit_info], vk::Fence::null()) }?;
         Ok(())
     }
@@ -78,4 +87,3 @@ impl Drop for CommandBuffer {
         unsafe { self.loader.free_command_buffers(self.pool, &[self.handle]) };
     }
 }
-

@@ -1,3 +1,5 @@
+// Copyright (c) 2024. Ben Sutherland
+
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use app::{AppFlags, AppInfo, GalaxyApp};
@@ -13,8 +15,7 @@ enum MainError {
 
 fn main() -> Result<(), MainError> {
     // Set up logging.
-    let mut log_env = env_logger::Env::default()
-        .write_style_or("GX_LOG_STYLE", "always");
+    let mut log_env = env_logger::Env::default().write_style_or("GX_LOG_STYLE", "always");
 
     log_env = if cfg!(feature = "debug_info") {
         log_env.filter_or("GX_LOG_LEVEL", "debug")
@@ -40,4 +41,3 @@ fn main() -> Result<(), MainError> {
 
     Ok(())
 }
-

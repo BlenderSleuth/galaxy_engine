@@ -1,6 +1,9 @@
-use crate::device::{Device, LoadedExtensions};
+// Copyright (c) 2024. Ben Sutherland
+
 use ash::prelude::VkResult;
 use ash::vk;
+
+use crate::device::{Device, LoadedExtensions};
 
 // Strip names in non-debug builds.
 macro_rules! debug_only_name {
@@ -40,9 +43,11 @@ pub use debug_messenger::DebugMessenger;
 
 #[cfg(feature = "debug_info")]
 mod debug_messenger {
-    use super::*;
     use std::ffi::CStr;
+
     use ash::ext;
+
+    use super::*;
 
     pub struct DebugMessenger {
         messenger: vk::DebugUtilsMessengerEXT,
@@ -53,14 +58,14 @@ mod debug_messenger {
         pub fn new(entry: &ash::Entry, instance: &ash::Instance) -> VkResult<Self> {
             let debug_utils_ci = vk::DebugUtilsMessengerCreateInfoEXT::default()
                 .message_severity(
-                    vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE |
-                        vk::DebugUtilsMessageSeverityFlagsEXT::WARNING |
-                        vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+                    vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
+                        | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
+                        | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
                 )
                 .message_type(
-                    vk::DebugUtilsMessageTypeFlagsEXT::GENERAL |
-                        vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION |
-                        vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
+                    vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
+                        | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
+                        | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
                 )
                 .pfn_user_callback(Some(Self::debug_callback));
 
@@ -98,7 +103,10 @@ mod debug_messenger {
             let message_id_number = cd.message_id_number;
 
             let _ = std::panic::catch_unwind(|| {
-                log::log!(level, "{message_type:?} [{message_id_name} (0x{message_id_number:x})]\n\t{message}");
+                log::log!(
+                    level,
+                    "{message_type:?} [{message_id_name} (0x{message_id_number:x})]\n\t{message}"
+                );
             });
 
             vk::FALSE
