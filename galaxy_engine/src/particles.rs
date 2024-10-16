@@ -77,8 +77,7 @@ impl GpuParticleSystem {
         descriptor_pool: &DescriptorPool,
     ) -> MemResult<Self> {
         // Set up particle system compute pipeline.
-        let particle_shader_code = std::fs::read("galaxy_engine/shaders/particles.comp.spv").unwrap();
-        let particle_shader_module = ShaderModule::new(&device, &particle_shader_code)?;
+        let particle_shader_module = ShaderModule::new(&device, "galaxy_engine/shaders/particles.comp.spv")?;
 
         // Initial particle positions.
         let window_aspect_ratio = window_size.width as f32 / window_size.height as f32;
@@ -200,10 +199,10 @@ impl GpuParticleSystem {
         let compute_pipeline = ComputePipeline::new(&device, compute_pipeline_params)?;
 
         // Graphics pipeline.
-        let vertex_shader_code = std::fs::read("galaxy_engine/shaders/particles.vert.spv").unwrap();
-        let fragment_shader_code = std::fs::read("galaxy_engine/shaders/particles.frag.spv").unwrap();
-        let vertex_shader_module = ShaderModule::<VertexShaderStage>::new(device, &vertex_shader_code)?;
-        let fragment_shader_module = ShaderModule::<FragmentShaderStage>::new(device, &fragment_shader_code)?;
+        let vertex_shader_module =
+            ShaderModule::<VertexShaderStage>::new(device, "galaxy_engine/shaders/particles.vert.spv")?;
+        let fragment_shader_module =
+            ShaderModule::<FragmentShaderStage>::new(device, "galaxy_engine/shaders/particles.frag.spv")?;
         let particle_shader_stages =
             utils::arrayvec_from_array([vertex_shader_module.stage_info(), fragment_shader_module.stage_info()]);
 

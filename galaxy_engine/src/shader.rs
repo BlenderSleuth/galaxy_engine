@@ -35,11 +35,13 @@ pub struct ShaderModule<S: ShaderStageType> {
 }
 
 impl<S: ShaderStageType> ShaderModule<S> {
-    pub fn new(device: &Device, code: &[u8]) -> VkResult<Self> {
-        let (prefix, code, suffix) = unsafe { code.align_to::<u32>() };
-        assert!(prefix.is_empty());
-        assert!(suffix.is_empty());
-        let create_info = vk::ShaderModuleCreateInfo::default().code(code);
+    pub fn new(device: &Device, path: &str) -> VkResult<Self> {
+        // We unwrap here so we can provide a more informative error message for invalid shaders.
+        // Ash util handles code alignment and endianness.
+        let code = ash::util::read_spv(&mut std::fs::File::open(path).expect(&format!("Invalid shader path: {path}.")))
+            .expect(&format!("Invalid shader file: {path}"));
+
+        let create_info = vk::ShaderModuleCreateInfo::default().code(&code);
         Ok(Self {
             loader: device.cloned_loader(),
             handle: unsafe { device.loader().create_shader_module(&create_info, None) }?,
