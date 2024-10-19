@@ -1,6 +1,5 @@
 // Copyright (c) 2024. Ben Sutherland
 
-use std::ops::Deref;
 use std::slice;
 use std::sync::Arc;
 
@@ -11,14 +10,14 @@ use crate::maths::ModelViewProjection;
 use crate::mesh::{BindableVertex, MeshBuffer, Vertex};
 use crate::uniform_buffer::VolatileUniformBuffer;
 use crate::vulkan::buffer::{Buffer, GpuOnly};
-use crate::vulkan::command_buffer::{OneTimeOrPersistentState, RecordingCmdBuf, TransientPrimaryCommandPool};
+use crate::vulkan::command_buffer::{RecordingCmdBuf, SubmissionType, TransientPrimaryCommandPool};
 use crate::vulkan::descriptors::DescriptorPool;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::MemResult;
 use crate::vulkan::pipeline::{
     ComputePipeline, ComputePipelineParameters, GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout,
 };
-use crate::vulkan::queue::queue_type::{ComputeQueueType, Primary};
+use crate::vulkan::queue::queue_type::{ComputeQueueType, PrimaryQueue};
 use crate::vulkan::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
 use crate::{engine, pod, utils};
 
@@ -235,78 +234,45 @@ impl GpuParticleSystem {
         })
     }
 
-    fn bind_descriptor_set(&self, command_buffer: vk::CommandBuffer, bind_point: vk::PipelineBindPoint) {
-        unsafe {
-            self.loader.cmd_bind_descriptor_sets(
-                command_buffer,
-                bind_point,
-                self.compute_pipeline.layout().handle(),
-                0,
-                slice::from_ref(&self.compute_descriptor_set),
-                &[],
-            )
-        };
+    pub fn record_compute(&self, cmd_buffer: &mut RecordingCmdBuf<impl ComputeQueueType, impl SubmissionType>) {
+        cmd_buffer.bind_compute_pipeline(&self.compute_pipeline);
+        cmd_buffer.bind_descriptor_sets(
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipeline.layout().as_ref(),
+            0,
+            &[self.compute_descriptor_set],
+            &[],
+        );
+        cmd_buffer.dispatch(self.max_num_particles / 256, 1, 1);
     }
 
-    pub fn record_compute<Q: ComputeQueueType, O: OneTimeOrPersistentState>(
+    pub fn record_graphics(
         &self,
-        command_buffer: &mut RecordingCmdBuf<Q, O>,
-    ) {
-        unsafe {
-            self.loader.cmd_bind_pipeline(
-                command_buffer.handle(),
-                vk::PipelineBindPoint::COMPUTE,
-                self.compute_pipeline.handle(),
-            )
-        };
-        self.bind_descriptor_set(command_buffer.handle(), vk::PipelineBindPoint::COMPUTE);
-        unsafe {
-            self.loader
-                .cmd_dispatch(command_buffer.handle(), self.max_num_particles / 256, 1, 1)
-        };
-    }
-
-    pub fn record_graphics<O: OneTimeOrPersistentState>(
-        &self,
-        command_buffer: &mut RecordingCmdBuf<Primary, O>,
+        command_buffer: &mut RecordingCmdBuf<PrimaryQueue, impl SubmissionType>,
         time: f32,
         viewport: vk::Viewport,
         scissor: vk::Rect2D,
     ) {
         let mvp = ModelViewProjection::spin(utils::viewport_extent(viewport), time.sin() * 0.5, 20.0).mvp();
+        let pipeline_layout = self.graphics_pipeline.layout().as_ref();
         command_buffer.bind_graphics_pipeline(&self.graphics_pipeline);
-        unsafe {
-            self.loader.cmd_bind_descriptor_sets(
-                command_buffer.handle(),
-                vk::PipelineBindPoint::GRAPHICS,
-                self.graphics_pipeline.layout().handle(),
-                0,
-                slice::from_ref(&self.compute_descriptor_set),
-                &[],
-            )
-        };
-        unsafe {
-            self.loader.cmd_push_constants(
-                command_buffer.handle(),
-                self.graphics_pipeline.layout().handle(),
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                bytemuck::bytes_of(&mvp),
-            )
-        };
-        self.mesh_buffer.bind(self.loader.deref(), command_buffer.handle());
-        unsafe { self.loader.cmd_set_viewport(command_buffer.handle(), 0, &[viewport]) };
-        unsafe { self.loader.cmd_set_scissor(command_buffer.handle(), 0, &[scissor]) };
-        unsafe {
-            self.loader.cmd_draw_indexed(
-                command_buffer.handle(),
-                self.mesh_buffer.num_indices(),
-                self.max_num_particles,
-                0,
-                0,
-                0,
-            )
-        };
+        command_buffer.bind_descriptor_sets(
+            vk::PipelineBindPoint::GRAPHICS,
+            pipeline_layout,
+            0,
+            &[self.compute_descriptor_set],
+            &[],
+        );
+        command_buffer.push_constants(
+            pipeline_layout,
+            vk::ShaderStageFlags::VERTEX,
+            0,
+            bytemuck::bytes_of(&mvp),
+        );
+        self.mesh_buffer.bind(command_buffer);
+        command_buffer.set_viewport(viewport);
+        command_buffer.set_scissor(scissor);
+        command_buffer.draw_indexed(self.mesh_buffer.num_indices(), self.max_num_particles, 0, 0, 0);
     }
 }
 

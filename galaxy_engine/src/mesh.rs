@@ -14,12 +14,13 @@ use crate::material::{Material, MaterialError};
 use crate::maths;
 use crate::uniform_buffer::VolatileUniformBuffer;
 use crate::vulkan::buffer::{Buffer, CpuToGpu, GpuOnly};
-use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
+use crate::vulkan::command_buffer::{RecordingCmdBuf, SubmissionType, TransientPrimaryCommandPool};
 use crate::vulkan::debug;
 use crate::vulkan::descriptors::DescriptorPool;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
 use crate::vulkan::pipeline::{GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout};
+use crate::vulkan::queue::queue_type::PrimaryQueue;
 
 // For vertices with N attributes.
 pub trait BindableVertex<const N: usize> {
@@ -130,16 +131,9 @@ impl MeshBuffer {
         self.num_indices
     }
 
-    pub fn bind(&self, loader: &ash::Device, command_buffer: vk::CommandBuffer) {
-        unsafe { loader.cmd_bind_index_buffer(command_buffer, self.buffer.handle(), 0, self.index_type) };
-        unsafe {
-            loader.cmd_bind_vertex_buffers(
-                command_buffer,
-                0,
-                slice::from_ref(&self.buffer.handle()),
-                &[self.vertices_offset],
-            )
-        };
+    pub fn bind(&self, cmd_buffer: &mut RecordingCmdBuf<PrimaryQueue, impl SubmissionType>) {
+        cmd_buffer.bind_index_buffer(&self.buffer, 0, self.index_type);
+        cmd_buffer.bind_vertex_buffer(&self.buffer, self.vertices_offset);
     }
 }
 
@@ -327,35 +321,29 @@ impl Mesh {
 
     pub fn record_graphics(
         &self,
-        loader: &ash::Device,
-        command_buffer: vk::CommandBuffer,
+        cmd_buffer: &mut RecordingCmdBuf<PrimaryQueue, impl SubmissionType>,
         viewport: vk::Viewport,
         scissor: vk::Rect2D,
     ) {
-        unsafe { loader.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.handle()) };
-        self.mesh_buffer.bind(loader, command_buffer);
-        unsafe {
-            loader.cmd_push_constants(
-                command_buffer,
-                self.pipeline.layout().handle(),
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                bytemuck::cast_slice(&[self.mvp.mvp()]),
-            )
-        };
-        unsafe {
-            loader.cmd_bind_descriptor_sets(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline.layout().handle(),
-                0,
-                slice::from_ref(&self.descriptor_set),
-                &[],
-            )
-        };
-        unsafe { loader.cmd_set_viewport(command_buffer, 0, &[viewport]) };
-        unsafe { loader.cmd_set_scissor(command_buffer, 0, &[scissor]) };
-        unsafe { loader.cmd_draw_indexed(command_buffer, self.mesh_buffer.num_indices(), 1, 0, 0, 0) };
+        let pipeline_layout = self.pipeline.layout().as_ref();
+        cmd_buffer.bind_graphics_pipeline(&self.pipeline);
+        self.mesh_buffer.bind(cmd_buffer);
+        cmd_buffer.push_constants(
+            pipeline_layout,
+            vk::ShaderStageFlags::VERTEX,
+            0,
+            bytemuck::cast_slice(&[self.mvp.mvp()]),
+        );
+        cmd_buffer.bind_descriptor_sets(
+            vk::PipelineBindPoint::GRAPHICS,
+            pipeline_layout,
+            0,
+            slice::from_ref(&self.descriptor_set),
+            &[],
+        );
+        cmd_buffer.set_viewport(viewport);
+        cmd_buffer.set_scissor(scissor);
+        cmd_buffer.draw_indexed(self.mesh_buffer.num_indices(), 1, 0, 0, 0);
     }
 }
 

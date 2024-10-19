@@ -12,6 +12,8 @@ use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::MemResult;
 use crate::vulkan::image::{Image, ImageView};
 use crate::vulkan::instance::Instance;
+use crate::vulkan::queue::queue_type::PrimaryQueue;
+use crate::vulkan::queue::Queue;
 use crate::vulkan::surface::Surface;
 
 pub struct Swapchain {
@@ -134,10 +136,10 @@ impl Swapchain {
             ..Self::get_subresource_range()
         };
 
-        let mut depth_image = Image::new("Depth image", &device, &depth_image_info, depth_subresource)?;
+        let mut depth_image = Image::new("Depth image", device, &depth_image_info, depth_subresource)?;
         let mut cmd_buffer = cmd_pool.new_one_time()?;
         depth_image.transition_layout(
-            device,
+            device.extensions(),
             &mut cmd_buffer,
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
@@ -197,7 +199,7 @@ impl Swapchain {
 
     pub fn queue_present(
         &self,
-        queue: vk::Queue,
+        queue: &mut Queue<PrimaryQueue>,
         image_index: u32,
         wait_semaphores: &[vk::Semaphore],
     ) -> VkResult<bool> {
@@ -205,7 +207,7 @@ impl Swapchain {
             .wait_semaphores(wait_semaphores)
             .swapchains(slice::from_ref(&self.handle))
             .image_indices(slice::from_ref(&image_index));
-        unsafe { self.loader.queue_present(queue, &present_info) }
+        unsafe { self.loader.queue_present(queue.handle(), &present_info) }
     }
 }
 

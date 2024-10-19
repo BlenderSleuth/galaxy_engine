@@ -21,16 +21,16 @@ pub mod queue_type {
     pub trait QueueType: 'static {}
     pub trait ComputeQueueType: QueueType {}
     // This is the primary, mandatory queue, with support for graphics, compute, transfer and present operations.
-    pub struct Primary;
-    impl QueueType for Primary {}
-    impl ComputeQueueType for Primary {}
+    pub struct PrimaryQueue;
+    impl QueueType for PrimaryQueue {}
+    impl ComputeQueueType for PrimaryQueue {}
     // Transfer-only DMA queue (optionally supported).
-    pub struct AsyncTransfer;
-    impl QueueType for AsyncTransfer {}
+    pub struct AsyncTransferQueue;
+    impl QueueType for AsyncTransferQueue {}
     // Async compute-only queue (optionally supported).
-    pub struct AsyncCompute;
-    impl QueueType for AsyncCompute {}
-    impl ComputeQueueType for AsyncCompute {}
+    pub struct AsyncComputeQueue;
+    impl QueueType for AsyncComputeQueue {}
+    impl ComputeQueueType for AsyncComputeQueue {}
 }
 use queue_type::*;
 

@@ -4,10 +4,11 @@ use ash::vk;
 
 use crate::engine::GalaxyEngine;
 use crate::vulkan::buffer::{Buffer, CpuToGpu, GpuOnly, MemLocation};
+use crate::vulkan::command_buffer::{RecordingCmdBuf, SubmissionType};
 use crate::vulkan::debug;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::MemResult;
-
+use crate::vulkan::queue::queue_type::QueueType;
 // How often is this resource updated?
 // #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // pub enum ResourceFrequency {
@@ -83,19 +84,16 @@ impl VolatileUniformBuffer {
             .copy_into_buffer(data, self.frame_offset(current_frame) as usize)
     }
 
-    pub fn copy_to_gpu(&self, loader: &ash::Device, current_frame: usize, cmd_buffer: vk::CommandBuffer) {
+    pub fn copy_to_gpu(
+        &mut self,
+        current_frame: usize,
+        cmd_buffer: &mut RecordingCmdBuf<impl QueueType, impl SubmissionType>,
+    ) {
         let copy_region = vk::BufferCopy::default()
             .src_offset(self.frame_offset(current_frame))
             .size(self.size);
 
-        unsafe {
-            loader.cmd_copy_buffer(
-                cmd_buffer,
-                self.staging_buffer.handle(),
-                self.gpu_buffer.handle(),
-                &[copy_region],
-            )
-        };
+        cmd_buffer.copy_buffer(&self.staging_buffer, &mut self.gpu_buffer, &[copy_region]);
     }
 
     //pub fn gpu_buffer_handle(&self) -> vk::Buffer {

@@ -46,7 +46,7 @@ pub struct PhysicalDevice {
 }
 
 //noinspection RsUnresolvedPath
-pub type PropertyQueueList = ArrayVec<u32, { PhysicalDevice::MAX_QUEUE_FAMILIES }>;
+pub type PropertyQueueList<T = u32> = ArrayVec<T, { PhysicalDevice::MAX_QUEUE_FAMILIES }>;
 impl PhysicalDevice {
     const MAX_QUEUE_FAMILIES: usize = 3;
 
@@ -213,6 +213,9 @@ impl PhysicalDevice {
         if buffer_device_address_features.buffer_device_address == vk::FALSE {
             return Err(PhysicalDeviceIncompatibility::NoBufferDeviceAddress);
         }
+
+        // TODO: Need some amount of device-local + host-visible memory?
+        // let mem_props = unsafe { instance.get_physical_device_memory_properties(handle) };
 
         Ok(PhysicalDevice {
             handle,

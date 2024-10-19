@@ -17,7 +17,7 @@ use crate::utils::ArcFinalOwner;
 use crate::vulkan::debug;
 use crate::vulkan::extensions::DeviceExtensions;
 use crate::vulkan::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
-use crate::vulkan::physical_device::{PhysicalDevice, PhysicalDeviceIncompatibility};
+use crate::vulkan::physical_device::{PhysicalDevice, PhysicalDeviceIncompatibility, PropertyQueueList};
 use crate::vulkan::queue::{queue_type, Queue};
 use crate::vulkan::surface::Surface;
 
@@ -47,9 +47,9 @@ pub struct Device {
     loader: ArcFinalOwner<ash::Device>,
     extensions: DeviceExtensions,
     allocator: ArcFinalOwner<Mutex<Allocator>>,
-    primary_queue: Queue<queue_type::Primary>,
-    async_transfer_queue: Option<Queue<queue_type::AsyncTransfer>>,
-    async_compute_queue: Option<Queue<queue_type::AsyncCompute>>,
+    primary_queue: Queue<queue_type::PrimaryQueue>,
+    async_transfer_queue: Option<Queue<queue_type::AsyncTransferQueue>>,
+    async_compute_queue: Option<Queue<queue_type::AsyncComputeQueue>>,
     physical: PhysicalDevice,
 }
 
@@ -101,14 +101,14 @@ impl Device {
         let unique_queue_families = physical_device.get_unique_queue_families();
 
         // Create logical device.
-        let mut queue_infos = Vec::with_capacity(unique_queue_families.len());
-        for unique_queue_family in unique_queue_families.iter() {
-            queue_infos.push(
+        let queue_infos: PropertyQueueList<_> = unique_queue_families
+            .into_iter()
+            .map(|unique_queue_family| {
                 vk::DeviceQueueCreateInfo::default()
-                    .queue_family_index(*unique_queue_family)
-                    .queue_priorities(&[1.0]),
-            );
-        }
+                    .queue_family_index(unique_queue_family)
+                    .queue_priorities(&[1.0])
+            })
+            .collect();
 
         // Enable dynamic rendering.
         let mut dynamic_rendering_features =
@@ -212,16 +212,20 @@ impl Device {
         &self.physical
     }
 
-    pub fn primary_queue(&self) -> &Queue<queue_type::Primary> {
+    pub fn primary_queue(&self) -> &Queue<queue_type::PrimaryQueue> {
         &self.primary_queue
     }
 
-    pub fn async_transfer_queue(&self) -> Option<&Queue<queue_type::AsyncTransfer>> {
-        self.async_transfer_queue.as_ref()
+    pub fn primary_queue_mut(&mut self) -> &mut Queue<queue_type::PrimaryQueue> {
+        &mut self.primary_queue
     }
 
-    pub fn async_compute_queue(&self) -> Option<&Queue<queue_type::AsyncCompute>> {
-        self.async_compute_queue.as_ref()
+    pub fn async_transfer_queue(&mut self) -> Option<&mut Queue<queue_type::AsyncTransferQueue>> {
+        self.async_transfer_queue.as_mut()
+    }
+
+    pub fn async_compute_queue(&mut self) -> Option<&mut Queue<queue_type::AsyncComputeQueue>> {
+        self.async_compute_queue.as_mut()
     }
 
     pub fn allocate_and_bind_memory<H: Handle + 'static>(

@@ -247,7 +247,6 @@ impl GalaxyEngine {
             self.recreate_swapchain()?;
         }
 
-        let loader = self.device.loader();
         let ext = self.device.extensions();
 
         let current_frame = self.current_frame as usize;
@@ -276,15 +275,14 @@ impl GalaxyEngine {
         let compute_cmd_pool = &mut self.compute_cmd_pools[current_frame];
         compute_cmd_pool.reset()?;
 
-        let command_buffer = compute_cmd_pool.get_cmd_buffer(0);
-        let recording = command_buffer.begin()?;
-        self.uniform_buffer
-            .copy_to_gpu(loader, current_frame, recording.handle());
+        let cmd_buffer = compute_cmd_pool.get_cmd_buffer(0);
+        let recording = cmd_buffer.begin()?;
+        self.uniform_buffer.copy_to_gpu(current_frame, recording);
         self.particle_system.record_compute(recording);
-        command_buffer.end()?;
+        cmd_buffer.end()?;
 
         let signal_semaphores = [self.compute_finished_semaphores[current_frame].handle()];
-        command_buffer.submit(
+        cmd_buffer.submit(
             &[],
             &signal_semaphores,
             Some(&self.compute_in_flight_fences[current_frame]),
@@ -331,12 +329,13 @@ impl GalaxyEngine {
         // Record graphics command buffer.
         let graphics_cmd_pool = &mut self.graphics_cmd_pools[current_frame];
         graphics_cmd_pool.reset()?;
-        let command_buffer = graphics_cmd_pool.get_cmd_buffer(0);
+        let cmd_buffer = graphics_cmd_pool.get_cmd_buffer(0);
 
-        let recording = command_buffer.begin()?;
+        // Transition colour attachment to optimal layout (from present).
+        let recording = cmd_buffer.begin()?;
         let dependency_info =
             vk::DependencyInfo::default().image_memory_barriers(slice::from_ref(&color_optimal_transition));
-        unsafe { ext.sync2.cmd_pipeline_barrier2(recording.handle(), &dependency_info) };
+        recording.pipeline_barrier2(ext, &dependency_info);
 
         let color_attachment_info = vk::RenderingAttachmentInfo::default()
             .image_view(self.swapchain.get_colour_resolve_view().view().handle())
@@ -370,10 +369,10 @@ impl GalaxyEngine {
             .color_attachments(slice::from_ref(&color_attachment_info))
             .depth_attachment(&depth_attachment_info);
 
-        unsafe { ext.dyn_cmd.cmd_begin_rendering(recording.handle(), &rendering_info) }
+        recording.begin_rendering(ext, &rendering_info);
         self.particle_system.record_graphics(recording, time, viewport, scissor);
-        self.mesh.record_graphics(loader, recording.handle(), viewport, scissor);
-        unsafe { ext.dyn_cmd.cmd_end_rendering(recording.handle()) };
+        self.mesh.record_graphics(recording, viewport, scissor);
+        recording.end_rendering(ext);
 
         let color_optimal_to_present_src_transition = vk::ImageMemoryBarrier2::default()
             .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
@@ -386,9 +385,9 @@ impl GalaxyEngine {
 
         let dependency_info = vk::DependencyInfo::default()
             .image_memory_barriers(slice::from_ref(&color_optimal_to_present_src_transition));
-        unsafe { ext.sync2.cmd_pipeline_barrier2(recording.handle(), &dependency_info) };
+        recording.pipeline_barrier2(ext, &dependency_info);
 
-        command_buffer.end()?;
+        cmd_buffer.end()?;
 
         // Submit command buffer.
         let wait_semaphores = [
@@ -402,14 +401,14 @@ impl GalaxyEngine {
             },
         ];
         let signal_semaphores = [self.render_finished_semaphores[current_frame].handle()];
-        command_buffer.submit(
+        cmd_buffer.submit(
             &wait_semaphores,
             &signal_semaphores,
             Some(&self.in_flight_fences[current_frame]),
         )?;
 
         match self.swapchain.queue_present(
-            self.device.primary_queue().handle(),
+            self.device.primary_queue_mut(),
             image_idx,
             &[self.render_finished_semaphores[current_frame].handle()],
         ) {

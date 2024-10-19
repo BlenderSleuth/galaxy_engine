@@ -4,7 +4,7 @@ use ash::vk;
 use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme};
 use gpu_allocator::MemoryLocation;
 
-use crate::vulkan::command_buffer::{OneTimeOrPersistentState, RecordingCmdBuf};
+use crate::vulkan::command_buffer::{RecordingCmdBuf, SubmissionType};
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
 use crate::vulkan::queue::queue_type::QueueType;
@@ -125,9 +125,9 @@ impl<L: MemLocation> Buffer<L> {
             .range(self.size())
     }
 
-    pub fn copy_to_buffer<L2: MemLocation, Q: QueueType, O: OneTimeOrPersistentState>(
+    pub fn copy_to_buffer<L2: MemLocation>(
         &self,
-        cmd_buffer: &mut RecordingCmdBuf<Q, O>,
+        cmd_buffer: &mut RecordingCmdBuf<impl QueueType, impl SubmissionType>,
         dst_buffer: &mut Buffer<L2>,
         size: vk::DeviceSize,
     ) {
@@ -147,10 +147,10 @@ impl<L: MemLocation> Drop for Buffer<L> {
 }
 
 impl Buffer<GpuOnly> {
-    pub fn copy_via_staging_buffer<Q: QueueType>(
+    pub fn copy_via_staging_buffer(
         &mut self,
         device: &Device,
-        cmd_buf: &mut RecordingCmdBuf<Q>,
+        cmd_buf: &mut RecordingCmdBuf<impl QueueType>,
         src_data: &[u8],
     ) -> MemResult<()> {
         let mut staging_buffer =

@@ -10,8 +10,9 @@ use gpu_allocator::MemoryLocation;
 
 use crate::utils;
 use crate::vulkan::buffer::{Buffer, CpuToGpu};
-use crate::vulkan::command_buffer::{OneTimeOrPersistentState, RecordingCmdBuf, TransientPrimaryCommandPool};
+use crate::vulkan::command_buffer::{RecordingCmdBuf, SubmissionType, TransientPrimaryCommandPool};
 use crate::vulkan::device::{Device, SharedDeviceLoader};
+use crate::vulkan::extensions::DeviceExtensions;
 use crate::vulkan::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
 use crate::vulkan::queue::queue_type::QueueType;
 use crate::vulkan::{debug, gpu_alloc};
@@ -209,12 +210,13 @@ impl Image {
         )?;
 
         // Copy mip levels into buffer.
-        let mut regions = Vec::with_capacity(levels.len());
         let mut offset = 0;
-        for (mip_level, data) in levels.iter().enumerate() {
-            let mip_level = mip_level as u32;
-            regions.push(
-                vk::BufferImageCopy::default()
+        let regions = levels
+            .iter()
+            .enumerate()
+            .map(|(mip_level, data)| {
+                let mip_level = mip_level as u32;
+                let region = vk::BufferImageCopy::default()
                     .buffer_offset(offset as vk::DeviceSize)
                     // Tight packed data.
                     .buffer_row_length(0)
@@ -238,17 +240,18 @@ impl Image {
                         } else {
                             1
                         },
-                    }),
-            );
-            image_buffer.copy_into_buffer(&data, offset)?;
-            offset += data.len();
-        }
+                    });
+                image_buffer.copy_into_buffer(&data, offset)?;
+                offset += data.len();
+                Ok(region)
+            })
+            .collect::<MemResult<Vec<_>>>()?;
 
         let mut cmd_buffer = cmd_pool.new_one_time()?;
 
         // Transition all mip levels to transfer destination optimal.
         image.transition_layout(
-            &device,
+            device.extensions(),
             &mut cmd_buffer,
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -256,19 +259,16 @@ impl Image {
         );
 
         // Perform the copy.
-        unsafe {
-            device.loader().cmd_copy_buffer_to_image(
-                cmd_buffer.handle(),
-                image_buffer.handle(),
-                image.handle,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &regions,
-            )
-        };
+        cmd_buffer.copy_buffer_to_image(
+            &image_buffer,
+            &mut image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &regions,
+        );
 
         // Transition all mip levels to shader read only optimal.
         image.transition_layout(
-            &device,
+            device.extensions(),
             &mut cmd_buffer,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
@@ -288,11 +288,10 @@ impl Image {
         &self.view
     }
 
-    pub fn transition_layout<Q: QueueType, O: OneTimeOrPersistentState>(
+    pub fn transition_layout(
         &mut self,
-        // TODO: remove device and put cmds in cmd_buffer.
-        device: &Device,
-        cmd_buffer: &mut RecordingCmdBuf<Q, O>,
+        ext: &DeviceExtensions,
+        cmd_buffer: &mut RecordingCmdBuf<impl QueueType, impl SubmissionType>,
         old_layout: vk::ImageLayout,
         new_layout: vk::ImageLayout,
         mip_level: Option<u32>,
@@ -341,19 +340,12 @@ impl Image {
             .dependency_flags(vk::DependencyFlags::BY_REGION)
             .image_memory_barriers(slice::from_ref(&image_barrier));
 
-        unsafe {
-            device
-                .extensions()
-                .sync2
-                .cmd_pipeline_barrier2(cmd_buffer.handle(), &dependency_info)
-        };
+        cmd_buffer.pipeline_barrier2(ext, &dependency_info);
     }
 
-    pub fn copy_buffer_to_image<Q: QueueType, O: OneTimeOrPersistentState>(
+    pub fn copy_buffer_to_image(
         &mut self,
-        // TODO: remove device and put cmds in cmd_buffer.
-        device: &Device,
-        cmd_buffer: &mut RecordingCmdBuf<Q, O>,
+        cmd_buffer: &mut RecordingCmdBuf<impl QueueType, impl SubmissionType>,
         buffer: &Buffer<CpuToGpu>,
         mip_level: u32,
     ) {
@@ -370,15 +362,7 @@ impl Image {
             .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
             .image_extent(self.extent);
 
-        unsafe {
-            device.loader().cmd_copy_buffer_to_image(
-                cmd_buffer.handle(),
-                buffer.handle(),
-                self.handle,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[region],
-            )
-        };
+        cmd_buffer.copy_buffer_to_image(buffer, self, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
     }
 }
 
