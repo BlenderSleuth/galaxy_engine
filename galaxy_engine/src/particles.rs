@@ -9,7 +9,6 @@ use nalgebra as na;
 
 use crate::buffer::{Buffer, GpuOnly};
 use crate::descriptors::DescriptorPool;
-use crate::device::{Device, QueueFamily, SharedDeviceLoader};
 use crate::gpu_alloc::MemResult;
 use crate::maths::ModelViewProjection;
 use crate::mesh::{BindableVertex, MeshBuffer, Vertex};
@@ -18,6 +17,7 @@ use crate::pipeline::{
 };
 use crate::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
 use crate::uniform_buffer::VolatileUniformBuffer;
+use crate::vulkan::{Device, SharedDeviceLoader};
 use crate::{engine, pod, utils};
 
 #[repr(C)]
@@ -106,13 +106,11 @@ impl GpuParticleSystem {
             vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::VERTEX_BUFFER,
-            vk::SharingMode::EXCLUSIVE,
         )?;
         particle_storage_buffer.copy_via_staging_buffer(
             &device,
             bytemuck::must_cast_slice(&initial_particles),
             graphics_cmd_pool,
-            QueueFamily::Graphics,
         )?;
 
         // TODO: Don't allocate small buffers.
@@ -120,7 +118,6 @@ impl GpuParticleSystem {
             "Num particles buffer",
             &device,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDIRECT_BUFFER,
-            vk::SharingMode::EXCLUSIVE,
         )?;
 
         // Create compute descriptor set layout.

@@ -8,9 +8,9 @@ use ash::vk;
 use nalgebra as na;
 use parking_lot::RwLock;
 
-use crate::device::Device;
 use crate::gpu_alloc::MemResult;
 use crate::mesh::{MeshBuffer, Vertex};
+use crate::vulkan::Device;
 
 const FRAC_1_SQRT_8: f32 = FRAC_1_SQRT_2 * 0.5;
 

@@ -3,10 +3,9 @@
 use ash::vk;
 
 use crate::buffer::{Buffer, CpuToGpu, GpuOnly, MemLocation};
-use crate::debug;
-use crate::device::Device;
 use crate::engine::GalaxyEngine;
 use crate::gpu_alloc::MemResult;
+use crate::vulkan::{debug, Device};
 
 // How often is this resource updated?
 // #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,7 +47,7 @@ impl VolatileUniformBuffer {
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
     ) -> MemResult<Buffer<L>> {
-        Buffer::new(name, device, size, usage, vk::SharingMode::EXCLUSIVE)
+        Buffer::new(name, device, size, usage)
     }
 
     pub fn new_for_type<T: bytemuck::Pod>(name: &str, device: &Device) -> MemResult<Self> {

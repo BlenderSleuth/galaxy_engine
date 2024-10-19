@@ -5,9 +5,8 @@ use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme};
 use gpu_allocator::MemoryLocation;
 
 use crate::command_buffer::{CommandBuffer, TransientOrPersistentCommandBuffer};
-use crate::device::{Device, QueueFamily, SharedDeviceLoader};
-use crate::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
-use crate::{debug, gpu_alloc};
+use crate::gpu_alloc::{self, ManuallyFreeAllocation, MemResult, SharedAllocator};
+use crate::vulkan::{debug, Device, SharedDeviceLoader};
 
 // Type-state trait encoding of gpu_allocator::MemoryLocation for use in generic parameters.
 pub trait MemLocation {
@@ -48,19 +47,8 @@ pub struct Buffer<L: MemLocation> {
 }
 
 impl<L: MemLocation> Buffer<L> {
-    pub fn new_for_type<T: bytemuck::Pod>(
-        name: &str,
-        device: &Device,
-        usage: vk::BufferUsageFlags,
-        sharing_mode: vk::SharingMode,
-    ) -> MemResult<Self> {
-        Self::new(
-            name,
-            device,
-            std::mem::size_of::<T>() as vk::DeviceSize,
-            usage,
-            sharing_mode,
-        )
+    pub fn new_for_type<T: bytemuck::Pod>(name: &str, device: &Device, usage: vk::BufferUsageFlags) -> MemResult<Self> {
+        Self::new(name, device, std::mem::size_of::<T>() as vk::DeviceSize, usage)
     }
 
     pub fn new_for_slice<T: bytemuck::Pod>(
@@ -68,39 +56,15 @@ impl<L: MemLocation> Buffer<L> {
         device: &Device,
         slice: &[T],
         usage: vk::BufferUsageFlags,
-        sharing_mode: vk::SharingMode,
     ) -> MemResult<Self> {
-        Self::new(
-            name,
-            device,
-            std::mem::size_of_val(slice) as vk::DeviceSize,
-            usage,
-            sharing_mode,
-        )
+        Self::new(name, device, std::mem::size_of_val(slice) as vk::DeviceSize, usage)
     }
 
-    pub fn new(
-        name: &str,
-        device: &Device,
-        size: vk::DeviceSize,
-        usage: vk::BufferUsageFlags,
-        sharing_mode: vk::SharingMode,
-    ) -> MemResult<Self> {
-        let device_properties = device.get_properties();
-        let queue_indices = [
-            device.get_properties().graphics_queue_family_idx,
-            device_properties.transfer_queue_family_idx,
-        ];
-
+    pub fn new(name: &str, device: &Device, size: vk::DeviceSize, usage: vk::BufferUsageFlags) -> MemResult<Self> {
         let buffer_info = vk::BufferCreateInfo::default()
             .size(size)
             .usage(usage)
-            .sharing_mode(sharing_mode)
-            .queue_family_indices(if sharing_mode == vk::SharingMode::CONCURRENT {
-                &queue_indices
-            } else {
-                &[]
-            });
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
         let handle = unsafe { device.loader().create_buffer(&buffer_info, None) }?;
 
         // Debug name object.
@@ -165,7 +129,6 @@ impl<L: MemLocation> Buffer<L> {
         device: &Device,
         dst_buffer: &mut Buffer<L2>,
         size: vk::DeviceSize,
-        queue_family: QueueFamily,
     ) -> MemResult<()> {
         let cmd_buffer = cmd.command_buffer();
 
@@ -176,7 +139,7 @@ impl<L: MemLocation> Buffer<L> {
                 .cmd_copy_buffer(cmd_buffer.handle(), self.handle(), dst_buffer.handle(), &[copy_region])
         };
 
-        Ok(cmd.maybe_end_submit_and_wait(device, device.get_queue(queue_family))?)
+        Ok(cmd.maybe_end_submit_and_wait(device, device.primary_queue().handle())?)
     }
 }
 
@@ -196,22 +159,15 @@ impl Buffer<GpuOnly> {
         device: &Device,
         src_data: &[u8],
         cmd_pool: vk::CommandPool,
-        queue_family: QueueFamily,
     ) -> MemResult<()> {
-        let mut staging_buffer = Buffer::<CpuToGpu>::new_for_slice(
-            "Staging Buffer",
-            &device,
-            src_data,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::SharingMode::EXCLUSIVE,
-        )?;
+        let mut staging_buffer =
+            Buffer::<CpuToGpu>::new_for_slice("Staging Buffer", &device, src_data, vk::BufferUsageFlags::TRANSFER_SRC)?;
         staging_buffer.copy_into_buffer(src_data, 0)?;
         staging_buffer.copy_to_buffer(
             CommandBuffer::one_time_transient(device, cmd_pool)?,
             &device,
             self,
             staging_buffer.size(),
-            queue_family,
         )?;
         Ok(())
     }

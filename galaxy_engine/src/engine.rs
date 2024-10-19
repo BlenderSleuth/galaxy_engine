@@ -1,23 +1,20 @@
 // Copyright (c) 2024. Ben Sutherland
 
-use std::ffi::{c_char, CStr};
 use std::mem::ManuallyDrop;
 use std::slice;
 
 use app::AppInfo;
 use arrayvec::ArrayVec;
-use ash::prelude::VkResult;
 use ash::vk;
-use device::{Device, QueueFamily};
 use engine::MainLoopError::VulkanError;
 use nalgebra as na;
 use parking_lot::{MappedRwLockReadGuard, RwLockReadGuard};
 use raw_window_handle::{DisplayHandle, WindowHandle};
 use surface::Surface;
 use swapchain::Swapchain;
+use vulkan::Device;
 
 use crate::descriptors::DescriptorPool;
-use crate::device::DeviceExt;
 use crate::gpu_alloc::{MemResult, MemoryError};
 use crate::maths::ModelViewProjection;
 use crate::mesh::{Mesh, MeshError};
@@ -25,31 +22,20 @@ use crate::particles::GpuParticleSystem;
 use crate::static_resources::{StaticResources, StaticResourcesGuard, StaticResourcesLock};
 use crate::sync::{BinarySemaphore, Fence};
 use crate::uniform_buffer::VolatileUniformBuffer;
-use crate::{app, device, engine, surface, swapchain, utils};
+use crate::vulkan::{device, instance, DeviceExt, Instance};
+use crate::{app, engine, surface, swapchain, vulkan};
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
 pub enum EngineInitError {
     #[error("Engine is already initialised.")]
     AlreadyInitialised,
-    #[error("Library load failed: {0}")]
-    LibraryLoadFailed(#[from] ash::LoadingError),
-    #[error("Vulkan function failed with the error: {0}")]
-    VulkanError(#[from] vk::Result),
-    #[error(
-        "App requires Vulkan {}.{}.{} (Current: {}.{}.{}). Consider updating your graphics drivers",
-        vk::api_version_major(GalaxyEngine::MIN_VK_VERSION),
-        vk::api_version_minor(GalaxyEngine::MIN_VK_VERSION),
-        vk::api_version_patch(GalaxyEngine::MIN_VK_VERSION),
-        vk::api_version_major(*.0),
-        vk::api_version_minor(*.0),
-        vk::api_version_patch(*.0)
-    )]
-    IncompatibleVulkanVersion(u32),
-    #[error("Instance extension error: {0}")]
-    InstanceExtensionError(#[from] InstanceExtensionError),
+    #[error("Instance init error: {0}")]
+    InstanceError(#[from] instance::InstanceInitError),
     #[error("Device init error: {0}")]
     DeviceInitError(#[from] device::DeviceInitError),
+    #[error("Vulkan call failed: {0}")]
+    VulkanError(#[from] vk::Result),
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
     #[error("Memory error: {0}")]
@@ -64,14 +50,6 @@ pub enum MainLoopError {
     VulkanError(#[from] vk::Result),
     #[error("Memory error: {0}")]
     MemoryError(#[from] MemoryError),
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum InstanceExtensionError {
-    #[error("Vulkan function failed with the error: {0}")]
-    VulkanError(#[from] vk::Result),
-    #[error("Unable to find Vulkan extension: {0:?}")]
-    ExtensionNotFound(&'static CStr),
 }
 
 #[repr(C)]
@@ -90,12 +68,7 @@ pub fn static_resources() -> MappedRwLockReadGuard<'static, StaticResources> {
 }
 
 pub struct GalaxyEngine {
-    _entry: ash::Entry,
-    instance: ash::Instance,
-    #[cfg(feature = "debug_info")]
-    debug_messenger: Option<crate::debug::DebugMessenger>,
     surface: ManuallyDrop<Surface>,
-    device: ManuallyDrop<Device>,
     swapchain: ManuallyDrop<Swapchain>,
     static_resources_guard: ManuallyDrop<StaticResourcesGuard>,
     mesh: ManuallyDrop<Mesh>,
@@ -117,17 +90,15 @@ pub struct GalaxyEngine {
     last_frame_time: std::time::Instant,
     window_size: vk::Extent2D,
     window_resized: bool,
+    device: ManuallyDrop<Device>,
+    instance: Instance,
 }
 
 impl GalaxyEngine {
-    const MIN_VK_VERSION: u32 = vk::make_api_version(0, 1, 2, 0);
-    const ENGINE_NAME: &'static CStr = c"Galaxy Engine";
-    const ENGINE_VERSION_STR: &'static str = env!("CARGO_PKG_VERSION");
     pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
     pub(crate) const MAX_NUM_PARTICLES: u32 = 1024;
 
     // TODO: Compute cleanup:
-    // - Convert to HLSL.
     // - Model resources/descriptor set management.
 
     // TODO: General cleanup:
@@ -149,70 +120,29 @@ impl GalaxyEngine {
         }
         ONCE.call_once(|| {});
 
-        // Setup Vulkan.
-        let entry = unsafe { ash::Entry::load() }?;
-
-        // Check Vulkan API version.
-        let api_version = unsafe { entry.try_enumerate_instance_version() }?.unwrap_or_else(|| vk::API_VERSION_1_0);
-
-        // Require minimum VK version.
-        if api_version < Self::MIN_VK_VERSION {
-            return Err(EngineInitError::IncompatibleVulkanVersion(api_version));
-        }
-
-        // Get instance extensions and layers
-        let layers = Self::get_instance_layers(&entry, &app_info.flags)?;
-        let instance_extensions = Self::get_required_instance_extensions(&entry, &app_info.flags, display)?;
-
-        let vk_app_info = vk::ApplicationInfo::default()
-            .application_name(&app_info.name)
-            .application_version(app_info.version)
-            .engine_name(Self::ENGINE_NAME)
-            .engine_version(utils::parse_version(Self::ENGINE_VERSION_STR))
-            .api_version(Self::MIN_VK_VERSION);
-
-        let create_flags = if cfg!(any(target_os = "macos", target_os = "ios")) {
-            vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
-        } else {
-            vk::InstanceCreateFlags::default()
-        };
-
-        let instance_info = vk::InstanceCreateInfo::default()
-            .application_info(&vk_app_info)
-            .enabled_layer_names(&layers)
-            .enabled_extension_names(&instance_extensions)
-            .flags(create_flags);
-
-        let instance = unsafe { entry.create_instance(&instance_info, None) }?;
-
-        // Create debug messenger.
-        #[cfg(feature = "debug_info")]
-        let debug_messenger = if app_info.flags.contains(app::AppFlags::DEBUG) {
-            Some(crate::debug::DebugMessenger::new(&entry, &instance)?)
-        } else {
-            None
-        };
+        // Create instance.
+        let instance = Instance::new(app_info, display)?;
 
         // Create surface.
-        let surface = Surface::new(&entry, &instance, display, window)?;
+        let surface = Surface::new(&instance, display, window)?;
 
-        // Create device. This sets the static device.
-        let device = Device::new(&instance, &surface)?;
-        let device_properties = device.get_properties();
+        // Create vulkan device. This sets the static device.
+        let device = Device::new(instance.loader(), &surface)?;
+        let device_properties = device.physical_device();
 
         // Create command pools.
         let command_pool_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-            .queue_family_index(device_properties.graphics_queue_family_idx);
+            .queue_family_index(device_properties.primary_queue_family_idx);
         let graphics_cmd_pool = unsafe { device.loader().create_command_pool(&command_pool_info, None) }?;
         let command_pool_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-            .queue_family_index(device_properties.compute_queue_family_idx);
+            .queue_family_index(device_properties.primary_queue_family_idx);
         let compute_cmd_pool = unsafe { device.loader().create_command_pool(&command_pool_info, None) }?;
 
         let command_pool_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::TRANSIENT)
-            .queue_family_index(device.get_queue_family_idx(QueueFamily::Graphics));
+            .queue_family_index(device_properties.primary_queue_family_idx);
         let transfer_cmd_pool = unsafe { device.loader().create_command_pool(&command_pool_info, None) }?;
 
         // Initialise engine static resources.
@@ -297,10 +227,7 @@ impl GalaxyEngine {
         device.print_allocator_report();
 
         Ok(Self {
-            _entry: entry,
             instance,
-            #[cfg(feature = "debug_info")]
-            debug_messenger,
             surface: ManuallyDrop::new(surface),
             device: ManuallyDrop::new(device),
             swapchain: ManuallyDrop::new(swapchain),
@@ -334,7 +261,7 @@ impl GalaxyEngine {
         }
 
         let loader = self.device.loader();
-        let ext = self.device.ext();
+        let ext = self.device.extensions();
 
         let current_frame = self.current_frame as usize;
 
@@ -371,7 +298,7 @@ impl GalaxyEngine {
             ));
         unsafe {
             loader.queue_submit(
-                self.device.get_queue(QueueFamily::Compute),
+                self.device.primary_queue().handle(),
                 &[submit_info],
                 self.compute_in_flight_fences[current_frame].handle(),
             )
@@ -498,14 +425,14 @@ impl GalaxyEngine {
 
         unsafe {
             loader.queue_submit(
-                self.device.get_queue(QueueFamily::Graphics),
+                self.device.primary_queue().handle(),
                 slice::from_ref(&submit_info),
                 self.in_flight_fences[current_frame].handle(),
             )
         }?;
 
         match self.swapchain.queue_present(
-            self.device.get_queue(QueueFamily::Present),
+            self.device.primary_queue().handle(),
             image_idx,
             &[self.render_finished_semaphores[current_frame].handle()],
         ) {
@@ -544,74 +471,6 @@ impl GalaxyEngine {
         self.window_size = window_size;
         self.window_resized = true;
     }
-
-    fn get_instance_layers(entry: &ash::Entry, _flags: &app::AppFlags) -> VkResult<Vec<*const c_char>> {
-        // Query available layers.
-        let available_layers = unsafe { entry.enumerate_instance_layer_properties() }?;
-
-        let mut required_layers = Vec::new();
-        #[cfg(feature = "debug_info")]
-        if _flags.contains(app::AppFlags::DEBUG) {
-            required_layers.push(c"VK_LAYER_KHRONOS_validation");
-        }
-
-        // Check all required layers are available. Not fatal if not found.
-        required_layers.retain(|&required_layer| {
-            if available_layers
-                .iter()
-                .any(|&available_layer| available_layer.layer_name_as_c_str() == Ok(required_layer))
-            {
-                true
-            } else {
-                log::warn!("Required layer not found: {:?}.", required_layer);
-                false
-            }
-        });
-
-        Ok(utils::cstr_to_ptrs(&required_layers))
-    }
-
-    fn get_required_instance_extensions(
-        entry: &ash::Entry,
-        _flags: &app::AppFlags,
-        display: DisplayHandle,
-    ) -> Result<Vec<*const c_char>, InstanceExtensionError> {
-        // Query available extensions
-        let available_extensions = unsafe { entry.enumerate_instance_extension_properties(None) }?;
-
-        // Require platform windowing extensions.
-        // The returned extensions are pointers to static strings, so we can safely convert them back to CStr.
-        #[allow(unused_mut)]
-        let mut required_extensions = ash_window::enumerate_required_extensions(display.as_raw())?
-            .iter()
-            .map(|&ext| unsafe { CStr::from_ptr(ext) })
-            .collect::<Vec<_>>();
-
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
-        {
-            extension_names.push(ash::khr::portability_enumeration::NAME);
-            // Enabling this extension is a requirement when using `VK_KHR_portability_subset`
-            extension_names.push(ash::khr::get_physical_device_properties2::NAME);
-        }
-
-        #[cfg(feature = "debug_info")]
-        if _flags.contains(app::AppFlags::DEBUG) {
-            // Add debug messenger extension.
-            required_extensions.push(ash::ext::debug_utils::NAME);
-        }
-
-        // Check all required extensions are available.
-        for required_extension in required_extensions.iter() {
-            if !available_extensions
-                .iter()
-                .any(|&available_extension| available_extension.extension_name_as_c_str() == Ok(required_extension))
-            {
-                return Err(InstanceExtensionError::ExtensionNotFound(required_extension));
-            }
-        }
-
-        Ok(utils::cstr_to_ptrs(&required_extensions))
-    }
 }
 
 impl Drop for GalaxyEngine {
@@ -619,7 +478,7 @@ impl Drop for GalaxyEngine {
         let device_loader = self.device.loader();
 
         unsafe { device_loader.device_wait_idle() }
-            .unwrap_or_else(|e| log::error!("Failed to wait for device idle: {:?}", e));
+            .unwrap_or_else(|e| log::error!("Failed to wait for vulkan idle: {:?}", e));
 
         self.device.print_allocator_report();
 
@@ -656,21 +515,12 @@ impl Drop for GalaxyEngine {
         // Drop static resources.
         unsafe { ManuallyDrop::drop(&mut self.static_resources_guard) };
 
-        // Drop device.
+        // Drop vulkan.
         unsafe { ManuallyDrop::drop(&mut self.device) };
 
         // Drop surface.
         unsafe { ManuallyDrop::drop(&mut self.surface) };
 
-        // Drop debug messenger.
-        #[cfg(feature = "debug_info")]
-        {
-            self.debug_messenger = None;
-        }
-
-        // Drop instance.
-        unsafe { self.instance.destroy_instance(None) };
-
-        // Entry is automatically dropped.
+        // Instance is automatically dropped.
     }
 }

@@ -3,9 +3,7 @@
 pub mod app;
 pub mod buffer;
 pub mod command_buffer;
-mod debug;
 pub mod descriptors;
-pub mod device;
 pub mod engine;
 pub mod gpu_alloc;
 pub mod image;
@@ -22,3 +20,4 @@ pub mod swapchain;
 pub mod sync;
 pub mod uniform_buffer;
 mod utils;
+pub mod vulkan;

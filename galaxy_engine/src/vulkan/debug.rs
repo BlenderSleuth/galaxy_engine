@@ -3,7 +3,7 @@
 use ash::prelude::VkResult;
 use ash::vk;
 
-use crate::device::{Device, LoadedExtensions};
+use crate::vulkan::{Device, DeviceExtensions};
 
 // Strip names in non-debug builds.
 macro_rules! debug_only_name {
@@ -18,11 +18,11 @@ pub(crate) use debug_only_name;
 
 #[inline]
 pub fn set_object_name<H: vk::Handle>(_device: &Device, _handle: H, _name: &str) -> VkResult<()> {
-    set_object_name_with_ext(_device.ext(), _handle, _name)
+    set_object_name_with_ext(_device.extensions(), _handle, _name)
 }
 
 #[inline]
-pub fn set_object_name_with_ext<H: vk::Handle>(_ext: &LoadedExtensions, _handle: H, _name: &str) -> VkResult<()> {
+pub fn set_object_name_with_ext<H: vk::Handle>(_ext: &DeviceExtensions, _handle: H, _name: &str) -> VkResult<()> {
     #[cfg(feature = "debug_info")]
     {
         use std::ffi::CString;

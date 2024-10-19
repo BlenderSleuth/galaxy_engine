@@ -10,9 +10,9 @@ use gpu_allocator::MemoryLocation;
 
 use crate::buffer::{Buffer, CpuToGpu};
 use crate::command_buffer::{CommandBuffer, TransientOrPersistentCommandBuffer};
-use crate::device::{Device, QueueFamily, SharedDeviceLoader};
 use crate::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
-use crate::{debug, gpu_alloc, utils};
+use crate::vulkan::{debug, Device, SharedDeviceLoader};
+use crate::{gpu_alloc, utils};
 
 pub struct ImageView {
     loader: SharedDeviceLoader,
@@ -204,7 +204,6 @@ impl Image {
             &device,
             total_mip_size as vk::DeviceSize,
             vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::SharingMode::EXCLUSIVE,
         )?;
 
         // Copy mip levels into buffer.
@@ -252,8 +251,6 @@ impl Image {
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             None,
-            None,
-            None,
         )?;
 
         // Perform the copy.
@@ -274,11 +271,9 @@ impl Image {
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             None,
-            None,
-            None,
         )?;
 
-        cmd_buffer.end_submit_and_wait(device, device.get_queue(QueueFamily::Graphics))?;
+        cmd_buffer.end_submit_and_wait(device, device.primary_queue().handle())?;
 
         Ok(image)
     }
@@ -298,24 +293,12 @@ impl Image {
         old_layout: vk::ImageLayout,
         new_layout: vk::ImageLayout,
         mip_level: Option<u32>,
-        src_queue: Option<QueueFamily>,
-        dst_queue: Option<QueueFamily>,
     ) -> VkResult<()> {
         let cmd_buffer = cmd.command_buffer();
 
         let mut image_barrier = vk::ImageMemoryBarrier2::default()
             .old_layout(old_layout)
             .new_layout(new_layout)
-            .src_queue_family_index(
-                src_queue
-                    .map(|q| device.get_queue_family_idx(q))
-                    .unwrap_or(vk::QUEUE_FAMILY_IGNORED),
-            )
-            .dst_queue_family_index(
-                dst_queue
-                    .map(|q| device.get_queue_family_idx(q))
-                    .unwrap_or(vk::QUEUE_FAMILY_IGNORED),
-            )
             .image(self.handle)
             .subresource_range(if let Some(mip_level) = mip_level {
                 // If a mip level is specified, only transition that level.
@@ -359,12 +342,12 @@ impl Image {
 
         unsafe {
             device
-                .ext()
+                .extensions()
                 .sync2
                 .cmd_pipeline_barrier2(cmd_buffer.handle(), &dependency_info)
         };
 
-        cmd.maybe_end_submit_and_wait(device, device.get_queue(QueueFamily::Graphics))
+        cmd.maybe_end_submit_and_wait(device, device.primary_queue().handle())
     }
 
     #[allow(dead_code)] // TODO
@@ -374,7 +357,6 @@ impl Image {
         cmd: TransientOrPersistentCommandBuffer,
         buffer: &Buffer<CpuToGpu>,
         mip_level: u32,
-        queue: QueueFamily,
     ) -> VkResult<()> {
         let cmd_buffer = cmd.command_buffer();
 
@@ -401,7 +383,7 @@ impl Image {
             )
         };
 
-        cmd.maybe_end_submit_and_wait(device, device.get_queue(queue))
+        cmd.maybe_end_submit_and_wait(device, device.primary_queue().handle())
     }
 }
 

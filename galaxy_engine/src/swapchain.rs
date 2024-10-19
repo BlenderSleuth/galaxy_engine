@@ -7,11 +7,11 @@ use ash::prelude::VkResult;
 use ash::{khr, vk};
 
 use crate::command_buffer::CommandBuffer;
-use crate::device::{Device, PhysicalDeviceProperties, PropertyQueueList};
 use crate::gpu_alloc::MemResult;
 use crate::image::{Image, ImageView};
 use crate::surface::Surface;
 use crate::utils;
+use crate::vulkan::{Device, Instance};
 
 pub struct Swapchain {
     loader: khr::swapchain::Device,
@@ -26,24 +26,18 @@ pub struct Swapchain {
 
 impl Swapchain {
     pub fn new(
-        instance: &ash::Instance,
+        instance: &Instance,
         device: &Device,
         gfx_cmd_pool: vk::CommandPool,
         surface: &Surface,
         window_size: vk::Extent2D,
         old_swapchain: Option<&Swapchain>,
     ) -> MemResult<Self> {
-        let device_properties = device.get_properties();
-        let unique_queue_families = device_properties.get_unique_queue_families();
+        let device_properties = device.physical_device();
 
-        // Create swapchain. TODO: keep on present/graphics queue family only.
-        let (image_sharing_mode, queue_family_indices) = if unique_queue_families.len() > 1 {
-            (vk::SharingMode::CONCURRENT, unique_queue_families)
-        } else {
-            (vk::SharingMode::EXCLUSIVE, PropertyQueueList::new())
-        };
+        // Create swapchain.
 
-        let surface_capabilities = surface.get_capabilities(device.get_properties().physical_device)?;
+        let surface_capabilities = surface.get_capabilities(device.physical_device().handle)?;
 
         // Choose swap extent.
         let swapchain_extent = if surface_capabilities.current_extent.width != u32::MAX {
@@ -62,17 +56,16 @@ impl Swapchain {
         };
         let swapchain_format = device_properties.swapchain_format;
 
-        let loader = khr::swapchain::Device::new(&instance, &device.loader());
+        let loader = khr::swapchain::Device::new(instance.loader(), &device.loader());
         let swapchain_info = vk::SwapchainCreateInfoKHR::default()
             .surface(surface.handle())
-            .min_image_count(device_properties.image_count)
+            .min_image_count(device_properties.swapchain_image_count)
             .image_format(swapchain_format.format)
             .image_color_space(swapchain_format.color_space)
             .image_extent(swapchain_extent)
             .image_array_layers(1)
             .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
-            .image_sharing_mode(image_sharing_mode)
-            .queue_family_indices(&queue_family_indices)
+            .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
             .pre_transform(surface_capabilities.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(device_properties.presentation_mode)
@@ -98,7 +91,7 @@ impl Swapchain {
             })
             .collect::<VkResult<Vec<_>>>()?;
 
-        let msaa_samples = PhysicalDeviceProperties::MSAA_SAMPLES;
+        let msaa_samples = device.physical_device().max_msaa_samples;
 
         // Create colour resolve image.
         let colour_resolve_info = vk::ImageCreateInfo::default()
@@ -129,14 +122,14 @@ impl Swapchain {
             })
             .mip_levels(1)
             .array_layers(1)
-            .format(PhysicalDeviceProperties::DEPTH_STENCIL_FORMAT)
+            .format(device.physical_device().depth_stencil_format)
             .tiling(vk::ImageTiling::OPTIMAL)
             .initial_layout(vk::ImageLayout::UNDEFINED)
             .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .samples(msaa_samples);
         let depth_subresource = vk::ImageSubresourceRange {
-            aspect_mask: utils::get_aspect_for_format(PhysicalDeviceProperties::DEPTH_STENCIL_FORMAT),
+            aspect_mask: utils::get_aspect_for_format(device.physical_device().depth_stencil_format),
             ..Self::get_subresource_range()
         };
 
@@ -146,8 +139,6 @@ impl Swapchain {
             CommandBuffer::one_time_transient(&device, gfx_cmd_pool)?,
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            None,
-            None,
             None,
         )?;
 

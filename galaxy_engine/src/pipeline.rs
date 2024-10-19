@@ -7,8 +7,8 @@ use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::vk;
 
-use crate::device::{Device, DeviceExt, PhysicalDeviceProperties, SharedDeviceLoader};
 use crate::shader::{ComputeShaderStage, ShaderModule};
+use crate::vulkan::{Device, DeviceExt, SharedDeviceLoader};
 
 pub trait Pipeline {
     fn handle(&self) -> vk::Pipeline;
@@ -72,7 +72,7 @@ impl GraphicsPipeline {
     pub fn new(device: &Device, params: GraphicsPipelineParameters) -> VkResult<Self> {
         let loader = device.cloned_loader();
 
-        let device_properties = device.get_properties();
+        let device_properties = device.physical_device();
 
         // Create graphics pipeline.
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
@@ -119,7 +119,7 @@ impl GraphicsPipeline {
 
         let mut dynamic_pipeline_info = vk::PipelineRenderingCreateInfo::default()
             .color_attachment_formats(slice::from_ref(&device_properties.swapchain_format.format))
-            .depth_attachment_format(PhysicalDeviceProperties::DEPTH_STENCIL_FORMAT);
+            .depth_attachment_format(device.physical_device().depth_stencil_format);
 
         // Vertex binding.
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()

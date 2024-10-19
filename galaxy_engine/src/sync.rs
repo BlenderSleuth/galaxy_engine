@@ -3,7 +3,7 @@
 use ash::prelude::VkResult;
 use ash::vk;
 
-use crate::device::{get_device, Device};
+use crate::vulkan::{get_device, Device};
 
 pub struct BinarySemaphore {
     handle: vk::Semaphore,

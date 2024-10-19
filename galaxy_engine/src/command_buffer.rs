@@ -5,7 +5,7 @@ use std::slice;
 use ash::prelude::VkResult;
 use ash::vk;
 
-use crate::device::{Device, DeviceExt, SharedDeviceLoader};
+use crate::vulkan::{Device, DeviceExt, SharedDeviceLoader};
 
 // Either use a specific command buffer, or allocate a new one-time buffer from a pool.
 // TODO: unify queue / pool system.

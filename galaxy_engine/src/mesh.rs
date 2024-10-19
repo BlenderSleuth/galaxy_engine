@@ -13,12 +13,12 @@ use nalgebra as na;
 use crate::buffer::{Buffer, CpuToGpu, GpuOnly};
 use crate::command_buffer::CommandBuffer;
 use crate::descriptors::DescriptorPool;
-use crate::device::{Device, QueueFamily, SharedDeviceLoader};
 use crate::gpu_alloc::{MemResult, MemoryError};
 use crate::material::{Material, MaterialError};
+use crate::maths;
 use crate::pipeline::{GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout};
 use crate::uniform_buffer::VolatileUniformBuffer;
-use crate::{debug, maths};
+use crate::vulkan::{debug, Device, SharedDeviceLoader};
 
 // For vertices with N attributes.
 pub trait BindableVertex<const N: usize> {
@@ -103,7 +103,6 @@ impl MeshBuffer {
             vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::VERTEX_BUFFER
                 | vk::BufferUsageFlags::INDEX_BUFFER,
-            vk::SharingMode::EXCLUSIVE,
         )?;
 
         let mut staging_buffer = Buffer::<CpuToGpu>::new(
@@ -111,7 +110,6 @@ impl MeshBuffer {
             &device,
             buffer_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::SharingMode::EXCLUSIVE,
         )?;
         staging_buffer.copy_into_buffer(indices, 0)?;
         staging_buffer.copy_into_buffer(vertices, vertices_offset)?;
@@ -120,7 +118,6 @@ impl MeshBuffer {
             &device,
             &mut buffer,
             staging_buffer.size(),
-            QueueFamily::Graphics,
         )?;
 
         Ok(Self {

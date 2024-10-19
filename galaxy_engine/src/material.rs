@@ -2,12 +2,12 @@
 
 use ash::vk;
 
-use crate::device::{Device, SharedDeviceLoader};
 use crate::gpu_alloc::MemoryError;
 use crate::image::{Image, ImageDimensions};
 use crate::pipeline::GraphicsShaderStageArray;
 use crate::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
-use crate::{debug, utils};
+use crate::utils;
+use crate::vulkan::{debug, Device, SharedDeviceLoader};
 
 #[derive(thiserror::Error, Debug)]
 pub enum MaterialError {
@@ -56,7 +56,7 @@ impl Material {
         )?;
 
         // Create texture sampler.
-        let max_anisotropy = device.get_properties().properties.limits.max_sampler_anisotropy;
+        let max_anisotropy = device.physical_device().properties.limits.max_sampler_anisotropy;
         let sampler_info = vk::SamplerCreateInfo::default()
             .mag_filter(vk::Filter::LINEAR)
             .min_filter(vk::Filter::LINEAR)

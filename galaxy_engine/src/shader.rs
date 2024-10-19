@@ -3,7 +3,7 @@
 use ash::prelude::VkResult;
 use ash::vk;
 
-use crate::device::{Device, SharedDeviceLoader};
+use crate::vulkan::{Device, SharedDeviceLoader};
 
 // Shader stage type state pattern.
 pub trait ShaderStageType {

@@ -4,21 +4,26 @@ use ash::prelude::VkResult;
 use ash::{khr, vk};
 use raw_window_handle::{DisplayHandle, WindowHandle};
 
+use crate::vulkan::Instance;
+
 pub struct Surface {
     loader: khr::surface::Instance,
     handle: vk::SurfaceKHR,
 }
 
 impl Surface {
-    pub fn new(
-        entry: &ash::Entry,
-        instance: &ash::Instance,
-        display: DisplayHandle,
-        window: WindowHandle,
-    ) -> VkResult<Self> {
+    pub fn new(instance: &Instance, display: DisplayHandle, window: WindowHandle) -> VkResult<Self> {
         Ok(Self {
-            loader: khr::surface::Instance::new(entry, instance),
-            handle: unsafe { ash_window::create_surface(&entry, &instance, display.as_raw(), window.as_raw(), None) }?,
+            loader: khr::surface::Instance::new(instance.entry(), instance.loader()),
+            handle: unsafe {
+                ash_window::create_surface(
+                    instance.entry(),
+                    instance.loader(),
+                    display.as_raw(),
+                    window.as_raw(),
+                    None,
+                )
+            }?,
         })
     }
 
