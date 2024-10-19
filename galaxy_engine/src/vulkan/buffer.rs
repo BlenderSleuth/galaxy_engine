@@ -4,9 +4,10 @@ use ash::vk;
 use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme};
 use gpu_allocator::MemoryLocation;
 
-use crate::command_buffer::{CommandBuffer, TransientOrPersistentCommandBuffer};
-use crate::gpu_alloc::{self, ManuallyFreeAllocation, MemResult, SharedAllocator};
-use crate::vulkan::{debug, Device, SharedDeviceLoader};
+use crate::vulkan::command_buffer::{CommandBuffer, TransientOrPersistentCommandBuffer};
+use crate::vulkan::device::{Device, SharedDeviceLoader};
+use crate::vulkan::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
+use crate::vulkan::{debug, gpu_alloc};
 
 // Type-state trait encoding of gpu_allocator::MemoryLocation for use in generic parameters.
 pub trait MemLocation {

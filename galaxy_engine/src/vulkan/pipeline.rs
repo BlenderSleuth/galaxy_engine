@@ -7,8 +7,8 @@ use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::vk;
 
-use crate::shader::{ComputeShaderStage, ShaderModule};
-use crate::vulkan::{Device, DeviceExt, SharedDeviceLoader};
+use crate::vulkan::device::{Device, DeviceExt, SharedDeviceLoader};
+use crate::vulkan::shader::{ComputeShaderStage, ShaderModule};
 
 pub trait Pipeline {
     fn handle(&self) -> vk::Pipeline;
@@ -50,14 +50,15 @@ impl Drop for PipelineLayout {
     }
 }
 
+// Vertex, Hull, Domain, Geometry, Fragment.
 pub const MAX_GRAPHICS_SHADER_STAGES: usize = 5;
-pub type GraphicsShaderStageArray<'a> = ArrayVec<vk::PipelineShaderStageCreateInfo<'a>, MAX_GRAPHICS_SHADER_STAGES>;
+pub type GraphicsPipelineShaderStages<'a> = ArrayVec<vk::PipelineShaderStageCreateInfo<'a>, MAX_GRAPHICS_SHADER_STAGES>;
 
 pub struct GraphicsPipelineParameters<'a> {
     pub layout: Arc<PipelineLayout>,
     pub vertex_binding_description: vk::VertexInputBindingDescription,
     pub vertex_attribute_descriptions: &'a [vk::VertexInputAttributeDescription],
-    pub shader_stages: GraphicsShaderStageArray<'a>,
+    pub shader_stages: GraphicsPipelineShaderStages<'a>,
     pub samples: vk::SampleCountFlags,
     pub depth_test: bool,
 }

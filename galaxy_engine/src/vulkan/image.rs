@@ -8,11 +8,12 @@ use ash::vk;
 use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme};
 use gpu_allocator::MemoryLocation;
 
-use crate::buffer::{Buffer, CpuToGpu};
-use crate::command_buffer::{CommandBuffer, TransientOrPersistentCommandBuffer};
-use crate::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
-use crate::vulkan::{debug, Device, SharedDeviceLoader};
-use crate::{gpu_alloc, utils};
+use crate::utils;
+use crate::vulkan::buffer::{Buffer, CpuToGpu};
+use crate::vulkan::command_buffer::{CommandBuffer, TransientOrPersistentCommandBuffer};
+use crate::vulkan::device::{Device, SharedDeviceLoader};
+use crate::vulkan::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
+use crate::vulkan::{debug, gpu_alloc};
 
 pub struct ImageView {
     loader: SharedDeviceLoader,

@@ -4,7 +4,7 @@ use ash::prelude::VkResult;
 use ash::{khr, vk};
 use raw_window_handle::{DisplayHandle, WindowHandle};
 
-use crate::vulkan::Instance;
+use crate::vulkan::instance::Instance;
 
 pub struct Surface {
     loader: khr::surface::Instance,

@@ -3,8 +3,6 @@
 use ash::prelude::VkResult;
 use ash::vk;
 
-use crate::vulkan::{Device, DeviceExtensions};
-
 // Strip names in non-debug builds.
 macro_rules! debug_only_name {
     ($format:literal$(,)? $($args: tt)*) => {
@@ -40,6 +38,9 @@ pub fn set_object_name_with_ext<H: vk::Handle>(_ext: &DeviceExtensions, _handle:
 
 #[cfg(feature = "debug_info")]
 pub use debug_messenger::DebugMessenger;
+
+use crate::vulkan::device::Device;
+use crate::vulkan::extensions::DeviceExtensions;
 
 #[cfg(feature = "debug_info")]
 mod debug_messenger {

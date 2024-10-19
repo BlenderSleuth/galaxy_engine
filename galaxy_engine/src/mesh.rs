@@ -10,15 +10,16 @@ use ash::vk;
 use meshopt::VertexDataAdapter;
 use nalgebra as na;
 
-use crate::buffer::{Buffer, CpuToGpu, GpuOnly};
-use crate::command_buffer::CommandBuffer;
-use crate::descriptors::DescriptorPool;
-use crate::gpu_alloc::{MemResult, MemoryError};
 use crate::material::{Material, MaterialError};
 use crate::maths;
-use crate::pipeline::{GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout};
 use crate::uniform_buffer::VolatileUniformBuffer;
-use crate::vulkan::{debug, Device, SharedDeviceLoader};
+use crate::vulkan::buffer::{Buffer, CpuToGpu, GpuOnly};
+use crate::vulkan::command_buffer::CommandBuffer;
+use crate::vulkan::debug;
+use crate::vulkan::descriptors::DescriptorPool;
+use crate::vulkan::device::{Device, SharedDeviceLoader};
+use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
+use crate::vulkan::pipeline::{GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout};
 
 // For vertices with N attributes.
 pub trait BindableVertex<const N: usize> {

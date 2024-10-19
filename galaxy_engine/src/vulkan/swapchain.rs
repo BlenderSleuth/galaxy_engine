@@ -6,12 +6,13 @@ use std::slice;
 use ash::prelude::VkResult;
 use ash::{khr, vk};
 
-use crate::command_buffer::CommandBuffer;
-use crate::gpu_alloc::MemResult;
-use crate::image::{Image, ImageView};
-use crate::surface::Surface;
 use crate::utils;
-use crate::vulkan::{Device, Instance};
+use crate::vulkan::command_buffer::CommandBuffer;
+use crate::vulkan::device::Device;
+use crate::vulkan::gpu_alloc::MemResult;
+use crate::vulkan::image::{Image, ImageView};
+use crate::vulkan::instance::Instance;
+use crate::vulkan::surface::Surface;
 
 pub struct Swapchain {
     loader: khr::swapchain::Device,

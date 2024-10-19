@@ -2,12 +2,13 @@
 
 use ash::vk;
 
-use crate::gpu_alloc::MemoryError;
-use crate::image::{Image, ImageDimensions};
-use crate::pipeline::GraphicsShaderStageArray;
-use crate::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
 use crate::utils;
-use crate::vulkan::{debug, Device, SharedDeviceLoader};
+use crate::vulkan::debug;
+use crate::vulkan::device::{Device, SharedDeviceLoader};
+use crate::vulkan::gpu_alloc::MemoryError;
+use crate::vulkan::image::{Image, ImageDimensions};
+use crate::vulkan::pipeline::GraphicsPipelineShaderStages;
+use crate::vulkan::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
 
 #[derive(thiserror::Error, Debug)]
 pub enum MaterialError {
@@ -87,7 +88,7 @@ impl Material {
         })
     }
 
-    pub fn shader_stages(&self) -> GraphicsShaderStageArray {
+    pub fn shader_stages(&self) -> GraphicsPipelineShaderStages {
         utils::arrayvec_from_array([
             self.vertex_shader_module.stage_info(),
             self.fragment_shader_module.stage_info(),

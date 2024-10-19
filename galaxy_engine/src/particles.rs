@@ -7,17 +7,17 @@ use std::sync::Arc;
 use ash::vk;
 use nalgebra as na;
 
-use crate::buffer::{Buffer, GpuOnly};
-use crate::descriptors::DescriptorPool;
-use crate::gpu_alloc::MemResult;
 use crate::maths::ModelViewProjection;
 use crate::mesh::{BindableVertex, MeshBuffer, Vertex};
-use crate::pipeline::{
+use crate::uniform_buffer::VolatileUniformBuffer;
+use crate::vulkan::buffer::{Buffer, GpuOnly};
+use crate::vulkan::descriptors::DescriptorPool;
+use crate::vulkan::device::{Device, SharedDeviceLoader};
+use crate::vulkan::gpu_alloc::MemResult;
+use crate::vulkan::pipeline::{
     ComputePipeline, ComputePipelineParameters, GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout,
 };
-use crate::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
-use crate::uniform_buffer::VolatileUniformBuffer;
-use crate::vulkan::{Device, SharedDeviceLoader};
+use crate::vulkan::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
 use crate::{engine, pod, utils};
 
 #[repr(C)]

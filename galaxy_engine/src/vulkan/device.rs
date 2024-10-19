@@ -11,12 +11,14 @@ use gpu_allocator::vulkan::{AllocationCreateDesc, Allocator, AllocatorCreateDesc
 use gpu_allocator::AllocatorDebugSettings;
 use itertools::{Either, Itertools};
 
-use crate::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
-use crate::surface::Surface;
 use crate::utils;
 use crate::utils::ArcFinalOwner;
+use crate::vulkan::debug;
 use crate::vulkan::extensions::DeviceExtensions;
-use crate::vulkan::{debug, queue_type, PhysicalDevice, PhysicalDeviceIncompatibility, Queue};
+use crate::vulkan::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
+use crate::vulkan::physical_device::{PhysicalDevice, PhysicalDeviceIncompatibility};
+use crate::vulkan::queue::{queue_type, Queue};
+use crate::vulkan::surface::Surface;
 
 // Initialised by the engine.
 static DEVICE_LOADER: OnceLock<ash::Device> = OnceLock::new();

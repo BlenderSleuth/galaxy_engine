@@ -1,20 +1,26 @@
 // Copyright (c) 2024. Ben Sutherland
 
+pub mod buffer;
+pub mod command_buffer;
 pub mod debug;
+pub mod descriptors;
 pub mod device;
 pub mod extensions;
+pub mod gpu_alloc;
+pub mod image;
 pub mod instance;
 pub mod physical_device;
+pub mod pipeline;
 pub mod queue;
+pub mod shader;
+pub mod surface;
+pub mod swapchain;
+pub mod sync;
 
 use std::ffi::CStr;
 
 use ash::vk;
-pub use device::{get_device, Device, DeviceExt, SharedDeviceLoader};
-pub use extensions::DeviceExtensions;
-pub use instance::Instance;
-pub use physical_device::{PhysicalDevice, PhysicalDeviceIncompatibility};
-pub use queue::{queue_type, Queue};
+pub use device::get_device;
 
 pub const ENGINE_NAME: &'static CStr = c"Galaxy Engine";
 pub const ENGINE_VERSION_STR: &'static str = env!("CARGO_PKG_VERSION");

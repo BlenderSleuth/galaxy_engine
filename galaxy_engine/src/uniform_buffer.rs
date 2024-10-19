@@ -2,10 +2,11 @@
 
 use ash::vk;
 
-use crate::buffer::{Buffer, CpuToGpu, GpuOnly, MemLocation};
 use crate::engine::GalaxyEngine;
-use crate::gpu_alloc::MemResult;
-use crate::vulkan::{debug, Device};
+use crate::vulkan::buffer::{Buffer, CpuToGpu, GpuOnly, MemLocation};
+use crate::vulkan::debug;
+use crate::vulkan::device::Device;
+use crate::vulkan::gpu_alloc::MemResult;
 
 // How often is this resource updated?
 // #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -5,8 +5,8 @@ use std::ffi::CStr;
 use arrayvec::ArrayVec;
 use ash::vk;
 
-use crate::surface::Surface;
 use crate::vulkan;
+use crate::vulkan::surface::Surface;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PhysicalDeviceIncompatibility {

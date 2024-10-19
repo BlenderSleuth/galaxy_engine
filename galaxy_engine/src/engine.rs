@@ -6,24 +6,25 @@ use std::slice;
 use app::AppInfo;
 use arrayvec::ArrayVec;
 use ash::vk;
-use engine::MainLoopError::VulkanError;
 use nalgebra as na;
 use parking_lot::{MappedRwLockReadGuard, RwLockReadGuard};
 use raw_window_handle::{DisplayHandle, WindowHandle};
-use surface::Surface;
-use swapchain::Swapchain;
-use vulkan::Device;
 
-use crate::descriptors::DescriptorPool;
-use crate::gpu_alloc::{MemResult, MemoryError};
+use crate::app;
+use crate::engine::MainLoopError::VulkanError;
 use crate::maths::ModelViewProjection;
 use crate::mesh::{Mesh, MeshError};
 use crate::particles::GpuParticleSystem;
 use crate::static_resources::{StaticResources, StaticResourcesGuard, StaticResourcesLock};
-use crate::sync::{BinarySemaphore, Fence};
 use crate::uniform_buffer::VolatileUniformBuffer;
-use crate::vulkan::{device, instance, DeviceExt, Instance};
-use crate::{app, engine, surface, swapchain, vulkan};
+use crate::vulkan::descriptors::DescriptorPool;
+use crate::vulkan::device::{Device, DeviceExt};
+use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
+use crate::vulkan::instance::Instance;
+use crate::vulkan::surface::Surface;
+use crate::vulkan::swapchain::Swapchain;
+use crate::vulkan::sync::{BinarySemaphore, Fence};
+use crate::vulkan::{device, instance};
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
