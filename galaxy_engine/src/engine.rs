@@ -17,13 +17,14 @@ use crate::mesh::{Mesh, MeshError};
 use crate::particles::GpuParticleSystem;
 use crate::static_resources::{StaticResources, StaticResourcesGuard, StaticResourcesLock};
 use crate::uniform_buffer::VolatileUniformBuffer;
+use crate::vulkan::command_buffer::{PersistentCmdBufError, ResettablePrimaryCommandPool, TransientPrimaryCommandPool};
 use crate::vulkan::descriptors::DescriptorPool;
-use crate::vulkan::device::{Device, DeviceExt};
+use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain::Swapchain;
-use crate::vulkan::sync::{BinarySemaphore, Fence};
+use crate::vulkan::sync::{BinarySemaphore, Fence, Semaphore, WaitSemaphore};
 use crate::vulkan::{device, instance};
 
 #[derive(thiserror::Error, Debug)]
@@ -51,6 +52,8 @@ pub enum MainLoopError {
     VulkanError(#[from] vk::Result),
     #[error("Memory error: {0}")]
     MemoryError(#[from] MemoryError),
+    #[error("Command buffer state error: {0}")]
+    PersistentCommandBufferError(#[from] PersistentCmdBufError),
 }
 
 #[repr(C)]
@@ -74,13 +77,11 @@ pub struct GalaxyEngine {
     static_resources_guard: ManuallyDrop<StaticResourcesGuard>,
     mesh: ManuallyDrop<Mesh>,
     descriptor_pool: ManuallyDrop<DescriptorPool>,
-    graphics_cmd_pool: vk::CommandPool,
-    compute_cmd_pool: vk::CommandPool,
-    transfer_cmd_pool: vk::CommandPool,
+    graphics_cmd_pools: ArrayVec<ResettablePrimaryCommandPool, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
+    compute_cmd_pools: ArrayVec<ResettablePrimaryCommandPool, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
+    transient_cmd_pool: ManuallyDrop<TransientPrimaryCommandPool>,
     uniform_buffer: ManuallyDrop<VolatileUniformBuffer>,
     particle_system: ManuallyDrop<GpuParticleSystem>,
-    cmd_buffers: ArrayVec<vk::CommandBuffer, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
-    compute_cmd_buffers: ArrayVec<vk::CommandBuffer, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     image_available_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     render_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     compute_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
@@ -129,36 +130,23 @@ impl GalaxyEngine {
 
         // Create vulkan device. This sets the static device.
         let device = Device::new(instance.loader(), &surface)?;
-        let device_properties = device.physical_device();
 
-        // Create command pools.
-        let command_pool_info = vk::CommandPoolCreateInfo::default()
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-            .queue_family_index(device_properties.primary_queue_family_idx);
-        let graphics_cmd_pool = unsafe { device.loader().create_command_pool(&command_pool_info, None) }?;
-        let command_pool_info = vk::CommandPoolCreateInfo::default()
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-            .queue_family_index(device_properties.primary_queue_family_idx);
-        let compute_cmd_pool = unsafe { device.loader().create_command_pool(&command_pool_info, None) }?;
-
-        let command_pool_info = vk::CommandPoolCreateInfo::default()
-            .flags(vk::CommandPoolCreateFlags::TRANSIENT)
-            .queue_family_index(device_properties.primary_queue_family_idx);
-        let transfer_cmd_pool = unsafe { device.loader().create_command_pool(&command_pool_info, None) }?;
+        // Create transient command pool.
+        let mut transient_cmd_pool = TransientPrimaryCommandPool::new(&device, device.primary_queue())?;
 
         // Initialise engine static resources.
-        *STATIC_RESOURCES.write() = Some(StaticResources::new(&device, graphics_cmd_pool)?);
+        *STATIC_RESOURCES.write() = Some(StaticResources::new(&device, &mut transient_cmd_pool)?);
         let static_resources_guard = StaticResourcesGuard::new(&STATIC_RESOURCES);
 
         // Create swapchain.
         let window_size = vk::Extent2D { width, height };
-        let swapchain = Swapchain::new(&instance, &device, graphics_cmd_pool, &surface, window_size, None)?;
+        let swapchain = Swapchain::new(&instance, &device, &mut transient_cmd_pool, &surface, window_size, None)?;
 
         // Create uniform buffer.
         let uniform_buffer = VolatileUniformBuffer::new_for_type::<UniformData>("Uniform buffer", &device)?;
 
         // Create descriptor pool.
-        let pool_sizes = [
+        let descriptor_pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1),
@@ -171,59 +159,59 @@ impl GalaxyEngine {
         ];
 
         let descriptor_pool_info = vk::DescriptorPoolCreateInfo::default()
-            .pool_sizes(&pool_sizes)
+            .pool_sizes(&descriptor_pool_sizes)
             .max_sets(1 + 2); // Allocator 1 set for graphics and 2 sets for compute.
 
-        let descriptor_pool = DescriptorPool::new(&device, &descriptor_pool_info)?;
+        let mut descriptor_pool = DescriptorPool::new(&device, &descriptor_pool_info)?;
 
         // Load mesh.
         let mesh = Mesh::new(
             "Viking room",
             &device,
-            graphics_cmd_pool,
+            &mut transient_cmd_pool,
             "galaxy_engine/assets/viking_room.obj",
             "galaxy_engine/assets/viking_room.ktx2",
             swapchain.samples(),
             &uniform_buffer,
-            &descriptor_pool,
+            &mut descriptor_pool,
         )?;
 
-        // Create command buffer.
-        let command_buffer_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(graphics_cmd_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(Self::MAX_FRAMES_IN_FLIGHT as u32);
-        let command_buffers = unsafe { device.loader().allocate_command_buffers_av(&command_buffer_info) }?;
-
-        let command_buffer_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(compute_cmd_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(Self::MAX_FRAMES_IN_FLIGHT as u32);
-        let compute_command_buffers = unsafe { device.loader().allocate_command_buffers_av(&command_buffer_info) }?;
-
-        // Create sync objects.
-        let mut image_available_semaphores = ArrayVec::new();
-        let mut render_finished_semaphores = ArrayVec::new();
-        let mut compute_finished_semaphores = ArrayVec::new();
-        let mut in_flight_fences = ArrayVec::new();
-        let mut compute_in_flight_fences = ArrayVec::new();
-        for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
-            image_available_semaphores.push(BinarySemaphore::new(&device)?);
-            render_finished_semaphores.push(BinarySemaphore::new(&device)?);
-            compute_finished_semaphores.push(BinarySemaphore::new(&device)?);
-            in_flight_fences.push(Fence::new(&device, true)?);
-            compute_in_flight_fences.push(Fence::new(&device, true)?);
-        }
-
+        // Create particle system.
         let particle_system = GpuParticleSystem::new(
             &device,
             swapchain.samples(),
             Self::MAX_NUM_PARTICLES,
             window_size,
             &uniform_buffer,
-            graphics_cmd_pool,
-            &descriptor_pool,
+            &mut transient_cmd_pool,
+            &mut descriptor_pool,
         )?;
+
+        // Create per-frame objects.
+        let mut graphics_cmd_pools = ArrayVec::new();
+        let mut compute_cmd_pools = ArrayVec::new();
+
+        let mut image_available_semaphores = ArrayVec::new();
+        let mut render_finished_semaphores = ArrayVec::new();
+        let mut compute_finished_semaphores = ArrayVec::new();
+        let mut in_flight_fences = ArrayVec::new();
+        let mut compute_in_flight_fences = ArrayVec::new();
+        for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
+            // Create command pools and buffers.
+            let mut graphics_cmd_pool = ResettablePrimaryCommandPool::new(&device, device.primary_queue())?;
+            let mut compute_cmd_pool = ResettablePrimaryCommandPool::new(&device, device.primary_queue())?;
+            graphics_cmd_pool.allocate_cmd_buffer(vk::CommandBufferLevel::PRIMARY)?;
+            compute_cmd_pool.allocate_cmd_buffer(vk::CommandBufferLevel::PRIMARY)?;
+            graphics_cmd_pools.push(graphics_cmd_pool);
+            compute_cmd_pools.push(compute_cmd_pool);
+
+            // Create sync objects.
+            image_available_semaphores.push(BinarySemaphore::new(&device)?);
+            render_finished_semaphores.push(BinarySemaphore::new(&device)?);
+            compute_finished_semaphores.push(BinarySemaphore::new(&device)?);
+            in_flight_fences.push(Fence::new(&device, true)?);
+            compute_in_flight_fences.push(Fence::new(&device, true)?);
+        }
 
         device.print_allocator_report();
 
@@ -236,12 +224,10 @@ impl GalaxyEngine {
             mesh: ManuallyDrop::new(mesh),
             descriptor_pool: ManuallyDrop::new(descriptor_pool),
             particle_system: ManuallyDrop::new(particle_system),
-            graphics_cmd_pool,
-            compute_cmd_pool,
-            transfer_cmd_pool,
+            graphics_cmd_pools,
+            compute_cmd_pools,
+            transient_cmd_pool: ManuallyDrop::new(transient_cmd_pool),
             uniform_buffer: ManuallyDrop::new(uniform_buffer),
-            cmd_buffers: command_buffers.try_into().unwrap(),
-            compute_cmd_buffers: compute_command_buffers.try_into().unwrap(),
             image_available_semaphores,
             render_finished_semaphores,
             compute_finished_semaphores,
@@ -277,7 +263,8 @@ impl GalaxyEngine {
             sun_direction: na::Vector3::new(time.sin().abs(), (time + 0.3).sin().abs(), (time + 0.6).sin().abs()),
             delta_time,
         };
-        // Copy data to uniform buffer.
+
+        // Copy data to uniform buffer. TODO: This only works here because the uniform buffer is device-local.
         self.uniform_buffer
             .update(current_frame, bytemuck::bytes_of(&uniform_data))?;
 
@@ -285,25 +272,23 @@ impl GalaxyEngine {
         self.compute_in_flight_fences[current_frame].wait(u64::MAX)?;
         self.compute_in_flight_fences[current_frame].reset()?;
 
-        let command_buffer = self.compute_cmd_buffers[current_frame];
-        unsafe { loader.reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty()) }?;
-        unsafe { loader.begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default()) }?;
-        self.uniform_buffer.copy_to_gpu(loader, current_frame, command_buffer);
-        self.particle_system.record_compute(command_buffer);
-        unsafe { loader.end_command_buffer(command_buffer) }?;
+        // Reset compute pool.
+        let compute_cmd_pool = &mut self.compute_cmd_pools[current_frame];
+        compute_cmd_pool.reset()?;
 
-        let submit_info = vk::SubmitInfo::default()
-            .command_buffers(slice::from_ref(&command_buffer))
-            .signal_semaphores(slice::from_ref(
-                self.compute_finished_semaphores[current_frame].ref_handle(),
-            ));
-        unsafe {
-            loader.queue_submit(
-                self.device.primary_queue().handle(),
-                &[submit_info],
-                self.compute_in_flight_fences[current_frame].handle(),
-            )
-        }?;
+        let command_buffer = compute_cmd_pool.get_cmd_buffer(0);
+        let recording = command_buffer.begin()?;
+        self.uniform_buffer
+            .copy_to_gpu(loader, current_frame, recording.handle());
+        self.particle_system.record_compute(recording);
+        command_buffer.end()?;
+
+        let signal_semaphores = [self.compute_finished_semaphores[current_frame].handle()];
+        command_buffer.submit(
+            &[],
+            &signal_semaphores,
+            Some(&self.compute_in_flight_fences[current_frame]),
+        )?;
 
         // Wait for graphics fence.
         self.in_flight_fences[current_frame].wait(u64::MAX)?;
@@ -323,10 +308,6 @@ impl GalaxyEngine {
 
         self.in_flight_fences[current_frame].reset()?;
 
-        let command_buffer = self.cmd_buffers[current_frame];
-
-        unsafe { loader.reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty()) }?;
-
         let swapchain_extent = self.swapchain.get_extent();
 
         let viewport = vk::Viewport::default()
@@ -336,10 +317,6 @@ impl GalaxyEngine {
             .max_depth(1.0);
 
         let scissor = vk::Rect2D::default().extent(swapchain_extent);
-
-        // Record command buffer.
-        let begin_info = vk::CommandBufferBeginInfo::default();
-        unsafe { loader.begin_command_buffer(command_buffer, &begin_info) }?;
 
         let color_optimal_transition = vk::ImageMemoryBarrier2::default()
             .src_access_mask(vk::AccessFlags2::empty())
@@ -351,9 +328,15 @@ impl GalaxyEngine {
             .image(self.swapchain.get_images()[image_idx as usize])
             .subresource_range(Swapchain::get_subresource_range());
 
+        // Record graphics command buffer.
+        let graphics_cmd_pool = &mut self.graphics_cmd_pools[current_frame];
+        graphics_cmd_pool.reset()?;
+        let command_buffer = graphics_cmd_pool.get_cmd_buffer(0);
+
+        let recording = command_buffer.begin()?;
         let dependency_info =
             vk::DependencyInfo::default().image_memory_barriers(slice::from_ref(&color_optimal_transition));
-        unsafe { ext.sync2.cmd_pipeline_barrier2(command_buffer, &dependency_info) };
+        unsafe { ext.sync2.cmd_pipeline_barrier2(recording.handle(), &dependency_info) };
 
         let color_attachment_info = vk::RenderingAttachmentInfo::default()
             .image_view(self.swapchain.get_colour_resolve_view().view().handle())
@@ -386,11 +369,11 @@ impl GalaxyEngine {
             .layer_count(1)
             .color_attachments(slice::from_ref(&color_attachment_info))
             .depth_attachment(&depth_attachment_info);
-        unsafe { ext.dyn_cmd.cmd_begin_rendering(command_buffer, &rendering_info) }
-        self.particle_system
-            .record_graphics(command_buffer, time, viewport, scissor);
-        self.mesh.record_graphics(loader, command_buffer, viewport, scissor);
-        unsafe { ext.dyn_cmd.cmd_end_rendering(command_buffer) };
+
+        unsafe { ext.dyn_cmd.cmd_begin_rendering(recording.handle(), &rendering_info) }
+        self.particle_system.record_graphics(recording, time, viewport, scissor);
+        self.mesh.record_graphics(loader, recording.handle(), viewport, scissor);
+        unsafe { ext.dyn_cmd.cmd_end_rendering(recording.handle()) };
 
         let color_optimal_to_present_src_transition = vk::ImageMemoryBarrier2::default()
             .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
@@ -403,34 +386,27 @@ impl GalaxyEngine {
 
         let dependency_info = vk::DependencyInfo::default()
             .image_memory_barriers(slice::from_ref(&color_optimal_to_present_src_transition));
-        unsafe { ext.sync2.cmd_pipeline_barrier2(command_buffer, &dependency_info) };
+        unsafe { ext.sync2.cmd_pipeline_barrier2(recording.handle(), &dependency_info) };
 
-        unsafe { loader.end_command_buffer(command_buffer) }?;
+        command_buffer.end()?;
 
         // Submit command buffer.
         let wait_semaphores = [
-            self.compute_finished_semaphores[current_frame].handle(),
-            self.image_available_semaphores[current_frame].handle(),
+            WaitSemaphore {
+                handle: self.compute_finished_semaphores[current_frame].handle(),
+                stage_mask: vk::PipelineStageFlags::VERTEX_INPUT,
+            },
+            WaitSemaphore {
+                handle: self.image_available_semaphores[current_frame].handle(),
+                stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            },
         ];
-        let wait_stages = [
-            vk::PipelineStageFlags::VERTEX_INPUT,
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-        ];
-        let submit_info = vk::SubmitInfo::default()
-            .command_buffers(slice::from_ref(&command_buffer))
-            .wait_semaphores(&wait_semaphores)
-            .wait_dst_stage_mask(&wait_stages)
-            .signal_semaphores(slice::from_ref(
-                self.render_finished_semaphores[current_frame].ref_handle(),
-            ));
-
-        unsafe {
-            loader.queue_submit(
-                self.device.primary_queue().handle(),
-                slice::from_ref(&submit_info),
-                self.in_flight_fences[current_frame].handle(),
-            )
-        }?;
+        let signal_semaphores = [self.render_finished_semaphores[current_frame].handle()];
+        command_buffer.submit(
+            &wait_semaphores,
+            &signal_semaphores,
+            Some(&self.in_flight_fences[current_frame]),
+        )?;
 
         match self.swapchain.queue_present(
             self.device.primary_queue().handle(),
@@ -454,13 +430,13 @@ impl GalaxyEngine {
         let new_swapchain = Swapchain::new(
             &self.instance,
             &self.device,
-            self.graphics_cmd_pool,
+            &mut self.transient_cmd_pool,
             &self.surface,
             self.window_size,
             Some(&self.swapchain),
         )?;
-        unsafe { ManuallyDrop::drop(&mut self.swapchain) };
-        self.swapchain = ManuallyDrop::new(new_swapchain);
+        let mut old_swapchain = std::mem::replace(&mut self.swapchain, ManuallyDrop::new(new_swapchain));
+        unsafe { ManuallyDrop::drop(&mut old_swapchain) };
         Ok(())
     }
 
@@ -476,12 +452,11 @@ impl GalaxyEngine {
 
 impl Drop for GalaxyEngine {
     fn drop(&mut self) {
-        let device_loader = self.device.loader();
-
-        unsafe { device_loader.device_wait_idle() }
-            .unwrap_or_else(|e| log::error!("Failed to wait for vulkan idle: {:?}", e));
-
         self.device.print_allocator_report();
+
+        self.device
+            .wait_idle()
+            .unwrap_or_else(|e| log::error!("Failed to wait for device idle: {:?}", e));
 
         // Drop sync objects.
         self.image_available_semaphores.clear();
@@ -490,13 +465,10 @@ impl Drop for GalaxyEngine {
         self.in_flight_fences.clear();
         self.compute_in_flight_fences.clear();
 
-        // Drop command_buffers.
-        unsafe { device_loader.free_command_buffers(self.graphics_cmd_pool, &self.cmd_buffers) };
-
         // Drop command_pools.
-        unsafe { device_loader.destroy_command_pool(self.graphics_cmd_pool, None) };
-        unsafe { device_loader.destroy_command_pool(self.compute_cmd_pool, None) };
-        unsafe { device_loader.destroy_command_pool(self.transfer_cmd_pool, None) };
+        self.graphics_cmd_pools.clear();
+        self.compute_cmd_pools.clear();
+        unsafe { ManuallyDrop::drop(&mut self.transient_cmd_pool) };
 
         // Drop particle system.
         unsafe { ManuallyDrop::drop(&mut self.particle_system) };

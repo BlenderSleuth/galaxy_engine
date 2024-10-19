@@ -7,6 +7,7 @@ use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::vk::Handle;
 use ash::{ext, khr, vk, RawPtr};
+use castaway::match_type;
 use gpu_allocator::vulkan::{AllocationCreateDesc, Allocator, AllocatorCreateDesc};
 use gpu_allocator::AllocatorDebugSettings;
 use itertools::{Either, Itertools};
@@ -138,13 +139,13 @@ impl Device {
         DEVICE_LOADER.get_or_init(|| device.clone());
 
         // Get queues.
-        let primary_queue = Queue::get(&device, physical_device.primary_queue_family_idx, 0);
+        let primary_queue = Queue::get(&device, physical_device.primary_queue_family_idx);
         let async_transfer_queue = physical_device
             .async_transfer_queue_family_idx
-            .map(|queue_family_idx| Queue::get(&device, queue_family_idx, 0));
+            .map(|queue_family_idx| Queue::get(&device, queue_family_idx));
         let async_compute_queue = physical_device
             .async_compute_queue_family_idx
-            .map(|queue_family_idx| Queue::get(&device, queue_family_idx, 0));
+            .map(|queue_family_idx| Queue::get(&device, queue_family_idx));
 
         // Set up GPU memory allocator.
         let allocator_debug_settings = if cfg!(feature = "debug_info") {
@@ -223,7 +224,7 @@ impl Device {
         self.async_compute_queue.as_ref()
     }
 
-    pub fn allocate_and_bind_memory<H: Handle>(
+    pub fn allocate_and_bind_memory<H: Handle + 'static>(
         &self,
         desc: &AllocationCreateDesc,
         handle: H,
@@ -235,35 +236,36 @@ impl Device {
                 .allocate(desc)?,
         );
 
-        // Workaround while const pattern matching is not stable.
-        const BUFFER_TYPE: i32 = vk::ObjectType::BUFFER.as_raw();
-        const IMAGE_TYPE: i32 = vk::ObjectType::IMAGE.as_raw();
-        match const { H::TYPE.as_raw() } {
-            BUFFER_TYPE => {
+        match_type!(handle, {
+            vk::Buffer as handle => {
                 unsafe {
                     self.loader.bind_buffer_memory(
-                        vk::Buffer::from_raw(handle.as_raw()),
+                        handle,
                         allocation.memory(),
                         allocation.offset(),
                     )
                 }?;
-            }
-            IMAGE_TYPE => {
+            },
+            vk::Image as handle => {
                 unsafe {
                     self.loader.bind_image_memory(
-                        vk::Image::from_raw(handle.as_raw()),
+                        handle,
                         allocation.memory(),
                         allocation.offset(),
                     )
                 }?;
-            }
+            },
             _ => {
                 // Can this be a compile time error?
                 panic!("Invalid handle type.");
-            }
-        }
+            },
+        });
 
         Ok(allocation)
+    }
+
+    pub fn wait_idle(&self) -> VkResult<()> {
+        unsafe { self.loader.device_wait_idle() }
     }
 
     pub fn print_allocator_report(&self) {

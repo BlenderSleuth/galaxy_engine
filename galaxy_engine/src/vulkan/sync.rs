@@ -6,6 +6,15 @@ use ash::vk;
 use crate::vulkan::device::Device;
 use crate::vulkan::get_device;
 
+pub trait Semaphore {
+    fn handle(&self) -> vk::Semaphore;
+}
+
+pub struct WaitSemaphore {
+    pub handle: vk::Semaphore,
+    pub stage_mask: vk::PipelineStageFlags,
+}
+
 pub struct BinarySemaphore {
     handle: vk::Semaphore,
 }
@@ -15,11 +24,11 @@ impl BinarySemaphore {
         let handle = unsafe { device.loader().create_semaphore(&Default::default(), None) }?;
         Ok(Self { handle })
     }
-    pub fn handle(&self) -> vk::Semaphore {
+}
+
+impl Semaphore for BinarySemaphore {
+    fn handle(&self) -> vk::Semaphore {
         self.handle
-    }
-    pub fn ref_handle(&self) -> &vk::Semaphore {
-        &self.handle
     }
 }
 

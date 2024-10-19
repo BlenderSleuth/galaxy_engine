@@ -11,12 +11,14 @@ use crate::maths::ModelViewProjection;
 use crate::mesh::{BindableVertex, MeshBuffer, Vertex};
 use crate::uniform_buffer::VolatileUniformBuffer;
 use crate::vulkan::buffer::{Buffer, GpuOnly};
+use crate::vulkan::command_buffer::{OneTimeOrPersistentState, RecordingCmdBuf, TransientPrimaryCommandPool};
 use crate::vulkan::descriptors::DescriptorPool;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::MemResult;
 use crate::vulkan::pipeline::{
     ComputePipeline, ComputePipelineParameters, GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout,
 };
+use crate::vulkan::queue::queue_type::{ComputeQueueType, Primary};
 use crate::vulkan::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
 use crate::{engine, pod, utils};
 
@@ -72,9 +74,8 @@ impl GpuParticleSystem {
         max_num_particles: u32,
         window_size: vk::Extent2D,
         uniform_buffer: &VolatileUniformBuffer,
-        // TODO: Transient cmd pool.
-        graphics_cmd_pool: vk::CommandPool,
-        descriptor_pool: &DescriptorPool,
+        cmd_pool: &mut TransientPrimaryCommandPool,
+        descriptor_pool: &mut DescriptorPool,
     ) -> MemResult<Self> {
         // Set up particle system compute pipeline.
         let particle_shader_module = ShaderModule::new(&device, "galaxy_engine/shaders/particles.comp.spv")?;
@@ -107,11 +108,13 @@ impl GpuParticleSystem {
                 | vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::VERTEX_BUFFER,
         )?;
+        let mut cmd_buffer = cmd_pool.new_one_time()?;
         particle_storage_buffer.copy_via_staging_buffer(
             &device,
+            &mut cmd_buffer,
             bytemuck::must_cast_slice(&initial_particles),
-            graphics_cmd_pool,
         )?;
+        cmd_buffer.end_submit_wait_and_free()?;
 
         // TODO: Don't allocate small buffers.
         let num_particles_buffer = Buffer::<GpuOnly>::new_for_type::<pod::vk::DrawIndexedIndirectCommand>(
@@ -245,39 +248,36 @@ impl GpuParticleSystem {
         };
     }
 
-    pub fn record_compute(&self, command_buffer: vk::CommandBuffer) {
+    pub fn record_compute<Q: ComputeQueueType, O: OneTimeOrPersistentState>(
+        &self,
+        command_buffer: &mut RecordingCmdBuf<Q, O>,
+    ) {
         unsafe {
             self.loader.cmd_bind_pipeline(
-                command_buffer,
+                command_buffer.handle(),
                 vk::PipelineBindPoint::COMPUTE,
                 self.compute_pipeline.handle(),
             )
         };
-        self.bind_descriptor_set(command_buffer, vk::PipelineBindPoint::COMPUTE);
+        self.bind_descriptor_set(command_buffer.handle(), vk::PipelineBindPoint::COMPUTE);
         unsafe {
             self.loader
-                .cmd_dispatch(command_buffer, self.max_num_particles / 256, 1, 1)
+                .cmd_dispatch(command_buffer.handle(), self.max_num_particles / 256, 1, 1)
         };
     }
 
-    pub fn record_graphics(
+    pub fn record_graphics<O: OneTimeOrPersistentState>(
         &self,
-        command_buffer: vk::CommandBuffer,
+        command_buffer: &mut RecordingCmdBuf<Primary, O>,
         time: f32,
         viewport: vk::Viewport,
         scissor: vk::Rect2D,
     ) {
         let mvp = ModelViewProjection::spin(utils::viewport_extent(viewport), time.sin() * 0.5, 20.0).mvp();
-        unsafe {
-            self.loader.cmd_bind_pipeline(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.graphics_pipeline.handle(),
-            )
-        };
+        command_buffer.bind_graphics_pipeline(&self.graphics_pipeline);
         unsafe {
             self.loader.cmd_bind_descriptor_sets(
-                command_buffer,
+                command_buffer.handle(),
                 vk::PipelineBindPoint::GRAPHICS,
                 self.graphics_pipeline.layout().handle(),
                 0,
@@ -287,19 +287,19 @@ impl GpuParticleSystem {
         };
         unsafe {
             self.loader.cmd_push_constants(
-                command_buffer,
+                command_buffer.handle(),
                 self.graphics_pipeline.layout().handle(),
                 vk::ShaderStageFlags::VERTEX,
                 0,
                 bytemuck::bytes_of(&mvp),
             )
         };
-        self.mesh_buffer.bind(self.loader.deref(), command_buffer);
-        unsafe { self.loader.cmd_set_viewport(command_buffer, 0, &[viewport]) };
-        unsafe { self.loader.cmd_set_scissor(command_buffer, 0, &[scissor]) };
+        self.mesh_buffer.bind(self.loader.deref(), command_buffer.handle());
+        unsafe { self.loader.cmd_set_viewport(command_buffer.handle(), 0, &[viewport]) };
+        unsafe { self.loader.cmd_set_scissor(command_buffer.handle(), 0, &[scissor]) };
         unsafe {
             self.loader.cmd_draw_indexed(
-                command_buffer,
+                command_buffer.handle(),
                 self.mesh_buffer.num_indices(),
                 self.max_num_particles,
                 0,

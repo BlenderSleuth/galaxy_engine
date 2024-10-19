@@ -7,7 +7,7 @@ use ash::prelude::VkResult;
 use ash::{khr, vk};
 
 use crate::utils;
-use crate::vulkan::command_buffer::CommandBuffer;
+use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::MemResult;
 use crate::vulkan::image::{Image, ImageView};
@@ -29,7 +29,7 @@ impl Swapchain {
     pub fn new(
         instance: &Instance,
         device: &Device,
-        gfx_cmd_pool: vk::CommandPool,
+        cmd_pool: &mut TransientPrimaryCommandPool,
         surface: &Surface,
         window_size: vk::Extent2D,
         old_swapchain: Option<&Swapchain>,
@@ -135,13 +135,15 @@ impl Swapchain {
         };
 
         let mut depth_image = Image::new("Depth image", &device, &depth_image_info, depth_subresource)?;
+        let mut cmd_buffer = cmd_pool.new_one_time()?;
         depth_image.transition_layout(
-            &device,
-            CommandBuffer::one_time_transient(&device, gfx_cmd_pool)?,
+            device,
+            &mut cmd_buffer,
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             None,
-        )?;
+        );
+        cmd_buffer.end_submit_wait_and_free()?;
 
         Ok(Self {
             loader,

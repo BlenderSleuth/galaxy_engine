@@ -14,7 +14,7 @@ use crate::material::{Material, MaterialError};
 use crate::maths;
 use crate::uniform_buffer::VolatileUniformBuffer;
 use crate::vulkan::buffer::{Buffer, CpuToGpu, GpuOnly};
-use crate::vulkan::command_buffer::CommandBuffer;
+use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::debug;
 use crate::vulkan::descriptors::DescriptorPool;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
@@ -86,7 +86,7 @@ impl MeshBuffer {
         vertices: &[V],
         indices: &[I],
         device: &Device,
-        transfer_cmd_pool: vk::CommandPool,
+        cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> MemResult<MeshBuffer> {
         // Ensure proper alignment.
         let indices_layout = Layout::for_value(indices);
@@ -114,12 +114,9 @@ impl MeshBuffer {
         )?;
         staging_buffer.copy_into_buffer(indices, 0)?;
         staging_buffer.copy_into_buffer(vertices, vertices_offset)?;
-        staging_buffer.copy_to_buffer(
-            CommandBuffer::one_time_transient(device, transfer_cmd_pool)?,
-            &device,
-            &mut buffer,
-            staging_buffer.size(),
-        )?;
+        let mut cmd_buffer = cmd_pool.new_one_time()?;
+        staging_buffer.copy_to_buffer(&mut cmd_buffer, &mut buffer, staging_buffer.size());
+        cmd_buffer.end_submit_wait_and_free()?;
 
         Ok(Self {
             buffer,
@@ -211,19 +208,19 @@ impl Mesh {
     pub fn new(
         name: &str,
         device: &Device,
-        gfx_cmd_pool: vk::CommandPool,
+        cmd_pool: &mut TransientPrimaryCommandPool,
         mesh_path: &str,
         texture_path: &str,
         samples: vk::SampleCountFlags,
         uniform_buffer: &VolatileUniformBuffer,
-        descriptor_pool: &DescriptorPool,
+        descriptor_pool: &mut DescriptorPool,
     ) -> Result<Self, MeshError> {
         // Load material.
         let material = Material::new(
             debug::debug_only_name!("{name} material"),
             device,
             texture_path,
-            gfx_cmd_pool,
+            cmd_pool,
         )?;
 
         // Load model. The obj crate already does indexing for us.
@@ -252,7 +249,7 @@ impl Mesh {
         meshopt::optimize_overdraw_in_place(&mut indices, &vertex_data_adapter, 1.05);
         meshopt::optimize_vertex_fetch_in_place(&mut indices, &mut vertices);
 
-        let mesh_buffer = MeshBuffer::new_from_vertices_and_indices(name, &vertices, &indices, device, gfx_cmd_pool)?;
+        let mesh_buffer = MeshBuffer::new_from_vertices_and_indices(name, &vertices, &indices, device, cmd_pool)?;
 
         let layout_bindings = material.descriptor_set_layout_bindings();
         let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&layout_bindings);

@@ -10,9 +10,10 @@ use gpu_allocator::MemoryLocation;
 
 use crate::utils;
 use crate::vulkan::buffer::{Buffer, CpuToGpu};
-use crate::vulkan::command_buffer::{CommandBuffer, TransientOrPersistentCommandBuffer};
+use crate::vulkan::command_buffer::{OneTimeOrPersistentState, RecordingCmdBuf, TransientPrimaryCommandPool};
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
+use crate::vulkan::queue::queue_type::QueueType;
 use crate::vulkan::{debug, gpu_alloc};
 
 pub struct ImageView {
@@ -169,7 +170,7 @@ impl Image {
     pub fn new_from_mip_levels(
         name: &str,
         device: &Device,
-        gfx_cmd_pool: vk::CommandPool,
+        cmd_pool: &mut TransientPrimaryCommandPool,
         levels: &[&[u8]],
         dimensions: ImageDimensions,
         format: vk::Format,
@@ -243,16 +244,16 @@ impl Image {
             offset += data.len();
         }
 
-        let cmd_buffer = CommandBuffer::begin_one_time(device, gfx_cmd_pool)?;
+        let mut cmd_buffer = cmd_pool.new_one_time()?;
 
         // Transition all mip levels to transfer destination optimal.
         image.transition_layout(
             &device,
-            cmd_buffer.as_persistent(),
+            &mut cmd_buffer,
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             None,
-        )?;
+        );
 
         // Perform the copy.
         unsafe {
@@ -268,35 +269,34 @@ impl Image {
         // Transition all mip levels to shader read only optimal.
         image.transition_layout(
             &device,
-            cmd_buffer.as_persistent(),
+            &mut cmd_buffer,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             None,
-        )?;
+        );
 
-        cmd_buffer.end_submit_and_wait(device, device.primary_queue().handle())?;
+        cmd_buffer.end_submit_wait_and_free()?;
 
         Ok(image)
     }
 
-    //pub fn handle(&self) -> vk::Image {
-    //    self.handle
-    //}
+    pub fn handle(&self) -> vk::Image {
+        self.handle
+    }
 
     pub fn view(&self) -> &ImageView {
         &self.view
     }
 
-    pub fn transition_layout(
+    pub fn transition_layout<Q: QueueType, O: OneTimeOrPersistentState>(
         &mut self,
+        // TODO: remove device and put cmds in cmd_buffer.
         device: &Device,
-        cmd: TransientOrPersistentCommandBuffer,
+        cmd_buffer: &mut RecordingCmdBuf<Q, O>,
         old_layout: vk::ImageLayout,
         new_layout: vk::ImageLayout,
         mip_level: Option<u32>,
-    ) -> VkResult<()> {
-        let cmd_buffer = cmd.command_buffer();
-
+    ) {
         let mut image_barrier = vk::ImageMemoryBarrier2::default()
             .old_layout(old_layout)
             .new_layout(new_layout)
@@ -347,20 +347,16 @@ impl Image {
                 .sync2
                 .cmd_pipeline_barrier2(cmd_buffer.handle(), &dependency_info)
         };
-
-        cmd.maybe_end_submit_and_wait(device, device.primary_queue().handle())
     }
 
-    #[allow(dead_code)] // TODO
-    pub fn copy_buffer_to_image(
+    pub fn copy_buffer_to_image<Q: QueueType, O: OneTimeOrPersistentState>(
         &mut self,
+        // TODO: remove device and put cmds in cmd_buffer.
         device: &Device,
-        cmd: TransientOrPersistentCommandBuffer,
+        cmd_buffer: &mut RecordingCmdBuf<Q, O>,
         buffer: &Buffer<CpuToGpu>,
         mip_level: u32,
-    ) -> VkResult<()> {
-        let cmd_buffer = cmd.command_buffer();
-
+    ) {
         let region = vk::BufferImageCopy::default()
             .buffer_offset(0)
             .buffer_row_length(0)
@@ -383,8 +379,6 @@ impl Image {
                 &[region],
             )
         };
-
-        cmd.maybe_end_submit_and_wait(device, device.primary_queue().handle())
     }
 }
 

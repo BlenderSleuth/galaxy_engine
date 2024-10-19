@@ -4,11 +4,11 @@ use std::f32::consts::FRAC_1_SQRT_2;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use ash::vk;
 use nalgebra as na;
 use parking_lot::RwLock;
 
 use crate::mesh::{MeshBuffer, Vertex};
+use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::MemResult;
 
@@ -39,7 +39,7 @@ pub struct StaticResources {
 
 impl StaticResources {
     /// Initialisation of static resources.
-    pub(crate) fn new(device: &Device, gfx_cmd_pool: vk::CommandPool) -> MemResult<Self> {
+    pub(crate) fn new(device: &Device, cmd_pool: &mut TransientPrimaryCommandPool) -> MemResult<Self> {
         // TODO: upload with same command buffer?
         Ok(Self {
             quad_buffer: Arc::new(MeshBuffer::new_from_vertices_and_indices(
@@ -47,14 +47,14 @@ impl StaticResources {
                 &Self::QUAD_VERTICES,
                 &Self::QUAD_INDICES,
                 device,
-                gfx_cmd_pool,
+                cmd_pool,
             )?),
             octagon_buffer: Arc::new(MeshBuffer::new_from_vertices_and_indices(
                 "Octagon",
                 &Self::OCTAGON_VERTICES,
                 &Self::OCTAGON_INDICES,
                 device,
-                gfx_cmd_pool,
+                cmd_pool,
             )?),
         })
     }

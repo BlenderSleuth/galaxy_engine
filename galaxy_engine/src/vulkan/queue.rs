@@ -18,28 +18,31 @@ pub mod queue_type {
     // presentation without a graphics and present queue. Thus, this primary queue is also used for presentation.
     // https://stackoverflow.com/questions/61434615/in-vulkan-is-it-beneficial-for-the-graphics-queue-family-to-be-separate-from-th
 
-    pub trait QueueType {}
+    pub trait QueueType: 'static {}
+    pub trait ComputeQueueType: QueueType {}
     // This is the primary, mandatory queue, with support for graphics, compute, transfer and present operations.
     pub struct Primary;
     impl QueueType for Primary {}
+    impl ComputeQueueType for Primary {}
     // Transfer-only DMA queue (optionally supported).
     pub struct AsyncTransfer;
     impl QueueType for AsyncTransfer {}
     // Async compute-only queue (optionally supported).
     pub struct AsyncCompute;
     impl QueueType for AsyncCompute {}
+    impl ComputeQueueType for AsyncCompute {}
 }
 use queue_type::*;
 
-pub struct Queue<T: QueueType> {
+pub struct Queue<Q: QueueType> {
     handle: vk::Queue,
     family_index: u32,
-    phantom_data: PhantomData<T>,
+    phantom_data: PhantomData<Q>,
 }
 
-impl<T: QueueType> Queue<T> {
-    pub fn get(device: &ash::Device, queue_family_idx: u32, queue_idx: u32) -> Self {
-        let handle = unsafe { device.get_device_queue(queue_family_idx, queue_idx) };
+impl<Q: QueueType> Queue<Q> {
+    pub fn get(device: &ash::Device, queue_family_idx: u32) -> Self {
+        let handle = unsafe { device.get_device_queue(queue_family_idx, 0) };
         Self {
             handle,
             family_index: queue_family_idx,

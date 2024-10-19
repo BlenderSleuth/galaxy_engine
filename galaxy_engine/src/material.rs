@@ -3,6 +3,7 @@
 use ash::vk;
 
 use crate::utils;
+use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::debug;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::MemoryError;
@@ -33,7 +34,7 @@ impl Material {
         name: &str,
         device: &Device,
         texture_path: &str,
-        gfx_cmd_pool: vk::CommandPool,
+        cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<Self, MaterialError> {
         // Load texture.
         let image_file = std::fs::read(texture_path)?;
@@ -47,7 +48,7 @@ impl Material {
         let texture_image = Image::new_from_mip_levels(
             debug::debug_only_name!("{name} texture"),
             device,
-            gfx_cmd_pool,
+            cmd_pool,
             &mip_levels,
             ImageDimensions::Type2D(extent),
             header

@@ -4,9 +4,10 @@ use ash::vk;
 use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme};
 use gpu_allocator::MemoryLocation;
 
-use crate::vulkan::command_buffer::{CommandBuffer, TransientOrPersistentCommandBuffer};
+use crate::vulkan::command_buffer::{OneTimeOrPersistentState, RecordingCmdBuf};
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
+use crate::vulkan::queue::queue_type::QueueType;
 use crate::vulkan::{debug, gpu_alloc};
 
 // Type-state trait encoding of gpu_allocator::MemoryLocation for use in generic parameters.
@@ -124,23 +125,14 @@ impl<L: MemLocation> Buffer<L> {
             .range(self.size())
     }
 
-    pub fn copy_to_buffer<L2: MemLocation>(
+    pub fn copy_to_buffer<L2: MemLocation, Q: QueueType, O: OneTimeOrPersistentState>(
         &self,
-        cmd: TransientOrPersistentCommandBuffer,
-        device: &Device,
+        cmd_buffer: &mut RecordingCmdBuf<Q, O>,
         dst_buffer: &mut Buffer<L2>,
         size: vk::DeviceSize,
-    ) -> MemResult<()> {
-        let cmd_buffer = cmd.command_buffer();
-
+    ) {
         let copy_region = vk::BufferCopy::default().size(size);
-        unsafe {
-            device
-                .loader()
-                .cmd_copy_buffer(cmd_buffer.handle(), self.handle(), dst_buffer.handle(), &[copy_region])
-        };
-
-        Ok(cmd.maybe_end_submit_and_wait(device, device.primary_queue().handle())?)
+        cmd_buffer.copy_buffer(self, dst_buffer, &[copy_region]);
     }
 }
 
@@ -155,21 +147,16 @@ impl<L: MemLocation> Drop for Buffer<L> {
 }
 
 impl Buffer<GpuOnly> {
-    pub fn copy_via_staging_buffer(
+    pub fn copy_via_staging_buffer<Q: QueueType>(
         &mut self,
         device: &Device,
+        cmd_buf: &mut RecordingCmdBuf<Q>,
         src_data: &[u8],
-        cmd_pool: vk::CommandPool,
     ) -> MemResult<()> {
         let mut staging_buffer =
-            Buffer::<CpuToGpu>::new_for_slice("Staging Buffer", &device, src_data, vk::BufferUsageFlags::TRANSFER_SRC)?;
+            Buffer::<CpuToGpu>::new_for_slice("Staging buffer", &device, src_data, vk::BufferUsageFlags::TRANSFER_SRC)?;
         staging_buffer.copy_into_buffer(src_data, 0)?;
-        staging_buffer.copy_to_buffer(
-            CommandBuffer::one_time_transient(device, cmd_pool)?,
-            &device,
-            self,
-            staging_buffer.size(),
-        )?;
+        staging_buffer.copy_to_buffer(cmd_buf, self, staging_buffer.size());
         Ok(())
     }
 }
