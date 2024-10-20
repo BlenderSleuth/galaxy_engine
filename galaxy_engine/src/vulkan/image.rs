@@ -10,7 +10,7 @@ use gpu_allocator::MemoryLocation;
 
 use crate::utils;
 use crate::vulkan::buffer::{Buffer, CpuToGpu};
-use crate::vulkan::command_buffer::{RecordingCmdBuf, SubmissionType, TransientPrimaryCommandPool};
+use crate::vulkan::command_buffer::{RecordingCmdBuf, TransientPrimaryCommandPool};
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::extensions::DeviceExtensions;
 use crate::vulkan::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
@@ -247,7 +247,7 @@ impl Image {
             })
             .collect::<MemResult<Vec<_>>>()?;
 
-        let mut cmd_buffer = cmd_pool.new_one_time()?;
+        let mut cmd_buffer = cmd_pool.allocate_transient_cmd_buffer()?;
 
         // Transition all mip levels to transfer destination optimal.
         image.transition_layout(
@@ -291,7 +291,7 @@ impl Image {
     pub fn transition_layout(
         &mut self,
         ext: &DeviceExtensions,
-        cmd_buffer: &mut RecordingCmdBuf<impl QueueType, impl SubmissionType>,
+        cmd_buffer: &mut RecordingCmdBuf<impl QueueType>,
         old_layout: vk::ImageLayout,
         new_layout: vk::ImageLayout,
         mip_level: Option<u32>,
@@ -345,7 +345,7 @@ impl Image {
 
     pub fn copy_buffer_to_image(
         &mut self,
-        cmd_buffer: &mut RecordingCmdBuf<impl QueueType, impl SubmissionType>,
+        cmd_buffer: &mut RecordingCmdBuf<impl QueueType>,
         buffer: &Buffer<CpuToGpu>,
         mip_level: u32,
     ) {

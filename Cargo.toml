@@ -10,7 +10,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.82.0"
+rust-version = "1.81.0"
 
 [profile.dev]
 #opt-level = 1

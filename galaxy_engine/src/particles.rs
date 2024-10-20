@@ -10,7 +10,7 @@ use crate::maths::ModelViewProjection;
 use crate::mesh::{BindableVertex, MeshBuffer, Vertex};
 use crate::uniform_buffer::VolatileUniformBuffer;
 use crate::vulkan::buffer::{Buffer, GpuOnly};
-use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingCmdBuf, SubmissionType, TransientPrimaryCommandPool};
+use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingCmdBuf, TransientPrimaryCommandPool};
 use crate::vulkan::descriptors::DescriptorPool;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::MemResult;
@@ -107,7 +107,7 @@ impl GpuParticleSystem {
                 | vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::VERTEX_BUFFER,
         )?;
-        let mut cmd_buffer = cmd_pool.new_one_time()?;
+        let mut cmd_buffer = cmd_pool.allocate_transient_cmd_buffer()?;
         particle_storage_buffer.copy_via_staging_buffer(
             &device,
             &mut cmd_buffer,
@@ -234,7 +234,7 @@ impl GpuParticleSystem {
         })
     }
 
-    pub fn record_compute(&self, cmd_buffer: &mut RecordingCmdBuf<impl ComputeQueueType, impl SubmissionType>) {
+    pub fn record_compute(&self, cmd_buffer: &mut RecordingCmdBuf<impl ComputeQueueType>) {
         cmd_buffer.bind_compute_pipeline(&self.compute_pipeline);
         cmd_buffer.bind_descriptor_sets(
             vk::PipelineBindPoint::COMPUTE,
@@ -248,7 +248,7 @@ impl GpuParticleSystem {
 
     pub fn record_graphics(
         &self,
-        command_buffer: &mut RenderingCmdBuf<PrimaryQueue, impl SubmissionType>,
+        command_buffer: &mut RenderingCmdBuf<PrimaryQueue>,
         time: f32,
         viewport: vk::Viewport,
         scissor: vk::Rect2D,

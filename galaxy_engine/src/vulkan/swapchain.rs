@@ -137,7 +137,7 @@ impl Swapchain {
         };
 
         let mut depth_image = Image::new("Depth image", device, &depth_image_info, depth_subresource)?;
-        let mut cmd_buffer = cmd_pool.new_one_time()?;
+        let mut cmd_buffer = cmd_pool.allocate_transient_cmd_buffer()?;
         depth_image.transition_layout(
             device.extensions(),
             &mut cmd_buffer,

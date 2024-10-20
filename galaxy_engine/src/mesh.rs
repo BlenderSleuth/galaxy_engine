@@ -14,9 +14,7 @@ use crate::material::{Material, MaterialError};
 use crate::maths;
 use crate::uniform_buffer::VolatileUniformBuffer;
 use crate::vulkan::buffer::{Buffer, CpuToGpu, GpuOnly};
-use crate::vulkan::command_buffer::{
-    RecordingCmdBuf, RenderingCmdBuf, RenderingState, SubmissionType, TransientPrimaryCommandPool,
-};
+use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingCmdBuf, RenderingState, TransientPrimaryCommandPool};
 use crate::vulkan::debug;
 use crate::vulkan::descriptors::DescriptorPool;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
@@ -117,7 +115,7 @@ impl MeshBuffer {
         )?;
         staging_buffer.copy_into_buffer(indices, 0)?;
         staging_buffer.copy_into_buffer(vertices, vertices_offset)?;
-        let mut cmd_buffer = cmd_pool.new_one_time()?;
+        let mut cmd_buffer = cmd_pool.allocate_transient_cmd_buffer()?;
         staging_buffer.copy_to_buffer(&mut cmd_buffer, &mut buffer, staging_buffer.size());
         cmd_buffer.end_submit_wait_and_free()?;
 
@@ -133,7 +131,7 @@ impl MeshBuffer {
         self.num_indices
     }
 
-    pub fn bind(&self, cmd_buffer: &mut RecordingCmdBuf<PrimaryQueue, impl SubmissionType, impl RenderingState>) {
+    pub fn bind(&self, cmd_buffer: &mut RecordingCmdBuf<PrimaryQueue, impl RenderingState>) {
         cmd_buffer.bind_index_buffer(&self.buffer, 0, self.index_type);
         cmd_buffer.bind_vertex_buffer(&self.buffer, self.vertices_offset);
     }
@@ -323,7 +321,7 @@ impl Mesh {
 
     pub fn record_graphics(
         &self,
-        cmd_buffer: &mut RenderingCmdBuf<PrimaryQueue, impl SubmissionType>,
+        cmd_buffer: &mut RenderingCmdBuf<PrimaryQueue>,
         viewport: vk::Viewport,
         scissor: vk::Rect2D,
     ) {

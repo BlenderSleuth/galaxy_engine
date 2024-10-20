@@ -24,10 +24,8 @@ pub enum PhysicalDeviceIncompatibility {
     IncompatibleVulkanVersion(vulkan::IncompatibleVulkanVersion),
     #[error("Not enough push constant space: {0} < {1}")]
     NotEnoughPushConstantSpace(u32, u32),
-    #[error("No anisotropic filtering support")]
-    NoAnisotropicFiltering,
-    #[error("No buffer device address support")]
-    NoBufferDeviceAddress,
+    #[error("{0} not supported")]
+    FeatureNotSupported(&'static str),
 }
 
 pub struct PhysicalDevice {
@@ -199,20 +197,36 @@ impl PhysicalDevice {
             ));
         }
 
-        let mut buffer_device_address_features = vk::PhysicalDeviceVulkan12Features::default();
-        let mut physical_device_features =
-            vk::PhysicalDeviceFeatures2::default().push_next(&mut buffer_device_address_features);
+        let mut vulkan12_features = vk::PhysicalDeviceVulkan12Features::default();
+        let mut physical_device_features = vk::PhysicalDeviceFeatures2::default().push_next(&mut vulkan12_features);
         unsafe { instance.get_physical_device_features2(handle, &mut physical_device_features) };
 
         // Require anisotropic filtering support.
         if physical_device_features.features.sampler_anisotropy == vk::FALSE {
-            return Err(PhysicalDeviceIncompatibility::NoAnisotropicFiltering);
+            return Err(PhysicalDeviceIncompatibility::FeatureNotSupported(
+                "Anisotropic filtering",
+            ));
         }
 
         // Require buffer_device_address support.
-        if buffer_device_address_features.buffer_device_address == vk::FALSE {
-            return Err(PhysicalDeviceIncompatibility::NoBufferDeviceAddress);
+        if vulkan12_features.buffer_device_address == vk::FALSE {
+            return Err(PhysicalDeviceIncompatibility::FeatureNotSupported(
+                "Buffer device address",
+            ));
         }
+
+        // Require descriptor indexing support.
+        //if vulkan12_features.descriptor_indexing == vk::FALSE {
+        //    return Err(PhysicalDeviceIncompatibility::FeatureNotSupported(
+        //        "Descriptor indexing",
+        //    ));
+        //}
+
+        //if vulkan12_features.draw_indirect_count == vk::FALSE {
+        //    return Err(PhysicalDeviceIncompatibility::FeatureNotSupported(
+        //        "Draw indirect count",
+        //    ));
+        //}
 
         // TODO: Need some amount of device-local + host-visible memory?
         // let mem_props = unsafe { instance.get_physical_device_memory_properties(handle) };

@@ -4,7 +4,7 @@ use ash::vk;
 
 use crate::engine::GalaxyEngine;
 use crate::vulkan::buffer::{Buffer, CpuToGpu, GpuOnly, MemLocation};
-use crate::vulkan::command_buffer::{RecordingCmdBuf, SubmissionType};
+use crate::vulkan::command_buffer::RecordingCmdBuf;
 use crate::vulkan::debug;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::MemResult;
@@ -84,11 +84,7 @@ impl VolatileUniformBuffer {
             .copy_into_buffer(data, self.frame_offset(current_frame) as usize)
     }
 
-    pub fn copy_to_gpu(
-        &mut self,
-        current_frame: usize,
-        cmd_buffer: &mut RecordingCmdBuf<impl QueueType, impl SubmissionType>,
-    ) {
+    pub fn copy_to_gpu(&mut self, current_frame: usize, cmd_buffer: &mut RecordingCmdBuf<impl QueueType>) {
         let copy_region = vk::BufferCopy::default()
             .src_offset(self.frame_offset(current_frame))
             .size(self.size);
