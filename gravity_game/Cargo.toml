@@ -11,4 +11,4 @@ debug_info = ["galaxy_engine/debug_info"]
 galaxy_engine = { path = "../galaxy_engine" }
 winit = "0.30.5"
 thiserror = "1.0.64"
-env_logger = { version = "0.11.5", default-features = false }
+env_logger = { version = "0.11.5", default-features = false, features = ["auto-color"] }

@@ -6,6 +6,8 @@ struct PushConstants {
 PushConstants push_constants;
 
 struct SceneUniforms {
+    float4x4 view;
+    float4x4 projection;
     float3 sun_direction;
     float delta_time;
 };

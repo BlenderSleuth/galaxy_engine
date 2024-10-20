@@ -5,9 +5,11 @@ struct PushConstants {
 };
 
 [[vk::push_constant]]
-ConstantBuffer<PushConstants> push_constants;
+PushConstants push_constants;
 
 struct SceneUniforms {
+    float4x4 view;
+    float4x4 projection;
     float3 sun_direction;
     float delta_time;
 };
@@ -71,16 +73,21 @@ struct VSInput {
 };
 
 struct VSToFS {
-    float4 position : SV_Position;
+    float4 position : SV_POSITION;
     float2 tex_coord : TEXCOORD0;
 };
 
 VSToFS mainVS(VSInput input, inout uint instance_id: SV_InstanceID) {
-    float3 position1 = DrawnParticles[instance_id].position + input.position * DrawnParticles[instance_id].radius;
-    float4 position = mul(push_constants.mvp, float4(position1, 1.));
+    float3 particle_position = DrawnParticles[instance_id].position; 
+    float radius = DrawnParticles[instance_id].radius;
+
+    float3 camera_right = scene_uniforms.view[0].xyz;
+    float3 camera_up = scene_uniforms.view[1].xyz;
+
+    float3 vertex_position = particle_position + input.position.x * camera_right * radius + input.position.y * camera_up * radius;
 
     VSToFS output;
-    output.position = position;
+    output.position = mul(scene_uniforms.projection, mul(scene_uniforms.view, float4(vertex_position, 1.)));
     output.tex_coord = input.tex_coord;
     return output;
 }

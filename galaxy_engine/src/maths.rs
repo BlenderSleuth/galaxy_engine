@@ -24,9 +24,9 @@ impl<T: RealField> VkPerspective<T> for Perspective3<T> {
 }
 
 pub struct ModelViewProjection {
-    model: Affine3<f32>,
-    view: Isometry3<f32>,
-    proj: Perspective3<f32>,
+    pub model: Affine3<f32>,
+    pub view: Isometry3<f32>,
+    pub proj: Perspective3<f32>,
 }
 
 impl ModelViewProjection {
@@ -52,6 +52,14 @@ impl ModelViewProjection {
 
     pub fn mvp(&self) -> Mat4 {
         self.proj.as_matrix() * (self.view * self.model).to_homogeneous()
+    }
+
+    pub fn camera_up(&self) -> na::Vector3<f32> {
+        self.view.rotation.transform_vector(&na::Vector3::new(0., 1., 0.))
+    }
+
+    pub fn camera_right(&self) -> na::Vector3<f32> {
+        self.view.rotation.transform_vector(&na::Vector3::new(1., 0., 0.))
     }
 
     pub fn push_constant_range() -> vk::PushConstantRange {

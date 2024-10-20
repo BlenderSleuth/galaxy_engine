@@ -129,7 +129,7 @@ impl GpuParticleSystem {
                 .binding(0)
                 .descriptor_count(1)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+                .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX),
             vk::DescriptorSetLayoutBinding::default()
                 .binding(1)
                 .descriptor_count(1)

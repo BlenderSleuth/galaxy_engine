@@ -61,6 +61,8 @@ pub enum MainLoopError {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
 pub struct UniformData {
+    view: na::Matrix4<f32>,
+    proj: na::Matrix4<f32>,
     sun_direction: na::Vector3<f32>,
     delta_time: f32,
 }
@@ -255,12 +257,14 @@ impl GalaxyEngine {
 
         // Update uniform buffer.
         let time = self.start_time.elapsed().as_secs_f32();
-        self.mesh.mvp = ModelViewProjection::spin(self.window_size, time.sin() * 0.5, 20.0);
+        self.mesh.mvp = ModelViewProjection::spin(self.window_size, 0., 20.0);
 
         let delta_time = self.last_frame_time.elapsed().as_secs_f32();
         self.last_frame_time = std::time::Instant::now();
 
         let uniform_data = UniformData {
+            view: self.mesh.mvp.view.to_homogeneous(),
+            proj: self.mesh.mvp.proj.to_homogeneous(),
             sun_direction: na::Vector3::new(time.sin().abs(), (time + 0.3).sin().abs(), (time + 0.6).sin().abs()),
             delta_time,
         };
