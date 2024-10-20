@@ -5,9 +5,12 @@ use std::ffi::CStr;
 use ash::vk;
 use raw_window_handle::DisplayHandle;
 
+#[cfg(feature = "debug_info")]
+use crate::app;
 use crate::app::AppInfo;
-use crate::vulkan::debug::DebugMessenger;
-use crate::{app, utils, vulkan};
+#[cfg(feature = "debug_info")]
+use crate::vulkan::debug;
+use crate::{utils, vulkan};
 
 #[derive(Debug, thiserror::Error)]
 pub enum InstanceInitError {
@@ -23,7 +26,7 @@ pub enum InstanceInitError {
 
 pub struct Instance {
     #[cfg(feature = "debug_info")]
-    debug_messenger: Option<DebugMessenger>,
+    debug_messenger: Option<debug::DebugMessenger>,
     loader: ash::Instance,
     entry: ash::Entry,
 }
@@ -139,12 +142,13 @@ impl Instance {
         // Create debug messenger.
         #[cfg(feature = "debug_info")]
         let debug_messenger = if enabled_debug_utils {
-            Some(DebugMessenger::new(&entry, &instance)?)
+            Some(debug::DebugMessenger::new(&entry, &instance)?)
         } else {
             None
         };
 
         Ok(Self {
+            #[cfg(feature = "debug_info")]
             debug_messenger,
             loader: instance,
             entry,

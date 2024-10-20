@@ -8,9 +8,13 @@ use ash::prelude::VkResult;
 use ash::vk;
 use ash::vk::DependencyInfo;
 use castaway::match_type;
+// Public exports
+pub use command_buffer_states::{RenderingState, SubmissionType};
 
 use crate::vulkan::buffer::{Buffer, GpuOnly, MemLocation};
 use crate::vulkan::device::{Device, DeviceExt, SharedDeviceLoader};
+use crate::vulkan::extensions::DeviceExtensions;
+use crate::vulkan::image::Image;
 use crate::vulkan::pipeline::{ComputePipeline, GraphicsPipeline, Pipeline, PipelineLayout};
 use crate::vulkan::queue::queue_type::{ComputeQueueType, PrimaryQueue, QueueType};
 use crate::vulkan::queue::Queue;
@@ -23,11 +27,13 @@ pub type TransientPrimaryCommandPool = CommandPool<PrimaryQueue, Transient>;
 pub trait CommandPoolType: Default {
     const FLAGS: vk::CommandPoolCreateFlags = vk::CommandPoolCreateFlags::empty();
 }
+
 #[derive(Default)]
 pub struct Transient;
 impl CommandPoolType for Transient {
     const FLAGS: vk::CommandPoolCreateFlags = vk::CommandPoolCreateFlags::TRANSIENT;
 }
+
 pub struct Resettable<Q: QueueType, S: SubmissionType> {
     persistent_cmd_buffers: Vec<PersistentCmdBuf<Q, S>>,
 }
@@ -68,7 +74,7 @@ impl<Q: QueueType, T: CommandPoolType> CommandPool<Q, T> {
 }
 
 impl<Q: QueueType> CommandPool<Q, Transient> {
-    pub fn new_one_time(&mut self) -> VkResult<CommandBuffer<Q, Recording<OneTime>>> {
+    pub fn new_one_time(&mut self) -> VkResult<CommandBuffer<Q, Recording<OneTime, OutsideRenderPass>>> {
         let handle = unsafe {
             self.loader
                 .allocate_command_buffer(self.handle, vk::CommandBufferLevel::PRIMARY)
@@ -140,7 +146,7 @@ impl<Q: QueueType, S: SubmissionType> CommandPool<Q, Resettable<Q, S>> {
         &mut self.pool_storage.persistent_cmd_buffers[idx]
     }
 
-    pub fn reset(&mut self) -> Result<(), PersistentCmdBufError> {
+    pub fn reset(&mut self) -> Result<(), CmdBufStateTransitionError> {
         for cmd_buf in self.pool_storage.persistent_cmd_buffers.iter_mut() {
             cmd_buf.reset()?;
         }
@@ -184,15 +190,25 @@ mod command_buffer_states {
         type CompletedState = Executable<Persistent>;
     }
 
+    // Rendering state (with a render pass).
+    pub trait RenderingState: 'static {}
+    pub struct InsideRenderPass;
+    impl RenderingState for InsideRenderPass {}
+    pub struct OutsideRenderPass;
+    impl RenderingState for OutsideRenderPass {}
+
     // Initial state.
     pub struct Initial;
     impl CmdBufState for Initial {}
     impl ResettableState for Initial {}
 
     // Recording state.
-    pub struct Recording<S: SubmissionType>(std::marker::PhantomData<S>);
-    impl<S: SubmissionType> CmdBufState for Recording<S> {}
-    impl<S: SubmissionType> ResettableState for Recording<S> {}
+    pub struct Recording<S: SubmissionType, R: RenderingState>(
+        std::marker::PhantomData<S>,
+        std::marker::PhantomData<R>,
+    );
+    impl<S: SubmissionType, R: RenderingState> CmdBufState for Recording<S, R> {}
+    impl<S: SubmissionType, R: RenderingState> ResettableState for Recording<S, R> {}
 
     // Executable state.
     pub struct Executable<S: SubmissionType>(std::marker::PhantomData<S>);
@@ -217,16 +233,12 @@ mod command_buffer_states {
     impl ResettableState for Invalid {}
     impl CompletedState for Invalid {}
 }
-// Public exports
-pub use command_buffer_states::SubmissionType;
 use command_buffer_states::*;
-
-use crate::vulkan::extensions::DeviceExtensions;
-use crate::vulkan::image::Image;
 
 // Command buffer state types.
 pub type InitialCmdBuf<Q = PrimaryQueue> = CommandBuffer<Q, Initial>;
-pub type RecordingCmdBuf<Q = PrimaryQueue, S = OneTime> = CommandBuffer<Q, Recording<S>>;
+pub type RecordingCmdBuf<Q = PrimaryQueue, S = OneTime, R = OutsideRenderPass> = CommandBuffer<Q, Recording<S, R>>;
+pub type RenderingCmdBuf<Q = PrimaryQueue, S = OneTime> = CommandBuffer<Q, Recording<S, InsideRenderPass>>;
 pub type ExecutableCmdBuf<Q = PrimaryQueue, S = OneTime> = CommandBuffer<Q, Executable<S>>;
 pub type PendingCmdBuf<Q = PrimaryQueue, S = OneTime> = CommandBuffer<Q, Pending<S>>;
 pub type InvalidCmdBuf<Q = PrimaryQueue> = CommandBuffer<Q, Invalid>;
@@ -273,24 +285,31 @@ impl<Q: QueueType, C: ResettableState> CommandBuffer<Q, C> {
 }
 
 impl<Q: QueueType> CommandBuffer<Q, Initial> {
-    pub fn begin<S: SubmissionType>(self) -> VkResult<CommandBuffer<Q, Recording<S>>> {
+    pub fn begin<S: SubmissionType>(self) -> VkResult<CommandBuffer<Q, Recording<S, OutsideRenderPass>>> {
         let begin_info = vk::CommandBufferBeginInfo::default().flags(S::FLAGS);
         unsafe { self.loader.begin_command_buffer(self.handle, &begin_info) }?;
         Ok(self.next_state())
     }
 }
 
-impl<S: SubmissionType> CommandBuffer<PrimaryQueue, Recording<S>> {
+impl<S: SubmissionType> CommandBuffer<PrimaryQueue, Recording<S, OutsideRenderPass>> {
+    pub fn begin_rendering(
+        self,
+        ext: &DeviceExtensions,
+        rendering_info: &vk::RenderingInfo,
+    ) -> RecordingCmdBuf<PrimaryQueue, S, InsideRenderPass> {
+        unsafe { ext.dyn_cmd.cmd_begin_rendering(self.handle, rendering_info) };
+        self.next_state()
+    }
+}
+
+// Graphics recording commands.
+impl<S: SubmissionType, R: RenderingState> CommandBuffer<PrimaryQueue, Recording<S, R>> {
     pub fn bind_graphics_pipeline(&self, pipeline: &GraphicsPipeline) {
         unsafe {
             self.loader
                 .cmd_bind_pipeline(self.handle, vk::PipelineBindPoint::GRAPHICS, pipeline.handle())
         }
-    }
-
-    // TODO: Another state for rendering?
-    pub fn begin_rendering(&mut self, ext: &DeviceExtensions, rendering_info: &vk::RenderingInfo) {
-        unsafe { ext.dyn_cmd.cmd_begin_rendering(self.handle, rendering_info) };
     }
 
     pub fn bind_index_buffer(&mut self, buffer: &Buffer<GpuOnly>, offset: vk::DeviceSize, index_type: vk::IndexType) {
@@ -314,7 +333,11 @@ impl<S: SubmissionType> CommandBuffer<PrimaryQueue, Recording<S>> {
     pub fn set_scissor(&mut self, scissor: vk::Rect2D) {
         unsafe { self.loader.cmd_set_scissor(self.handle, 0, &[scissor]) };
     }
+}
 
+// Rendering commands.
+impl<S: SubmissionType> CommandBuffer<PrimaryQueue, Recording<S, InsideRenderPass>> {
+    // Draw commands are only valid inside a render pass.
     pub fn draw_indexed(
         &mut self,
         index_count: u32,
@@ -335,12 +358,14 @@ impl<S: SubmissionType> CommandBuffer<PrimaryQueue, Recording<S>> {
         };
     }
 
-    pub fn end_rendering(&mut self, ext: &DeviceExtensions) {
+    pub fn end_rendering(self, ext: &DeviceExtensions) -> RecordingCmdBuf<PrimaryQueue, S, OutsideRenderPass> {
         unsafe { ext.dyn_cmd.cmd_end_rendering(self.handle) };
+        self.next_state()
     }
 }
 
-impl<Q: ComputeQueueType, S: SubmissionType> CommandBuffer<Q, Recording<S>> {
+// Graphics/compute recording commands.
+impl<Q: ComputeQueueType, S: SubmissionType, R: RenderingState> CommandBuffer<Q, Recording<S, R>> {
     pub fn bind_compute_pipeline(&self, pipeline: &ComputePipeline) {
         unsafe {
             self.loader
@@ -380,7 +405,11 @@ impl<Q: ComputeQueueType, S: SubmissionType> CommandBuffer<Q, Recording<S>> {
             )
         };
     }
+}
 
+// Compute dispatches.
+impl<Q: ComputeQueueType, S: SubmissionType> CommandBuffer<Q, Recording<S, OutsideRenderPass>> {
+    // Dispatch must be called when not rendering.
     pub fn dispatch(&mut self, group_count_x: u32, group_count_y: u32, group_count_z: u32) {
         unsafe {
             self.loader
@@ -389,7 +418,8 @@ impl<Q: ComputeQueueType, S: SubmissionType> CommandBuffer<Q, Recording<S>> {
     }
 }
 
-impl<Q: QueueType, S: SubmissionType> CommandBuffer<Q, Recording<S>> {
+// Generic recording commands.
+impl<Q: QueueType, S: SubmissionType, R: RenderingState> CommandBuffer<Q, Recording<S, R>> {
     pub fn copy_buffer<L1: MemLocation, L2: MemLocation>(
         &mut self,
         src_buffer: &Buffer<L1>,
@@ -423,14 +453,16 @@ impl<Q: QueueType, S: SubmissionType> CommandBuffer<Q, Recording<S>> {
     pub fn pipeline_barrier2(&mut self, ext: &DeviceExtensions, dependency_info: &DependencyInfo) {
         unsafe { ext.sync2.cmd_pipeline_barrier2(self.handle, dependency_info) };
     }
+}
 
+impl<Q: QueueType, S: SubmissionType> CommandBuffer<Q, Recording<S, OutsideRenderPass>> {
     pub fn end(self) -> VkResult<CommandBuffer<Q, Executable<S>>> {
         unsafe { self.loader.end_command_buffer(self.handle) }?;
         Ok(Self::next_state(self))
     }
 }
 
-impl<Q: QueueType> CommandBuffer<Q, Recording<OneTime>> {
+impl<Q: QueueType> CommandBuffer<Q, Recording<OneTime, OutsideRenderPass>> {
     // On transient buffers ending, submitting, waiting and freeing are often all done in one go.
     pub fn end_submit_wait_and_free(self) -> VkResult<()> {
         let ended = self.end()?;
@@ -441,6 +473,7 @@ impl<Q: QueueType> CommandBuffer<Q, Recording<OneTime>> {
     }
 }
 
+// Executable commands.
 impl<Q: QueueType, S: SubmissionType> CommandBuffer<Q, Executable<S>> {
     pub fn submit<const M: usize>(
         self,
@@ -465,6 +498,7 @@ impl<Q: QueueType, S: SubmissionType> CommandBuffer<Q, Executable<S>> {
     }
 }
 
+// Pending commands.
 impl<Q: QueueType, C: PendingState> CommandBuffer<Q, C> {
     pub fn queue_wait_idle(self) -> VkResult<CommandBuffer<Q, C::CompletedState>> {
         unsafe { self.loader.queue_wait_idle(self.queue) }?;
@@ -472,19 +506,21 @@ impl<Q: QueueType, C: PendingState> CommandBuffer<Q, C> {
     }
 }
 
-// Persistent command buffers last more than a frame.
+// Persistent command buffers last more than a frame, and are state-tracked in an enum.
 #[derive(thiserror::Error, Debug)]
-pub enum PersistentCmdBufError {
+pub enum CmdBufStateTransitionError {
     #[error("Command buffer is in the wrong state ({0}) for operation {1}")]
     WrongState(&'static str, &'static str),
     #[error("Vulkan error while transitioning command buffer state: {0}")]
     VulkanError(#[from] vk::Result),
 }
+type CmdBufStateTransitionResult<T> = Result<T, CmdBufStateTransitionError>;
 
 pub enum PersistentCmdBuf<Q: QueueType, S: SubmissionType> {
     Invalid(CommandBuffer<Q, Invalid>),
     Initial(CommandBuffer<Q, Initial>),
-    Recording(CommandBuffer<Q, Recording<S>>),
+    Recording(CommandBuffer<Q, Recording<S, OutsideRenderPass>>),
+    Rendering(CommandBuffer<Q, Recording<S, InsideRenderPass>>),
     Executable(CommandBuffer<Q, Executable<S>>),
     Pending(CommandBuffer<Q, Pending<S>>),
     // Only transitioning within a method call.
@@ -492,11 +528,12 @@ pub enum PersistentCmdBuf<Q: QueueType, S: SubmissionType> {
     Transitioning,
 }
 
-impl<Q: QueueType, S: SubmissionType + 'static> PersistentCmdBuf<Q, S> {
+impl<Q: QueueType, S: SubmissionType> PersistentCmdBuf<Q, S> {
     fn new<C: CmdBufState>(cmd_buf: CommandBuffer<Q, C>) -> Self {
         match_type!(cmd_buf, {
             CommandBuffer<Q, Initial> as cmd_buf => Self::Initial(cmd_buf),
-            CommandBuffer<Q, Recording<S>> as cmd_buf => Self::Recording(cmd_buf),
+            CommandBuffer<Q, Recording<S, OutsideRenderPass>> as cmd_buf => Self::Recording(cmd_buf),
+            CommandBuffer<Q, Recording<S, InsideRenderPass>> as cmd_buf => Self::Rendering(cmd_buf),
             CommandBuffer<Q, Executable<S>> as cmd_buf => Self::Executable(cmd_buf),
             CommandBuffer<Q, Pending<S>> as cmd_buf => Self::Pending(cmd_buf),
             CommandBuffer<Q, Invalid> as cmd_buf => Self::Invalid(cmd_buf),
@@ -505,7 +542,7 @@ impl<Q: QueueType, S: SubmissionType + 'static> PersistentCmdBuf<Q, S> {
     }
 
     fn check_not_transitioning(&self) {
-        assert!(
+        debug_assert!(
             !matches!(self, Self::Transitioning),
             "Command buffer is already transitioning."
         );
@@ -515,6 +552,7 @@ impl<Q: QueueType, S: SubmissionType + 'static> PersistentCmdBuf<Q, S> {
         match self {
             Self::Initial(_) => "Initial",
             Self::Recording(_) => "Recording",
+            Self::Rendering(_) => "Rendering",
             Self::Executable(_) => "Executable",
             Self::Pending(_) => "Pending",
             Self::Invalid(_) => "Invalid",
@@ -523,7 +561,7 @@ impl<Q: QueueType, S: SubmissionType + 'static> PersistentCmdBuf<Q, S> {
     }
 
     // Resets back to initial state.
-    fn reset(&mut self) -> Result<(), PersistentCmdBufError> {
+    fn reset(&mut self) -> Result<(), CmdBufStateTransitionError> {
         self.check_not_transitioning();
 
         // TODO: Manage buffer fences in pool, so pending buffers can be reset.
@@ -535,6 +573,7 @@ impl<Q: QueueType, S: SubmissionType + 'static> PersistentCmdBuf<Q, S> {
         *self = Self::Initial(match std::mem::replace(self, Self::Transitioning) {
             Self::Initial(cmd_buf) => cmd_buf.reset(),
             Self::Recording(cmd_buf) => cmd_buf.reset(),
+            Self::Rendering(cmd_buf) => cmd_buf.reset(),
             Self::Executable(cmd_buf) => cmd_buf.reset(),
             //Self::Pending(_) => unreachable!(),
             Self::Pending(cmd_buf) => cmd_buf.queue_wait_idle()?.reset(),
@@ -545,7 +584,7 @@ impl<Q: QueueType, S: SubmissionType + 'static> PersistentCmdBuf<Q, S> {
         Ok(())
     }
 
-    pub fn begin(&mut self) -> Result<&mut CommandBuffer<Q, Recording<S>>, PersistentCmdBufError> {
+    pub fn begin(&mut self) -> CmdBufStateTransitionResult<&mut CommandBuffer<Q, Recording<S, OutsideRenderPass>>> {
         self.check_not_transitioning();
 
         if let Self::Initial(cmd_buf) = std::mem::replace(self, Self::Transitioning) {
@@ -553,25 +592,19 @@ impl<Q: QueueType, S: SubmissionType + 'static> PersistentCmdBuf<Q, S> {
             let Self::Recording(cmd_buf) = self else { unreachable!() };
             Ok(cmd_buf)
         } else {
-            Err(PersistentCmdBufError::WrongState(
-                self.state_str(),
-                "begin command buffer",
-            ))
+            Err(CmdBufStateTransitionError::WrongState(self.state_str(), "begin"))
         }
     }
 
     // Because of Rust's mutability rules, the recording buffer returned from begin() cannot be used after this method.
-    pub fn end(&mut self) -> Result<(), PersistentCmdBufError> {
+    pub fn end(&mut self) -> CmdBufStateTransitionResult<()> {
         self.check_not_transitioning();
 
         if let Self::Recording(cmd_buf) = std::mem::replace(self, Self::Transitioning) {
             *self = Self::Executable(cmd_buf.end()?);
             Ok(())
         } else {
-            Err(PersistentCmdBufError::WrongState(
-                self.state_str(),
-                "end command buffer",
-            ))
+            Err(CmdBufStateTransitionError::WrongState(self.state_str(), "end"))
         }
     }
 
@@ -580,16 +613,52 @@ impl<Q: QueueType, S: SubmissionType + 'static> PersistentCmdBuf<Q, S> {
         wait_semaphores: &[WaitSemaphore; M],
         signal_semaphores: &[vk::Semaphore],
         fence: Option<&Fence>,
-    ) -> Result<(), PersistentCmdBufError> {
+    ) -> CmdBufStateTransitionResult<()> {
         self.check_not_transitioning();
 
         if let Self::Executable(cmd_buf) = std::mem::replace(self, Self::Transitioning) {
             *self = Self::Pending(cmd_buf.submit(wait_semaphores, signal_semaphores, fence)?);
             Ok(())
         } else {
-            Err(PersistentCmdBufError::WrongState(
+            Err(CmdBufStateTransitionError::WrongState(self.state_str(), "submit"))
+        }
+    }
+}
+
+impl<S: SubmissionType> PersistentCmdBuf<PrimaryQueue, S> {
+    pub fn begin_rendering(
+        &mut self,
+        ext: &DeviceExtensions,
+        render_info: &vk::RenderingInfo,
+    ) -> CmdBufStateTransitionResult<&mut CommandBuffer<PrimaryQueue, Recording<S, InsideRenderPass>>> {
+        self.check_not_transitioning();
+
+        if let Self::Recording(cmd_buf) = std::mem::replace(self, Self::Transitioning) {
+            *self = Self::Rendering(cmd_buf.begin_rendering(ext, render_info));
+            let Self::Rendering(cmd_buf) = self else { unreachable!() };
+            Ok(cmd_buf)
+        } else {
+            Err(CmdBufStateTransitionError::WrongState(
                 self.state_str(),
-                "submit command buffer",
+                "begin rendering",
+            ))
+        }
+    }
+
+    pub fn end_rendering(
+        &mut self,
+        ext: &DeviceExtensions,
+    ) -> CmdBufStateTransitionResult<&mut CommandBuffer<PrimaryQueue, Recording<S, OutsideRenderPass>>> {
+        self.check_not_transitioning();
+
+        if let Self::Rendering(cmd_buf) = std::mem::replace(self, Self::Transitioning) {
+            *self = Self::Recording(cmd_buf.end_rendering(ext));
+            let Self::Recording(cmd_buf) = self else { unreachable!() };
+            Ok(cmd_buf)
+        } else {
+            Err(CmdBufStateTransitionError::WrongState(
+                self.state_str(),
+                "begin rendering",
             ))
         }
     }

@@ -17,7 +17,9 @@ use crate::mesh::{Mesh, MeshError};
 use crate::particles::GpuParticleSystem;
 use crate::static_resources::{StaticResources, StaticResourcesGuard, StaticResourcesLock};
 use crate::uniform_buffer::VolatileUniformBuffer;
-use crate::vulkan::command_buffer::{PersistentCmdBufError, ResettablePrimaryCommandPool, TransientPrimaryCommandPool};
+use crate::vulkan::command_buffer::{
+    CmdBufStateTransitionError, ResettablePrimaryCommandPool, TransientPrimaryCommandPool,
+};
 use crate::vulkan::descriptors::DescriptorPool;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
@@ -53,7 +55,7 @@ pub enum MainLoopError {
     #[error("Memory error: {0}")]
     MemoryError(#[from] MemoryError),
     #[error("Command buffer state error: {0}")]
-    PersistentCommandBufferError(#[from] PersistentCmdBufError),
+    PersistentCommandBufferError(#[from] CmdBufStateTransitionError),
 }
 
 #[repr(C)]
@@ -369,10 +371,10 @@ impl GalaxyEngine {
             .color_attachments(slice::from_ref(&color_attachment_info))
             .depth_attachment(&depth_attachment_info);
 
-        recording.begin_rendering(ext, &rendering_info);
-        self.particle_system.record_graphics(recording, time, viewport, scissor);
-        self.mesh.record_graphics(recording, viewport, scissor);
-        recording.end_rendering(ext);
+        let rendering = cmd_buffer.begin_rendering(ext, &rendering_info)?;
+        self.particle_system.record_graphics(rendering, time, viewport, scissor);
+        self.mesh.record_graphics(rendering, viewport, scissor);
+        let recording = cmd_buffer.end_rendering(ext)?;
 
         let color_optimal_to_present_src_transition = vk::ImageMemoryBarrier2::default()
             .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)

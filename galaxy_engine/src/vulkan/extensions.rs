@@ -2,12 +2,13 @@
 
 use std::ffi::CStr;
 
+use ash::khr;
+#[cfg(feature = "debug_info")]
 use ash::prelude::VkResult;
-use ash::{ext, khr};
 
 pub struct DeviceExtensions {
     #[cfg(feature = "debug_info")]
-    pub debug: Option<ext::debug_utils::Device>,
+    pub debug: Option<ash::ext::debug_utils::Device>,
     pub sync2: khr::synchronization2::Device,
     pub dyn_cmd: khr::dynamic_rendering::Device,
 }
@@ -15,8 +16,11 @@ pub struct DeviceExtensions {
 impl DeviceExtensions {
     pub(super) fn new(instance: &ash::Instance, device: &ash::Device, _optional_extensions: &[&CStr]) -> Self {
         #[cfg(feature = "debug_info")]
-        let debug = if _optional_extensions.iter().any(|&ext| ext == ext::debug_utils::NAME) {
-            Some(ext::debug_utils::Device::new(&instance, &device))
+        let debug = if _optional_extensions
+            .iter()
+            .any(|&ext| ext == ash::ext::debug_utils::NAME)
+        {
+            Some(ash::ext::debug_utils::Device::new(&instance, &device))
         } else {
             None
         };
@@ -31,7 +35,7 @@ impl DeviceExtensions {
     }
 
     #[cfg(feature = "debug_info")]
-    pub fn run_debug(&self, f: impl FnOnce(&ext::debug_utils::Device) -> VkResult<()>) -> VkResult<()> {
+    pub fn run_debug(&self, f: impl FnOnce(&ash::ext::debug_utils::Device) -> VkResult<()>) -> VkResult<()> {
         if let Some(debug) = &self.debug {
             f(debug)
         } else {

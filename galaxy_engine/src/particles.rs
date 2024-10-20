@@ -10,7 +10,7 @@ use crate::maths::ModelViewProjection;
 use crate::mesh::{BindableVertex, MeshBuffer, Vertex};
 use crate::uniform_buffer::VolatileUniformBuffer;
 use crate::vulkan::buffer::{Buffer, GpuOnly};
-use crate::vulkan::command_buffer::{RecordingCmdBuf, SubmissionType, TransientPrimaryCommandPool};
+use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingCmdBuf, SubmissionType, TransientPrimaryCommandPool};
 use crate::vulkan::descriptors::DescriptorPool;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::MemResult;
@@ -248,7 +248,7 @@ impl GpuParticleSystem {
 
     pub fn record_graphics(
         &self,
-        command_buffer: &mut RecordingCmdBuf<PrimaryQueue, impl SubmissionType>,
+        command_buffer: &mut RenderingCmdBuf<PrimaryQueue, impl SubmissionType>,
         time: f32,
         viewport: vk::Viewport,
         scissor: vk::Rect2D,
