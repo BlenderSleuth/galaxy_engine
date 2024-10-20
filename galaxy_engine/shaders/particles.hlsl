@@ -80,14 +80,12 @@ struct VSToFS {
 VSToFS mainVS(VSInput input, inout uint instance_id: SV_InstanceID) {
     float3 particle_position = DrawnParticles[instance_id].position; 
     float radius = DrawnParticles[instance_id].radius;
+    float4 view_position = mul(scene_uniforms.view, float4(particle_position, 1.));
 
-    float3 camera_right = scene_uniforms.view[0].xyz;
-    float3 camera_up = scene_uniforms.view[1].xyz;
-
-    float3 vertex_position = particle_position + input.position.x * camera_right * radius + input.position.y * camera_up * radius;
+    float4 vertex_position = view_position + float4(input.position.xy * radius, 0., 0.) ;
 
     VSToFS output;
-    output.position = mul(scene_uniforms.projection, mul(scene_uniforms.view, float4(vertex_position, 1.)));
+    output.position = mul(scene_uniforms.projection, vertex_position);
     output.tex_coord = input.tex_coord;
     return output;
 }

@@ -146,7 +146,7 @@ impl PhysicalDevice {
         // Choose surface presentation mode.
         let surface_present_modes = surface.get_present_modes(handle)?;
         // FIFO = waits for VSync, MAILBOX = waits for vsync, but will keep rendering (some frames will be thrown away, but reduces latency).
-        const REQUESTED_PRESENTATION_MODE: vk::PresentModeKHR = vk::PresentModeKHR::MAILBOX;
+        const REQUESTED_PRESENTATION_MODE: vk::PresentModeKHR = vk::PresentModeKHR::FIFO;
         let presentation_mode = surface_present_modes
             .into_iter()
             .find(|&mode| mode == REQUESTED_PRESENTATION_MODE)

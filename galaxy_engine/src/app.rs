@@ -7,10 +7,10 @@ use bitflags::bitflags;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::WindowEvent;
+use winit::event::{DeviceEvent, DeviceId, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
-use winit::window::{Window, WindowId};
+use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::engine::GalaxyEngine;
 use crate::utils;
@@ -87,6 +87,14 @@ impl ApplicationHandler for GalaxyApp {
             "Failed to create window: {}\nExiting.",
             event_loop
         );
+
+        if cfg!(target_os = "macos") {
+            window.set_cursor_grab(CursorGrabMode::Locked).unwrap();
+        } else if cfg!(target_os = "windows") {
+            window.set_cursor_grab(CursorGrabMode::Confined).unwrap();
+        }
+        window.set_cursor_visible(false);
+
         let display_handle = unwrap_or_exit!(
             window.display_handle(),
             "Failed to get display handle: {}\nExiting.",
@@ -124,10 +132,34 @@ impl ApplicationHandler for GalaxyApp {
                     NamedKey::Escape => {
                         event_loop.exit();
                     }
-                    _ => {}
+                    key => {
+                        if let Some(engine) = self.engine.as_mut() {
+                            engine.notify_key(event.state, key);
+                        }
+                    }
                 },
                 _ => {}
             },
+            WindowEvent::MouseInput { state, button, .. } => {
+                if let Some(engine) = self.engine.as_mut() {
+                    engine.notify_mouse_button(state, button);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn device_event(&mut self, event_loop: &ActiveEventLoop, _device_id: DeviceId, event: DeviceEvent) {
+        if event_loop.exiting() {
+            return;
+        }
+
+        match event {
+            DeviceEvent::MouseMotion { delta } => {
+                if let Some(engine) = self.engine.as_mut() {
+                    engine.notify_mouse_motion(delta.0 as f32, delta.1 as f32);
+                }
+            }
             _ => {}
         }
     }

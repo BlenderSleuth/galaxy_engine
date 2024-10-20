@@ -1,14 +1,18 @@
 // Copyright (c) 2024. Ben Sutherland
 
 use std::mem::ManuallyDrop;
+use std::ops::Rem;
 use std::slice;
 
 use app::AppInfo;
 use arrayvec::ArrayVec;
 use ash::vk;
 use nalgebra as na;
+use nalgebra::Isometry3;
 use parking_lot::{MappedRwLockReadGuard, RwLockReadGuard};
 use raw_window_handle::{DisplayHandle, WindowHandle};
+use winit::event::{ElementState, MouseButton};
+use winit::keyboard::NamedKey;
 
 use crate::app;
 use crate::engine::MainLoopError::VulkanError;
@@ -96,6 +100,8 @@ pub struct GalaxyEngine {
     last_frame_time: std::time::Instant,
     window_size: vk::Extent2D,
     window_resized: bool,
+    accumulated_mouse_delta: na::Vector2<f32>,
+    camera_z_angle: f32,
     device: ManuallyDrop<Device>,
     instance: Instance,
 }
@@ -104,15 +110,7 @@ impl GalaxyEngine {
     pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
     pub(crate) const MAX_NUM_PARTICLES: u32 = 1024;
 
-    // TODO: Compute cleanup:
-    // - Model resources/descriptor set management.
-
-    // TODO: General cleanup:
-    // - RAII handles.
-    // - Queue object.
-    // - Command buffer and pool management.
-    // - Use a single buffer for both vertices and indices.
-    pub fn new(
+    pub(crate) fn new(
         app_info: &AppInfo,
         display: DisplayHandle,
         window: WindowHandle,
@@ -240,12 +238,14 @@ impl GalaxyEngine {
             current_frame: 0,
             start_time: std::time::Instant::now(),
             last_frame_time: std::time::Instant::now(),
+            accumulated_mouse_delta: na::Vector2::zeros(),
+            camera_z_angle: 0.0,
             window_size,
             window_resized: false,
         })
     }
 
-    pub fn main_loop(&mut self) -> Result<(), MainLoopError> {
+    pub(crate) fn main_loop(&mut self) -> Result<(), MainLoopError> {
         if self.window_resized {
             self.window_resized = false;
             self.recreate_swapchain()?;
@@ -255,9 +255,24 @@ impl GalaxyEngine {
 
         let current_frame = self.current_frame as usize;
 
+        let accumulated_mouse_delta = self.accumulated_mouse_delta;
+        self.accumulated_mouse_delta = na::Vector2::zeros();
+        self.camera_z_angle -= accumulated_mouse_delta.x * 0.01;
+        self.camera_z_angle = self.camera_z_angle.rem(std::f32::consts::TAU);
+        //log::info!("Mouse delta: {:?}", accumulated_mouse_delta);
+
         // Update uniform buffer.
         let time = self.start_time.elapsed().as_secs_f32();
         self.mesh.mvp = ModelViewProjection::spin(self.window_size, 0., 20.0);
+        self.mesh.mvp.view = Isometry3::look_at_rh(
+            &na::Rotation3::from_axis_angle(
+                &na::Unit::new_normalize(na::Vector3::new(0., 0., 1.)),
+                self.camera_z_angle,
+            )
+            .transform_point(&na::Point3::new(2., 2., 2.)),
+            &na::Point3::new(0., 0., 0.),
+            &na::Vector3::new(0., 0., 1.),
+        );
 
         let delta_time = self.last_frame_time.elapsed().as_secs_f32();
         self.last_frame_time = std::time::Instant::now();
@@ -445,13 +460,21 @@ impl GalaxyEngine {
         Ok(())
     }
 
-    pub fn notify_window_resize(&mut self, width: u32, height: u32) {
+    pub(crate) fn notify_window_resize(&mut self, width: u32, height: u32) {
         let window_size = vk::Extent2D { width, height };
         if self.window_size == window_size {
             return;
         }
         self.window_size = window_size;
         self.window_resized = true;
+    }
+
+    pub(crate) fn notify_key(&mut self, _state: ElementState, _key: NamedKey) {}
+
+    pub(crate) fn notify_mouse_button(&mut self, _state: ElementState, _button: MouseButton) {}
+
+    pub(crate) fn notify_mouse_motion(&mut self, x: f32, y: f32) {
+        self.accumulated_mouse_delta += na::Vector2::new(x, y);
     }
 }
 
