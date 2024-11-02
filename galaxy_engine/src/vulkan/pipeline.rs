@@ -111,9 +111,7 @@ impl GraphicsPipeline {
         let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(params.depth_test)
             .depth_write_enable(true)
-            .depth_compare_op(vk::CompareOp::LESS)
-            .min_depth_bounds(0.0)
-            .max_depth_bounds(1.0)
+            .depth_compare_op(vk::CompareOp::GREATER)
             .stencil_test_enable(false)
             .front(Default::default())
             .back(Default::default());

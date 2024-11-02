@@ -426,7 +426,8 @@ impl GalaxyEngine {
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::DONT_CARE)
             .clear_value(vk::ClearValue {
-                depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
+                // Depth is cleared to 0.0 due to reverse-Z.
+                depth_stencil: vk::ClearDepthStencilValue { depth: 0.0, stencil: 0 },
             });
 
         let rendering_info = vk::RenderingInfo::default()

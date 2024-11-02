@@ -52,7 +52,6 @@ impl Drop for ImageView {
     }
 }
 
-#[allow(dead_code)] // TODO
 #[derive(Clone, Copy)]
 pub enum ImageDimensions {
     Type1D(u32),

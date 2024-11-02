@@ -64,8 +64,11 @@ pub struct ViewInfo {
 impl ViewInfo {
     pub fn new(camera: &Camera) -> Self {
         let view = camera.transform.inversed().into_homogeneous_matrix();
-        let projection =
-            ultraviolet::projection::perspective_infinite_z_vk(camera.fov.to_radians(), camera.aspect, camera.near);
+        let projection = ultraviolet::projection::perspective_reversed_infinite_z_vk(
+            camera.fov.to_radians(),
+            camera.aspect,
+            camera.near,
+        );
 
         Self {
             view,
