@@ -20,7 +20,7 @@ use crate::vulkan::descriptors::DescriptorPool;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
 use crate::vulkan::pipeline::{GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout};
-use crate::vulkan::queue::queue_type::PrimaryQueue;
+use crate::vulkan::queue::queue_type::{PrimaryQueue, QueueType};
 
 // For vertices with N attributes.
 pub trait BindableVertex<const N: usize> {
@@ -87,7 +87,7 @@ impl MeshBuffer {
         vertices: &[V],
         indices: &[I],
         device: &Device,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        cmd_buffer: &mut RecordingCmdBuf<impl QueueType>,
     ) -> MemResult<MeshBuffer> {
         // Ensure proper alignment.
         let indices_layout = Layout::for_value(indices);
@@ -115,9 +115,7 @@ impl MeshBuffer {
         )?;
         staging_buffer.copy_into_buffer(indices, 0)?;
         staging_buffer.copy_into_buffer(vertices, vertices_offset)?;
-        let mut cmd_buffer = cmd_pool.allocate_transient_cmd_buffer()?;
-        staging_buffer.copy_to_buffer(&mut cmd_buffer, &mut buffer, staging_buffer.size());
-        cmd_buffer.end_submit_wait_and_free()?;
+        staging_buffer.copy_to_buffer(cmd_buffer, &mut buffer, staging_buffer.size());
 
         Ok(Self {
             buffer,
@@ -243,7 +241,10 @@ impl Mesh {
         meshopt::optimize_overdraw_in_place(&mut indices, &vertex_data_adapter, 1.05);
         meshopt::optimize_vertex_fetch_in_place(&mut indices, &mut vertices);
 
-        let mesh_buffer = MeshBuffer::new_from_vertices_and_indices(name, &vertices, &indices, device, cmd_pool)?;
+        let mut cmd_buffer = cmd_pool.allocate_transient_cmd_buffer()?;
+        let mesh_buffer =
+            MeshBuffer::new_from_vertices_and_indices(name, &vertices, &indices, device, &mut cmd_buffer)?;
+        cmd_buffer.end_submit_wait_and_free()?;
 
         let layout_bindings = material.descriptor_set_layout_bindings();
         let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&layout_bindings);

@@ -40,23 +40,26 @@ pub struct StaticResources {
 impl StaticResources {
     /// Initialisation of static resources.
     pub(crate) fn new(device: &Device, cmd_pool: &mut TransientPrimaryCommandPool) -> MemResult<Self> {
-        // TODO: upload with same command buffer?
-        Ok(Self {
+        let mut cmd_buffer = cmd_pool.allocate_transient_cmd_buffer()?;
+        let result = Self {
             quad_buffer: Arc::new(MeshBuffer::new_from_vertices_and_indices(
                 "Quad",
                 &Self::QUAD_VERTICES,
                 &Self::QUAD_INDICES,
                 device,
-                cmd_pool,
+                &mut cmd_buffer,
             )?),
             octagon_buffer: Arc::new(MeshBuffer::new_from_vertices_and_indices(
                 "Octagon",
                 &Self::OCTAGON_VERTICES,
                 &Self::OCTAGON_INDICES,
                 device,
-                cmd_pool,
+                &mut cmd_buffer,
             )?),
-        })
+        };
+        cmd_buffer.end_submit_wait_and_free()?;
+
+        Ok(result)
     }
 
     /// Quad vertex/index buffer.

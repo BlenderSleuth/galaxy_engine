@@ -407,9 +407,15 @@ impl<Q: QueueType, R: RenderingState> CommandBuffer<Q, Recording<R>> {
         };
     }
 
-    pub fn copy_buffer_to_image<L: MemLocation>(
+    pub fn update_buffer(&mut self, dst_buffer: &mut Buffer<impl MemLocation>, offset: vk::DeviceSize, data: &[u8]) {
+        unsafe {
+            self.loader
+                .cmd_update_buffer(self.handle, dst_buffer.handle(), offset, data)
+        };
+    }
+    pub fn copy_buffer_to_image(
         &mut self,
-        src_buffer: &Buffer<L>,
+        src_buffer: &Buffer<impl MemLocation>,
         dst_image: &mut Image,
         dst_image_layout: vk::ImageLayout,
         copy_regions: &[vk::BufferImageCopy],
