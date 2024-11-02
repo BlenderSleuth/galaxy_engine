@@ -118,6 +118,10 @@ impl ApplicationHandler for GalaxyApp {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
+        if event_loop.exiting() {
+            return;
+        }
+
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -127,22 +131,29 @@ impl ApplicationHandler for GalaxyApp {
                     engine.notify_window_resize(size.width, size.height);
                 }
             }
-            WindowEvent::KeyboardInput { event, .. } => match event.logical_key {
-                Key::Named(key) => match key {
-                    NamedKey::Escape => {
-                        event_loop.exit();
-                    }
-                    key => {
-                        if let Some(engine) = self.engine.as_mut() {
-                            engine.notify_key(event.state, key);
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let Some(engine) = self.engine.as_mut() {
+                    engine.notify_keyboard_input(&event);
+                }
+
+                match event.logical_key {
+                    Key::Named(key) => match key {
+                        NamedKey::Escape => {
+                            event_loop.exit();
                         }
-                    }
-                },
-                _ => {}
-            },
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
             WindowEvent::MouseInput { state, button, .. } => {
                 if let Some(engine) = self.engine.as_mut() {
                     engine.notify_mouse_button(state, button);
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                if let Some(engine) = self.engine.as_mut() {
+                    unwrap_or_exit!(engine.main_loop(), "Main loop error: {}.\nExiting.", event_loop);
                 }
             }
             _ => {}
@@ -164,13 +175,8 @@ impl ApplicationHandler for GalaxyApp {
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if event_loop.exiting() {
-            return;
-        }
-
-        if let Some(engine) = self.engine.as_mut() {
-            unwrap_or_exit!(engine.main_loop(), "Main loop error: {}.\nExiting.", event_loop);
-        }
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        let window = self.window.as_ref().unwrap();
+        window.request_redraw();
     }
 }
