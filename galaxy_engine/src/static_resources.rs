@@ -1,4 +1,4 @@
-// Copyright (c) 2024. Ben Sutherland
+// Copyright (c) 2024 Ben Sutherland.
 
 use std::f32::consts::FRAC_1_SQRT_2;
 use std::ops::Deref;

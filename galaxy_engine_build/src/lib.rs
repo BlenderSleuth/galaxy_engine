@@ -1,4 +1,4 @@
-// Copyright (c) 2024. Ben Sutherland
+// Copyright (c) 2024 Ben Sutherland.
 
 use std::path::Path;
 use std::process::Command;

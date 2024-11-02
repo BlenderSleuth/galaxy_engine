@@ -1,4 +1,4 @@
-// Copyright (c) 2024. Ben Sutherland
+// Copyright (c) 2024 Ben Sutherland.
 
 pub use ultraviolet::{Bivec3, Isometry3, Mat3, Mat4, Rotor3, Similarity3, Vec2, Vec3, Vec4};
 

@@ -1,4 +1,4 @@
-// Copyright (c) 2024. Ben Sutherland
+// Copyright (c) 2024 Ben Sutherland.
 
 mod arc_final_owner;
 pub use arc_final_owner::ArcFinalOwner;

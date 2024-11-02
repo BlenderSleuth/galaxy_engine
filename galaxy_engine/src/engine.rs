@@ -1,4 +1,4 @@
-// Copyright (c) 2024. Ben Sutherland
+// Copyright (c) 2024 Ben Sutherland.
 
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;

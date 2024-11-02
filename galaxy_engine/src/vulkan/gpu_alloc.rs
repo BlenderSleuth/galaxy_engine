@@ -1,4 +1,4 @@
-// Copyright (c) 2024. Ben Sutherland
+// Copyright (c) 2024 Ben Sutherland.
 
 use std::mem::ManuallyDrop;
 use std::sync::{Arc, Mutex};
