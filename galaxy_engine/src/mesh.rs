@@ -8,10 +8,10 @@ use std::sync::Arc;
 
 use ash::vk;
 use meshopt::VertexDataAdapter;
-use nalgebra as na;
 
+use crate::camera::ViewInfo;
 use crate::material::{Material, MaterialError};
-use crate::maths;
+use crate::prelude::*;
 use crate::uniform_buffer::VolatileUniformBuffer;
 use crate::vulkan::buffer::{Buffer, CpuToGpu, GpuOnly};
 use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingCmdBuf, RenderingState, TransientPrimaryCommandPool};
@@ -31,8 +31,8 @@ pub trait BindableVertex<const N: usize> {
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
 pub struct Vertex {
-    pub position: na::Vector3<f32>,
-    pub tex_coord: na::Vector2<f32>,
+    pub position: Vec3,
+    pub tex_coord: Vec2,
 }
 
 impl BindableVertex<2> for Vertex {
@@ -140,9 +140,9 @@ impl MeshBuffer {
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
 struct ColouredVertex {
-    pub position: na::Vector3<f32>,
-    pub colour: na::Vector3<f32>,
-    pub tex_coord: na::Vector2<f32>,
+    pub position: Vec3,
+    pub colour: Vec3,
+    pub tex_coord: Vec2,
 }
 
 impl BindableVertex<3> for ColouredVertex {
@@ -195,7 +195,7 @@ pub struct Mesh {
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_set: vk::DescriptorSet,
     pipeline: GraphicsPipeline,
-    pub mvp: maths::ModelViewProjection,
+    transform: Similarity3,
 }
 
 impl Mesh {
@@ -224,8 +224,8 @@ impl Mesh {
             .vertices
             .iter()
             .map(|v| Vertex {
-                position: na::Vector3::new(v.position[0], v.position[1], v.position[2]),
-                tex_coord: na::Vector2::new(v.texture[0], 1.0 - v.texture[1]),
+                position: Vec3::new(v.position[0], v.position[1], v.position[2]),
+                tex_coord: Vec2::new(v.texture[0], 1.0 - v.texture[1]),
             })
             .collect::<Vec<Vertex>>();
 
@@ -254,10 +254,15 @@ impl Mesh {
         }?;
 
         // Create pipeline layout.
+        let push_constant_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .offset(0)
+            .size(std::mem::size_of::<Mat4>() as u32);
+
         let pipeline_layout = Arc::new(PipelineLayout::new(
             &device,
             Some(&descriptor_set_layout),
-            Some(&maths::ModelViewProjection::push_constant_range()),
+            Some(&push_constant_range),
         )?);
 
         // Create pipeline.
@@ -307,7 +312,7 @@ impl Mesh {
             descriptor_set_layout,
             descriptor_set,
             pipeline,
-            mvp: maths::ModelViewProjection::default(),
+            transform: Similarity3::identity(),
         })
     }
 
@@ -322,17 +327,19 @@ impl Mesh {
     pub fn record_graphics(
         &self,
         cmd_buffer: &mut RenderingCmdBuf<PrimaryQueue>,
+        view_info: &ViewInfo,
         viewport: vk::Viewport,
         scissor: vk::Rect2D,
     ) {
         let pipeline_layout = self.pipeline.layout().as_ref();
         cmd_buffer.bind_graphics_pipeline(&self.pipeline);
         self.mesh_buffer.bind(cmd_buffer);
+        let mvp = view_info.mvp_from_similarity(&self.transform);
         cmd_buffer.push_constants(
             pipeline_layout,
             vk::ShaderStageFlags::VERTEX,
             0,
-            bytemuck::cast_slice(&[self.mvp.mvp()]),
+            bytemuck::cast_slice(&[mvp]),
         );
         cmd_buffer.bind_descriptor_sets(
             vk::PipelineBindPoint::GRAPHICS,

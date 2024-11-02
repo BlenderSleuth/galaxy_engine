@@ -4,10 +4,10 @@ use std::f32::consts::FRAC_1_SQRT_2;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use nalgebra as na;
 use parking_lot::RwLock;
 
 use crate::mesh::{MeshBuffer, Vertex};
+use crate::prelude::*;
 use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::MemResult;
@@ -69,20 +69,20 @@ impl StaticResources {
 
     const QUAD_VERTICES: [Vertex; 4] = [
         Vertex {
-            position: na::Vector3::new(-1.0, -1.0, 0.0),
-            tex_coord: na::Vector2::new(0.0, 0.0),
+            position: Vec3::new(-1.0, -1.0, 0.0),
+            tex_coord: Vec2::new(0.0, 0.0),
         },
         Vertex {
-            position: na::Vector3::new(1.0, -1.0, 0.0),
-            tex_coord: na::Vector2::new(1.0, 0.0),
+            position: Vec3::new(1.0, -1.0, 0.0),
+            tex_coord: Vec2::new(1.0, 0.0),
         },
         Vertex {
-            position: na::Vector3::new(1.0, 1.0, 0.0),
-            tex_coord: na::Vector2::new(1.0, 1.0),
+            position: Vec3::new(1.0, 1.0, 0.0),
+            tex_coord: Vec2::new(1.0, 1.0),
         },
         Vertex {
-            position: na::Vector3::new(-1.0, 1.0, 0.0),
-            tex_coord: na::Vector2::new(0.0, 1.0),
+            position: Vec3::new(-1.0, 1.0, 0.0),
+            tex_coord: Vec2::new(0.0, 1.0),
         },
     ];
 
@@ -98,36 +98,36 @@ impl StaticResources {
 
     const OCTAGON_VERTICES: [Vertex; 8] = [
         Vertex {
-            position: na::Vector3::new(1.0, 0.0, 0.0),
-            tex_coord: na::Vector2::new(1.0, 0.5),
+            position: Vec3::new(1.0, 0.0, 0.0),
+            tex_coord: Vec2::new(1.0, 0.5),
         },
         Vertex {
-            position: na::Vector3::new(FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0),
-            tex_coord: na::Vector2::new(0.5 + FRAC_1_SQRT_8, 0.5 + FRAC_1_SQRT_8),
+            position: Vec3::new(FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0),
+            tex_coord: Vec2::new(0.5 + FRAC_1_SQRT_8, 0.5 + FRAC_1_SQRT_8),
         },
         Vertex {
-            position: na::Vector3::new(0.0, 1.0, 0.0),
-            tex_coord: na::Vector2::new(0.5, 1.0),
+            position: Vec3::new(0.0, 1.0, 0.0),
+            tex_coord: Vec2::new(0.5, 1.0),
         },
         Vertex {
-            position: na::Vector3::new(-FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0),
-            tex_coord: na::Vector2::new(0.5 - FRAC_1_SQRT_8, 0.5 + FRAC_1_SQRT_8),
+            position: Vec3::new(-FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0),
+            tex_coord: Vec2::new(0.5 - FRAC_1_SQRT_8, 0.5 + FRAC_1_SQRT_8),
         },
         Vertex {
-            position: na::Vector3::new(-1.0, 0.0, 0.0),
-            tex_coord: na::Vector2::new(0.0, 0.5),
+            position: Vec3::new(-1.0, 0.0, 0.0),
+            tex_coord: Vec2::new(0.0, 0.5),
         },
         Vertex {
-            position: na::Vector3::new(-FRAC_1_SQRT_2, -FRAC_1_SQRT_2, 0.0),
-            tex_coord: na::Vector2::new(0.5 - FRAC_1_SQRT_8, 0.5 - FRAC_1_SQRT_8),
+            position: Vec3::new(-FRAC_1_SQRT_2, -FRAC_1_SQRT_2, 0.0),
+            tex_coord: Vec2::new(0.5 - FRAC_1_SQRT_8, 0.5 - FRAC_1_SQRT_8),
         },
         Vertex {
-            position: na::Vector3::new(0.0, -1.0, 0.0),
-            tex_coord: na::Vector2::new(0.5, 0.0),
+            position: Vec3::new(0.0, -1.0, 0.0),
+            tex_coord: Vec2::new(0.5, 0.0),
         },
         Vertex {
-            position: na::Vector3::new(FRAC_1_SQRT_2, -FRAC_1_SQRT_2, 0.0),
-            tex_coord: na::Vector2::new(0.5 + FRAC_1_SQRT_8, 0.5 - FRAC_1_SQRT_8),
+            position: Vec3::new(FRAC_1_SQRT_2, -FRAC_1_SQRT_2, 0.0),
+            tex_coord: Vec2::new(0.5 + FRAC_1_SQRT_8, 0.5 - FRAC_1_SQRT_8),
         },
     ];
 

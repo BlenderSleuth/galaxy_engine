@@ -4,10 +4,10 @@ use std::slice;
 use std::sync::Arc;
 
 use ash::vk;
-use nalgebra as na;
 
-use crate::maths::ModelViewProjection;
+use crate::camera::ViewInfo;
 use crate::mesh::{BindableVertex, MeshBuffer, Vertex};
+use crate::prelude::*;
 use crate::uniform_buffer::VolatileUniformBuffer;
 use crate::vulkan::buffer::{Buffer, GpuOnly};
 use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingCmdBuf, TransientPrimaryCommandPool};
@@ -24,11 +24,11 @@ use crate::{engine, pod, utils};
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
 struct Particle {
-    position: na::Vector3<f32>,
+    position: Vec3,
     age: f32,
-    velocity: na::Vector3<f32>,
+    velocity: Vec3,
     radius: f32,
-    color: na::Vector4<f32>,
+    color: Vec4,
 }
 
 impl BindableVertex<2> for Particle {
@@ -87,14 +87,14 @@ impl GpuParticleSystem {
                 let theta = 2.0 * std::f32::consts::PI * fastrand::f32();
                 let x = r * theta.cos() * window_aspect_ratio;
                 let y = r * theta.sin();
-                let position = r * na::Vector2::new(x, y);
-                let velocity = position.normalize() * fastrand::f32() * 0.25;
+                let position = r * Vec2::new(x, y);
+                let velocity = position.normalized() * fastrand::f32() * 0.25;
                 Particle {
-                    position: na::Vector3::new(position.x, position.y, fastrand::f32()),
+                    position: Vec3::new(position.x, position.y, fastrand::f32()),
                     age: fastrand::f32() * 10.,
-                    velocity: na::Vector3::new(velocity.x, velocity.y, 0.0),
+                    velocity: Vec3::new(velocity.x, velocity.y, 0.0),
                     radius: 0.01,
-                    color: na::Vector4::new(fastrand::f32(), fastrand::f32(), fastrand::f32(), 1.0),
+                    color: Vec4::new(fastrand::f32(), fastrand::f32(), fastrand::f32(), 1.0),
                 }
             })
             .collect::<Vec<_>>();
@@ -205,10 +205,14 @@ impl GpuParticleSystem {
         let particle_shader_stages =
             utils::arrayvec_from_array([vertex_shader_module.stage_info(), fragment_shader_module.stage_info()]);
 
+        let push_constant_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .offset(0)
+            .size(std::mem::size_of::<Mat4>() as u32);
         let graphics_pipeline_layout = Arc::new(PipelineLayout::new(
             device,
             Some(&compute_descriptor_set_layout),
-            Some(&ModelViewProjection::push_constant_range()),
+            Some(&push_constant_range),
         )?);
 
         let pipeline_params = GraphicsPipelineParameters {
@@ -249,11 +253,12 @@ impl GpuParticleSystem {
     pub fn record_graphics(
         &self,
         command_buffer: &mut RenderingCmdBuf<PrimaryQueue>,
+        view_info: &ViewInfo,
         time: f32,
         viewport: vk::Viewport,
         scissor: vk::Rect2D,
     ) {
-        let mvp = ModelViewProjection::spin(utils::viewport_extent(viewport), time.sin() * 0.5, 20.0).mvp();
+        let mvp = view_info.mvp_from_similarity(&spin_transform(time.sin() * 0.5, 20.0));
         let pipeline_layout = self.graphics_pipeline.layout().as_ref();
         command_buffer.bind_graphics_pipeline(&self.graphics_pipeline);
         command_buffer.bind_descriptor_sets(

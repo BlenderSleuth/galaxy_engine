@@ -1,24 +1,23 @@
 // Copyright (c) 2024. Ben Sutherland
 
+use std::collections::HashMap;
 use std::mem::ManuallyDrop;
-use std::ops::Rem;
 use std::slice;
 
 use app::AppInfo;
 use arrayvec::ArrayVec;
 use ash::vk;
-use nalgebra as na;
-use nalgebra::Isometry3;
 use parking_lot::{MappedRwLockReadGuard, RwLockReadGuard};
 use raw_window_handle::{DisplayHandle, WindowHandle};
-use winit::event::{ElementState, MouseButton};
-use winit::keyboard::NamedKey;
+use winit::event::{ElementState, KeyEvent, MouseButton};
+use winit::keyboard::{Key, SmolStr};
 
 use crate::app;
+use crate::camera::{Camera, FirstPersonCamera};
 use crate::engine::MainLoopError::VulkanError;
-use crate::maths::ModelViewProjection;
 use crate::mesh::{Mesh, MeshError};
 use crate::particles::GpuParticleSystem;
+use crate::prelude::*;
 use crate::static_resources::{StaticResources, StaticResourcesGuard, StaticResourcesLock};
 use crate::uniform_buffer::VolatileUniformBuffer;
 use crate::vulkan::command_buffer::{
@@ -65,9 +64,9 @@ pub enum MainLoopError {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
 pub struct UniformData {
-    view: na::Matrix4<f32>,
-    proj: na::Matrix4<f32>,
-    sun_direction: na::Vector3<f32>,
+    view: Mat4,
+    proj: Mat4,
+    sun_direction: Vec3,
     delta_time: f32,
 }
 
@@ -100,8 +99,10 @@ pub struct GalaxyEngine {
     last_frame_time: std::time::Instant,
     window_size: vk::Extent2D,
     window_resized: bool,
-    accumulated_mouse_delta: na::Vector2<f32>,
-    camera_z_angle: f32,
+    accumulated_mouse_delta: Vec2,
+    camera: Camera,
+    //control_rotation: EulerAngles,
+    key_input: HashMap<SmolStr, ElementState>,
     device: ManuallyDrop<Device>,
     instance: Instance,
 }
@@ -215,7 +216,17 @@ impl GalaxyEngine {
             compute_in_flight_fences.push(Fence::new(&device, true)?);
         }
 
-        device.print_allocator_report();
+        // Set up camera.
+        let camera_position = Vec3::new(2., 2., 2.);
+        let look_at = Mat4::look_at(camera_position, Vec3::zero(), Vec3::unit_z());
+        let camera_transform = Isometry3::new(look_at.extract_translation(), look_at.extract_rotation()).inversed();
+
+        let camera = Camera {
+            transform: camera_transform,
+            aspect: width as f32 / height as f32,
+            fov: 45.,
+            near: 1.,
+        };
 
         Ok(Self {
             instance,
@@ -238,12 +249,15 @@ impl GalaxyEngine {
             current_frame: 0,
             start_time: std::time::Instant::now(),
             last_frame_time: std::time::Instant::now(),
-            accumulated_mouse_delta: na::Vector2::zeros(),
-            camera_z_angle: 0.0,
+            accumulated_mouse_delta: Vec2::zero(),
+            camera,
             window_size,
+            key_input: HashMap::new(),
             window_resized: false,
         })
     }
+
+    const MAX_FRAME_TIME: f32 = 1.0 / 60.0;
 
     pub(crate) fn main_loop(&mut self) -> Result<(), MainLoopError> {
         if self.window_resized {
@@ -251,36 +265,69 @@ impl GalaxyEngine {
             self.recreate_swapchain()?;
         }
 
+        // Frame time calculations.
+        let time = self.start_time.elapsed().as_secs_f32();
+        let delta_time = self.last_frame_time.elapsed().as_secs_f32().min(Self::MAX_FRAME_TIME);
+        self.last_frame_time = std::time::Instant::now();
+
         let ext = self.device.extensions();
 
         let current_frame = self.current_frame as usize;
 
-        let accumulated_mouse_delta = self.accumulated_mouse_delta;
-        self.accumulated_mouse_delta = na::Vector2::zeros();
-        self.camera_z_angle -= accumulated_mouse_delta.x * 0.01;
-        self.camera_z_angle = self.camera_z_angle.rem(std::f32::consts::TAU);
-        //log::info!("Mouse delta: {:?}", accumulated_mouse_delta);
+        // Accumulate mouse input.
+        let mouse_delta = self.accumulated_mouse_delta;
+        self.accumulated_mouse_delta = Vec2::zero();
+
+        // Update camera rotation.
+        {
+            const ROTATE_SPEED: f32 = 0.1;
+            let first_person_mouse = -Vec2::new(mouse_delta.x, mouse_delta.y) * ROTATE_SPEED;
+            self.camera.apply_first_person_mouse(first_person_mouse);
+        }
+        // Update camera position.
+        {
+            const MOVE_SPEED: f32 = 5.;
+
+            let mut camera_velocity = Vec3::zero();
+            if self.is_key_pressed("w") {
+                camera_velocity += self.camera.forward();
+            }
+
+            if self.is_key_pressed("s") {
+                camera_velocity -= self.camera.forward();
+            }
+
+            if self.is_key_pressed("a") {
+                camera_velocity -= self.camera.right();
+            }
+
+            if self.is_key_pressed("d") {
+                camera_velocity += self.camera.right();
+            }
+
+            if self.is_key_pressed("e") {
+                camera_velocity += Vec3::unit_z();
+            }
+
+            if self.is_key_pressed("q") {
+                camera_velocity -= Vec3::unit_z();
+            }
+
+            if camera_velocity.mag_sq() > 1e-6 {
+                camera_velocity.normalize();
+            }
+
+            self.camera.transform.translation += camera_velocity * MOVE_SPEED * delta_time;
+        }
+
+        // Now that the camera has been updated, calculate the view info.
+        let view_info = self.camera.view_info();
 
         // Update uniform buffer.
-        let time = self.start_time.elapsed().as_secs_f32();
-        self.mesh.mvp = ModelViewProjection::spin(self.window_size, 0., 20.0);
-        self.mesh.mvp.view = Isometry3::look_at_rh(
-            &na::Rotation3::from_axis_angle(
-                &na::Unit::new_normalize(na::Vector3::new(0., 0., 1.)),
-                self.camera_z_angle,
-            )
-            .transform_point(&na::Point3::new(2., 2., 2.)),
-            &na::Point3::new(0., 0., 0.),
-            &na::Vector3::new(0., 0., 1.),
-        );
-
-        let delta_time = self.last_frame_time.elapsed().as_secs_f32();
-        self.last_frame_time = std::time::Instant::now();
-
         let uniform_data = UniformData {
-            view: self.mesh.mvp.view.to_homogeneous(),
-            proj: self.mesh.mvp.proj.to_homogeneous(),
-            sun_direction: na::Vector3::new(time.sin().abs(), (time + 0.3).sin().abs(), (time + 0.6).sin().abs()),
+            view: view_info.view,
+            proj: view_info.projection,
+            sun_direction: Vec3::new(time.sin().abs(), (time + 0.3).sin().abs(), (time + 0.6).sin().abs()),
             delta_time,
         };
 
@@ -299,6 +346,7 @@ impl GalaxyEngine {
         let cmd_buffer = compute_cmd_pool.get_cmd_buffer(0);
         let recording = cmd_buffer.begin()?;
         self.uniform_buffer.copy_to_gpu(current_frame, recording);
+        // TODO: needs a barrier?
         self.particle_system.record_compute(recording);
         cmd_buffer.end()?;
 
@@ -391,8 +439,9 @@ impl GalaxyEngine {
             .depth_attachment(&depth_attachment_info);
 
         let rendering = cmd_buffer.begin_rendering(ext, &rendering_info)?;
-        self.particle_system.record_graphics(rendering, time, viewport, scissor);
-        self.mesh.record_graphics(rendering, viewport, scissor);
+        self.particle_system
+            .record_graphics(rendering, &view_info, time, viewport, scissor);
+        self.mesh.record_graphics(rendering, &view_info, viewport, scissor);
         let recording = cmd_buffer.end_rendering(ext)?;
 
         let color_optimal_to_present_src_transition = vk::ImageMemoryBarrier2::default()
@@ -460,6 +509,13 @@ impl GalaxyEngine {
         Ok(())
     }
 
+    fn get_key_state(&self, key: &str) -> ElementState {
+        self.key_input.get(key).copied().unwrap_or(ElementState::Released)
+    }
+    fn is_key_pressed(&self, key: &str) -> bool {
+        self.get_key_state(key) == ElementState::Pressed
+    }
+
     pub(crate) fn notify_window_resize(&mut self, width: u32, height: u32) {
         let window_size = vk::Extent2D { width, height };
         if self.window_size == window_size {
@@ -469,12 +525,19 @@ impl GalaxyEngine {
         self.window_resized = true;
     }
 
-    pub(crate) fn notify_key(&mut self, _state: ElementState, _key: NamedKey) {}
+    pub(crate) fn notify_keyboard_input(&mut self, event: &KeyEvent) {
+        match &event.logical_key {
+            Key::Character(c) => {
+                self.key_input.insert(c.clone(), event.state);
+            }
+            _ => {}
+        }
+    }
 
     pub(crate) fn notify_mouse_button(&mut self, _state: ElementState, _button: MouseButton) {}
 
     pub(crate) fn notify_mouse_motion(&mut self, x: f32, y: f32) {
-        self.accumulated_mouse_delta += na::Vector2::new(x, y);
+        self.accumulated_mouse_delta += Vec2::new(x, y);
     }
 }
 

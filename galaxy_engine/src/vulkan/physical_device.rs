@@ -22,8 +22,6 @@ pub enum PhysicalDeviceIncompatibility {
     NoCompatibleSurfaceFormats(Vec<vk::SurfaceFormatKHR>),
     #[error("Incompatible Vulkan version: {0}")]
     IncompatibleVulkanVersion(vulkan::IncompatibleVulkanVersion),
-    #[error("Not enough push constant space: {0} < {1}")]
-    NotEnoughPushConstantSpace(u32, u32),
     #[error("{0} not supported")]
     FeatureNotSupported(&'static str),
 }
@@ -187,15 +185,6 @@ impl PhysicalDevice {
         .into_iter()
         .rfind(|&sample_count| supported_msaa_samples.contains(sample_count))
         .unwrap_or(vk::SampleCountFlags::TYPE_1);
-
-        // Require 128 bytes of push constant space.
-        const REQUIRED_PUSH_CONSTANT_SIZE: u32 = 128;
-        if device_limits.max_push_constants_size < REQUIRED_PUSH_CONSTANT_SIZE {
-            return Err(PhysicalDeviceIncompatibility::NotEnoughPushConstantSpace(
-                device_limits.max_push_constants_size,
-                REQUIRED_PUSH_CONSTANT_SIZE,
-            ));
-        }
 
         let mut vulkan12_features = vk::PhysicalDeviceVulkan12Features::default();
         let mut physical_device_features = vk::PhysicalDeviceFeatures2::default().push_next(&mut vulkan12_features);

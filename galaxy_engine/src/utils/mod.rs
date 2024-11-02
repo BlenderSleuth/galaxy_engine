@@ -11,12 +11,12 @@ use std::str::from_utf8;
 pub use array::*;
 use ash::vk;
 
-pub fn viewport_extent(viewport: vk::Viewport) -> vk::Extent2D {
-    vk::Extent2D {
-        width: viewport.width as u32,
-        height: viewport.height as u32,
-    }
-}
+//pub fn viewport_extent(viewport: vk::Viewport) -> vk::Extent2D {
+//    vk::Extent2D {
+//        width: viewport.width as u32,
+//        height: viewport.height as u32,
+//    }
+//}
 
 pub(crate) fn cstr_to_ptrs(c_strs: &[&'static CStr]) -> Vec<*const c_char> {
     c_strs.iter().map(|cstr| cstr.as_ptr()).collect()
