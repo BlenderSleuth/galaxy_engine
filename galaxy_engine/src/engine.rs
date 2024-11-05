@@ -3,10 +3,12 @@
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::slice;
+use std::sync::Arc;
 
 use app::AppInfo;
 use arrayvec::ArrayVec;
 use ash::vk;
+use itertools::izip;
 use parking_lot::{MappedRwLockReadGuard, RwLockReadGuard};
 use raw_window_handle::{DisplayHandle, WindowHandle};
 use winit::event::{ElementState, KeyEvent, MouseButton};
@@ -15,21 +17,24 @@ use winit::keyboard::{Key, SmolStr};
 use crate::app;
 use crate::camera::{Camera, FirstPersonCamera};
 use crate::engine::MainLoopError::VulkanError;
+use crate::material::{Material, MaterialData, MaterialError};
 use crate::mesh::{Mesh, MeshError};
-use crate::particles::GpuParticleSystem;
 use crate::prelude::*;
 use crate::static_resources::{StaticResources, StaticResourcesGuard, StaticResourcesLock};
-use crate::uniform_buffer::VolatileUniformBuffer;
+use crate::texture::Texture;
+use crate::volatile_buffer::{VolatileBuffer, VolatileBufferType};
 use crate::vulkan::command_buffer::{
     CmdBufStateTransitionError, ResettablePrimaryCommandPool, TransientPrimaryCommandPool,
 };
-use crate::vulkan::descriptors::DescriptorPool;
+use crate::vulkan::debug::debug_only_name;
+use crate::vulkan::descriptors::{DescriptorPool, DescriptorSetLayout};
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
+use crate::vulkan::image::Sampler;
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain::Swapchain;
-use crate::vulkan::sync::{BinarySemaphore, Fence, Semaphore, WaitSemaphore};
+use crate::vulkan::sync::{BinarySemaphore, Semaphore, WaitSemaphore};
 use crate::vulkan::{device, instance};
 
 #[derive(thiserror::Error, Debug)]
@@ -49,6 +54,8 @@ pub enum EngineInitError {
     MemoryError(#[from] MemoryError),
     #[error("Mesh error: {0}")]
     MeshError(#[from] MeshError),
+    #[error("Material error: {0}")]
+    MaterialError(#[from] MaterialError),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -63,11 +70,49 @@ pub enum MainLoopError {
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
-pub struct UniformData {
+pub struct SceneUniformData {
     view: Mat4,
     proj: Mat4,
     sun_direction: Vec3,
     delta_time: f32,
+}
+pub type SceneUniformBuffer = VolatileBuffer<SceneUniformData>;
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
+pub struct DrawData {
+    transform_index: u32,
+    material_index: u32,
+}
+
+pub struct SceneBuffers {
+    draws: VolatileBuffer<[DrawData; 1024]>,
+    transforms: VolatileBuffer<[Mat4; 1024]>,
+    materials: VolatileBuffer<[MaterialData; 1024]>,
+}
+
+impl SceneBuffers {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut DrawData, &mut Mat4, &mut MaterialData)> {
+        izip!(
+            self.draws.local.iter_mut(),
+            self.transforms.local.iter_mut(),
+            self.materials.local.iter_mut()
+        )
+    }
+    pub fn copy_to_gpu(&mut self, frame: usize) -> Result<(), MemoryError> {
+        self.draws.copy_to_gpu(frame)?;
+        self.transforms.copy_to_gpu(frame)?;
+        self.materials.copy_to_gpu(frame)
+    }
+    pub fn buffer_infos<const N: usize>(&self) -> [[vk::DescriptorBufferInfo; 3]; N] {
+        core::array::from_fn(|frame| {
+            [
+                self.draws.descriptor_buffer_info(frame),
+                self.transforms.descriptor_buffer_info(frame),
+                self.materials.descriptor_buffer_info(frame),
+            ]
+        })
+    }
 }
 
 // Static resources. These are available while the engine instance is alive.
@@ -79,21 +124,18 @@ pub fn static_resources() -> MappedRwLockReadGuard<'static, StaticResources> {
 }
 
 pub struct GalaxyEngine {
-    surface: ManuallyDrop<Surface>,
-    swapchain: ManuallyDrop<Swapchain>,
     static_resources_guard: ManuallyDrop<StaticResourcesGuard>,
-    mesh: ManuallyDrop<Mesh>,
-    descriptor_pool: ManuallyDrop<DescriptorPool>,
-    graphics_cmd_pools: ArrayVec<ResettablePrimaryCommandPool, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
-    compute_cmd_pools: ArrayVec<ResettablePrimaryCommandPool, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
+    meshes: Vec<Mesh>,
+    material: ManuallyDrop<Arc<Material>>,
+    primary_cmd_pools: ArrayVec<ResettablePrimaryCommandPool<2>, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     transient_cmd_pool: ManuallyDrop<TransientPrimaryCommandPool>,
-    uniform_buffer: ManuallyDrop<VolatileUniformBuffer>,
-    particle_system: ManuallyDrop<GpuParticleSystem>,
+    scene_descriptor_pool: ManuallyDrop<DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>>,
+    scene_uniform_buffer: ManuallyDrop<SceneUniformBuffer>,
+    scene_buffers: ManuallyDrop<Box<SceneBuffers>>,
+    //particle_system: ManuallyDrop<GpuParticleSystem>,
     image_available_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     render_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     compute_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
-    in_flight_fences: ArrayVec<Fence, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
-    compute_in_flight_fences: ArrayVec<Fence, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     current_frame: u32,
     start_time: std::time::Instant,
     last_frame_time: std::time::Instant,
@@ -101,15 +143,16 @@ pub struct GalaxyEngine {
     window_resized: bool,
     accumulated_mouse_delta: Vec2,
     camera: Camera,
-    //control_rotation: EulerAngles,
     key_input: HashMap<SmolStr, ElementState>,
-    device: ManuallyDrop<Device>,
+    // These are at the bottom so they get dropped last.
+    swapchain: Swapchain,
+    device: Device,
+    surface: Surface,
     instance: Instance,
 }
 
 impl GalaxyEngine {
     pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
-    pub(crate) const MAX_NUM_PARTICLES: u32 = 1024;
 
     pub(crate) fn new(
         app_info: &AppInfo,
@@ -135,7 +178,8 @@ impl GalaxyEngine {
         let device = Device::new(instance.loader(), &surface)?;
 
         // Create transient command pool.
-        let mut transient_cmd_pool = TransientPrimaryCommandPool::new(&device, device.primary_queue())?;
+        let mut transient_cmd_pool =
+            TransientPrimaryCommandPool::new("Transient Command Pool", &device, device.primary_queue())?;
 
         // Initialise engine static resources.
         *STATIC_RESOURCES.write() = Some(StaticResources::new(&device, &mut transient_cmd_pool)?);
@@ -145,27 +189,198 @@ impl GalaxyEngine {
         let window_size = vk::Extent2D { width, height };
         let swapchain = Swapchain::new(&instance, &device, &mut transient_cmd_pool, &surface, window_size, None)?;
 
-        // Create uniform buffer.
-        let uniform_buffer = VolatileUniformBuffer::new_for_type::<UniformData>("Uniform buffer", &device)?;
+        // Create default texture sampler.
+        let max_anisotropy = device.physical_device().properties.limits.max_sampler_anisotropy;
+        let sampler_info = vk::SamplerCreateInfo::default()
+            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(vk::Filter::LINEAR)
+            .address_mode_u(vk::SamplerAddressMode::REPEAT)
+            .address_mode_v(vk::SamplerAddressMode::REPEAT)
+            .address_mode_w(vk::SamplerAddressMode::REPEAT)
+            .anisotropy_enable(true)
+            .max_anisotropy(max_anisotropy)
+            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
+            .unnormalized_coordinates(false)
+            .compare_enable(false)
+            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+            .mip_lod_bias(0.)
+            .min_lod(0.)
+            .max_lod(0.);
+        let default_sampler = Sampler::new(&device, &sampler_info)?;
 
-        // Create descriptor pool.
-        let descriptor_pool_sizes = [
+        // Load texture.
+        let texture = Arc::new(Texture::new_from_file(
+            "Viking room texture",
+            "galaxy_engine/assets/viking_room.ktx2",
+            &device,
+            &mut transient_cmd_pool,
+        )?);
+
+        // Set up scene.
+
+        // Create scene uniform buffer.
+        let scene_uniform_buffer = VolatileBuffer::new("Scene uniform buffer", &device, VolatileBufferType::Uniform)?;
+
+        let scene_draw_data_buffer = VolatileBuffer::new("Draw data buffer", &device, VolatileBufferType::Storage)?;
+        let scene_transforms_buffer = VolatileBuffer::new("Transforms buffer", &device, VolatileBufferType::Storage)?;
+        // TODO: don't use volatile buffer for material data buffer and array of textures.
+        let scene_material_buffer = VolatileBuffer::new("Material buffer", &device, VolatileBufferType::Storage)?;
+        let scene_buffers = Box::new(SceneBuffers {
+            draws: scene_draw_data_buffer,
+            transforms: scene_transforms_buffer,
+            materials: scene_material_buffer,
+        });
+
+        // Create scene descriptor pool.
+        let scene_descriptor_pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1),
+                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(6),
+                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32 * 3),
+            //vk::DescriptorPoolSize::default()
+            //    .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            //    .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32), // TODO: x2?
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::SAMPLED_IMAGE)
+                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32), // TODO: x2?
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32), // TODO: x2?
         ];
+        let mut scene_descriptor_pool =
+            DescriptorPool::<{ Self::MAX_FRAMES_IN_FLIGHT }>::new(&device, &scene_descriptor_pool_sizes)?;
 
-        let descriptor_pool_info = vk::DescriptorPoolCreateInfo::default()
-            .pool_sizes(&descriptor_pool_sizes)
-            .max_sets(1 + 2); // Allocator 1 set for graphics and 2 sets for compute.
+        // Allocate scene descriptor sets.
+        let scene_descriptor_set_layout_bindings = [
+            // Scene uniforms:
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .stage_flags(
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE,
+                ),
+            // Draw data:
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+            // Transforms:
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(2)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .stage_flags(vk::ShaderStageFlags::VERTEX),
+            // Material data:
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(3)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            // Array of textures:
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
+                .descriptor_count(2)
+                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            // Array of samplers:
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(5)
+                .descriptor_count(2)
+                .descriptor_type(vk::DescriptorType::SAMPLER)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        ];
+        let scene_descriptor_set_layout = DescriptorSetLayout::new(&device, &scene_descriptor_set_layout_bindings)?;
+        scene_descriptor_pool.allocate_descriptor_sets(
+            &device,
+            &[scene_descriptor_set_layout.handle(); Self::MAX_FRAMES_IN_FLIGHT],
+        )?;
 
-        let mut descriptor_pool = DescriptorPool::new(&device, &descriptor_pool_info)?;
+        let uniform_buffer_info: [_; Self::MAX_FRAMES_IN_FLIGHT] =
+            core::array::from_fn(|frame| scene_uniform_buffer.descriptor_buffer_info(frame));
+        let buffer_infos = scene_buffers.buffer_infos::<{ Self::MAX_FRAMES_IN_FLIGHT }>();
+
+        let image_info = vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(texture.image().view().handle())
+            .sampler(default_sampler.handle());
+        // 2 of the same image.
+        let image_infos = [image_info; 2];
+
+        let descriptor_writes: ArrayVec<_, { Self::MAX_FRAMES_IN_FLIGHT * 8 }> = scene_descriptor_pool
+            .iter()
+            .enumerate()
+            .flat_map(|(frame, set)| {
+                [
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(*set)
+                        .dst_binding(0)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .buffer_info(slice::from_ref(&uniform_buffer_info[frame])),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(*set)
+                        .dst_binding(1)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(slice::from_ref(&buffer_infos[frame][0])),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(*set)
+                        .dst_binding(2)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(slice::from_ref(&buffer_infos[frame][1])),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(*set)
+                        .dst_binding(3)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(slice::from_ref(&buffer_infos[frame][2])),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(*set)
+                        .dst_binding(4)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                        .image_info(slice::from_ref(&image_infos[0])),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(*set)
+                        .dst_binding(5)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::SAMPLER)
+                        .image_info(slice::from_ref(&image_infos[0])),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(*set)
+                        .dst_binding(4)
+                        .dst_array_element(1)
+                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                        .image_info(slice::from_ref(&image_infos[1])),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(*set)
+                        .dst_binding(5)
+                        .dst_array_element(1)
+                        .descriptor_type(vk::DescriptorType::SAMPLER)
+                        .image_info(slice::from_ref(&image_infos[1])),
+                ]
+            })
+            .collect();
+        unsafe { device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
+
+        // Create descriptor pool.
+        //let descriptor_pool_sizes = [vk::DescriptorPoolSize::default()
+        //    .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        //    .descriptor_count(1)];
+
+        //let mut descriptor_pool = DescriptorPool::new(&device, &descriptor_pool_sizes)?;
+
+        // Load material.
+        let material = Arc::new(Material::new(
+            &device,
+            &scene_descriptor_set_layout,
+            swapchain.samples(),
+        )?);
 
         // Load mesh.
         let mesh = Mesh::new(
@@ -173,47 +388,39 @@ impl GalaxyEngine {
             &device,
             &mut transient_cmd_pool,
             "galaxy_engine/assets/viking_room.obj",
-            "galaxy_engine/assets/viking_room.ktx2",
-            swapchain.samples(),
-            &uniform_buffer,
-            &mut descriptor_pool,
+            Arc::clone(&material),
         )?;
 
         // Create particle system.
-        let particle_system = GpuParticleSystem::new(
-            &device,
-            swapchain.samples(),
-            Self::MAX_NUM_PARTICLES,
-            window_size,
-            &uniform_buffer,
-            &mut transient_cmd_pool,
-            &mut descriptor_pool,
-        )?;
+        //const MAX_NUM_PARTICLES: u32 = 1024;
+        //let particle_system = GpuParticleSystem::new(
+        //    &device,
+        //    swapchain.samples(),
+        //    MAX_NUM_PARTICLES,
+        //    window_size,
+        //    &mut setup_cmd_buffer,
+        //)?;
 
         // Create per-frame objects.
-        let mut graphics_cmd_pools = ArrayVec::new();
-        let mut compute_cmd_pools = ArrayVec::new();
+        let mut primary_cmd_pools = ArrayVec::new();
 
         let mut image_available_semaphores = ArrayVec::new();
         let mut render_finished_semaphores = ArrayVec::new();
         let mut compute_finished_semaphores = ArrayVec::new();
-        let mut in_flight_fences = ArrayVec::new();
-        let mut compute_in_flight_fences = ArrayVec::new();
-        for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
+        for frame in 0..Self::MAX_FRAMES_IN_FLIGHT {
             // Create command pools and buffers.
-            let mut graphics_cmd_pool = ResettablePrimaryCommandPool::new(&device, device.primary_queue())?;
-            let mut compute_cmd_pool = ResettablePrimaryCommandPool::new(&device, device.primary_queue())?;
-            graphics_cmd_pool.allocate_cmd_buffer(vk::CommandBufferLevel::PRIMARY)?;
-            compute_cmd_pool.allocate_cmd_buffer(vk::CommandBufferLevel::PRIMARY)?;
-            graphics_cmd_pools.push(graphics_cmd_pool);
-            compute_cmd_pools.push(compute_cmd_pool);
+            let mut primary_cmd_pool = ResettablePrimaryCommandPool::new(
+                debug_only_name!("Primary Command Pool {frame}"),
+                &device,
+                device.primary_queue(),
+            )?;
+            primary_cmd_pool.allocate_cmd_buffers::<2>(vk::CommandBufferLevel::PRIMARY)?;
+            primary_cmd_pools.push(primary_cmd_pool);
 
             // Create sync objects.
             image_available_semaphores.push(BinarySemaphore::new(&device)?);
             render_finished_semaphores.push(BinarySemaphore::new(&device)?);
             compute_finished_semaphores.push(BinarySemaphore::new(&device)?);
-            in_flight_fences.push(Fence::new(&device, true)?);
-            compute_in_flight_fences.push(Fence::new(&device, true)?);
         }
 
         // Set up camera.
@@ -225,27 +432,26 @@ impl GalaxyEngine {
             transform: camera_transform,
             aspect: width as f32 / height as f32,
             fov: 45.,
-            near: 1.,
+            near: 0.1,
         };
 
         Ok(Self {
             instance,
-            surface: ManuallyDrop::new(surface),
-            device: ManuallyDrop::new(device),
-            swapchain: ManuallyDrop::new(swapchain),
+            surface,
+            device,
+            swapchain,
             static_resources_guard: ManuallyDrop::new(static_resources_guard),
-            mesh: ManuallyDrop::new(mesh),
-            descriptor_pool: ManuallyDrop::new(descriptor_pool),
-            particle_system: ManuallyDrop::new(particle_system),
-            graphics_cmd_pools,
-            compute_cmd_pools,
+            meshes: vec![mesh],
+            material: ManuallyDrop::new(material),
+            //particle_system: ManuallyDrop::new(particle_system),
+            primary_cmd_pools,
             transient_cmd_pool: ManuallyDrop::new(transient_cmd_pool),
-            uniform_buffer: ManuallyDrop::new(uniform_buffer),
+            scene_descriptor_pool: ManuallyDrop::new(scene_descriptor_pool),
+            scene_uniform_buffer: ManuallyDrop::new(scene_uniform_buffer),
+            scene_buffers: ManuallyDrop::new(scene_buffers),
             image_available_semaphores,
             render_finished_semaphores,
             compute_finished_semaphores,
-            in_flight_fences,
-            compute_in_flight_fences,
             current_frame: 0,
             start_time: std::time::Instant::now(),
             last_frame_time: std::time::Instant::now(),
@@ -286,7 +492,7 @@ impl GalaxyEngine {
         }
         // Update camera position.
         {
-            const MOVE_SPEED: f32 = 5.;
+            const MOVE_SPEED: f32 = 3.;
 
             let mut camera_velocity = Vec3::zero();
             if self.is_key_pressed("w") {
@@ -324,41 +530,49 @@ impl GalaxyEngine {
         let view_info = self.camera.view_info();
 
         // Update uniform buffer.
-        let uniform_data = UniformData {
+        self.scene_uniform_buffer.local = SceneUniformData {
             view: view_info.view,
             proj: view_info.projection,
             sun_direction: Vec3::new(time.sin().abs(), (time + 0.3).sin().abs(), (time + 0.6).sin().abs()),
             delta_time,
         };
 
-        // Copy data to uniform buffer. TODO: This only works here because the uniform buffer is device-local.
-        self.uniform_buffer
-            .update(current_frame, bytemuck::bytes_of(&uniform_data))?;
+        // Update mesh data.
+        for (i, (mesh, (draw_data, transform, material_data))) in
+            self.meshes.iter().zip(self.scene_buffers.iter_mut()).enumerate()
+        {
+            let i = i as u32;
+            draw_data.material_index = i;
+            draw_data.transform_index = i;
+            *transform = view_info.mvp_from_similarity(&mesh.transform);
+            material_data.albedo = Vec4::new(1., 1., 1., 1.);
+            material_data.texture_index = i;
+        }
 
-        // Wait for compute fence.
-        self.compute_in_flight_fences[current_frame].wait(u64::MAX)?;
-        self.compute_in_flight_fences[current_frame].reset()?;
-
+        // Wait for fences of the buffered frame.
+        self.primary_cmd_pools[current_frame]
+            .get_cmd_buffer(0)
+            .wait_for_fence()?;
+        self.primary_cmd_pools[current_frame]
+            .get_cmd_buffer(1)
+            .wait_for_fence()?;
         // Reset compute pool.
-        let compute_cmd_pool = &mut self.compute_cmd_pools[current_frame];
-        compute_cmd_pool.reset()?;
+        let primary_cmd_pool = &mut self.primary_cmd_pools[current_frame];
+        primary_cmd_pool.reset()?;
 
-        let cmd_buffer = compute_cmd_pool.get_cmd_buffer(0);
-        let recording = cmd_buffer.begin()?;
-        self.uniform_buffer.copy_to_gpu(current_frame, recording);
-        // TODO: needs a barrier?
-        self.particle_system.record_compute(recording);
-        cmd_buffer.end()?;
+        // Copy uniform buffer to GPU.
+        self.scene_uniform_buffer.copy_to_gpu(current_frame)?;
+        self.scene_buffers.copy_to_gpu(current_frame)?;
+
+        let compute_cmd_buffer = primary_cmd_pool.get_cmd_buffer(0);
+        let _recording = compute_cmd_buffer.begin()?;
+        //self.particle_system.record_compute(recording);
+        compute_cmd_buffer.end()?;
 
         let signal_semaphores = [self.compute_finished_semaphores[current_frame].handle()];
-        cmd_buffer.submit(
-            &[],
-            &signal_semaphores,
-            Some(&self.compute_in_flight_fences[current_frame]),
-        )?;
+        compute_cmd_buffer.submit(&[], &signal_semaphores)?;
 
-        // Wait for graphics fence.
-        self.in_flight_fences[current_frame].wait(u64::MAX)?;
+        // Begin graphics command buffer recording.
 
         // Acquire image from swapchain.
         let (image_idx, _is_suboptimal) = match self.swapchain.acquire_next_image(
@@ -372,8 +586,6 @@ impl GalaxyEngine {
             }
             Err(err) => Err(err)?,
         };
-
-        self.in_flight_fences[current_frame].reset()?;
 
         let swapchain_extent = self.swapchain.get_extent();
 
@@ -396,12 +608,10 @@ impl GalaxyEngine {
             .subresource_range(Swapchain::get_subresource_range());
 
         // Record graphics command buffer.
-        let graphics_cmd_pool = &mut self.graphics_cmd_pools[current_frame];
-        graphics_cmd_pool.reset()?;
-        let cmd_buffer = graphics_cmd_pool.get_cmd_buffer(0);
+        let gfx_cmd_buffer = primary_cmd_pool.get_cmd_buffer(1);
 
         // Transition colour attachment to optimal layout (from present).
-        let recording = cmd_buffer.begin()?;
+        let recording = gfx_cmd_buffer.begin()?;
         let dependency_info =
             vk::DependencyInfo::default().image_memory_barriers(slice::from_ref(&color_optimal_transition));
         recording.pipeline_barrier2(ext, &dependency_info);
@@ -439,11 +649,20 @@ impl GalaxyEngine {
             .color_attachments(slice::from_ref(&color_attachment_info))
             .depth_attachment(&depth_attachment_info);
 
-        let rendering = cmd_buffer.begin_rendering(ext, &rendering_info)?;
-        self.particle_system
-            .record_graphics(rendering, &view_info, time, viewport, scissor);
-        self.mesh.record_graphics(rendering, &view_info, viewport, scissor);
-        let recording = cmd_buffer.end_rendering(ext)?;
+        let rendering = gfx_cmd_buffer.begin_rendering(ext, &rendering_info)?;
+        rendering.set_viewport(viewport);
+        rendering.set_scissor(scissor);
+        self.material.bind(rendering);
+        rendering.bind_descriptor_sets(
+            vk::PipelineBindPoint::GRAPHICS,
+            self.material.pipeline_layout(),
+            0,
+            slice::from_ref(&self.scene_descriptor_pool.get(current_frame)),
+            &[],
+        );
+        self.meshes.iter().for_each(|m| m.record_graphics(rendering));
+        //self.particle_system.record_graphics(rendering, &view_info, time, viewport, scissor);
+        let recording = gfx_cmd_buffer.end_rendering(ext)?;
 
         let color_optimal_to_present_src_transition = vk::ImageMemoryBarrier2::default()
             .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
@@ -458,7 +677,7 @@ impl GalaxyEngine {
             .image_memory_barriers(slice::from_ref(&color_optimal_to_present_src_transition));
         recording.pipeline_barrier2(ext, &dependency_info);
 
-        cmd_buffer.end()?;
+        gfx_cmd_buffer.end()?;
 
         // Submit command buffer.
         let wait_semaphores = [
@@ -472,11 +691,7 @@ impl GalaxyEngine {
             },
         ];
         let signal_semaphores = [self.render_finished_semaphores[current_frame].handle()];
-        cmd_buffer.submit(
-            &wait_semaphores,
-            &signal_semaphores,
-            Some(&self.in_flight_fences[current_frame]),
-        )?;
+        gfx_cmd_buffer.submit(&wait_semaphores, &signal_semaphores)?;
 
         match self.swapchain.queue_present(
             self.device.primary_queue_mut(),
@@ -505,8 +720,7 @@ impl GalaxyEngine {
             self.window_size,
             Some(&self.swapchain),
         )?;
-        let mut old_swapchain = std::mem::replace(&mut self.swapchain, ManuallyDrop::new(new_swapchain));
-        unsafe { ManuallyDrop::drop(&mut old_swapchain) };
+        let _ = std::mem::replace(&mut self.swapchain, new_swapchain);
         Ok(())
     }
 
@@ -554,37 +768,42 @@ impl Drop for GalaxyEngine {
         self.image_available_semaphores.clear();
         self.render_finished_semaphores.clear();
         self.compute_finished_semaphores.clear();
-        self.in_flight_fences.clear();
-        self.compute_in_flight_fences.clear();
+        //self.graphics_in_flight_fences.clear();
+        //self.compute_in_flight_fences.clear();
 
         // Drop command_pools.
-        self.graphics_cmd_pools.clear();
-        self.compute_cmd_pools.clear();
+        self.primary_cmd_pools.clear();
         unsafe { ManuallyDrop::drop(&mut self.transient_cmd_pool) };
 
         // Drop particle system.
-        unsafe { ManuallyDrop::drop(&mut self.particle_system) };
+        //unsafe { ManuallyDrop::drop(&mut self.particle_system) };
 
-        // Drop model.
-        unsafe { ManuallyDrop::drop(&mut self.mesh) };
+        // Drop meshes.
+        self.meshes.clear();
+
+        // Drop material.
+        unsafe { ManuallyDrop::drop(&mut self.material) };
 
         // Drop descriptor pool.
-        unsafe { ManuallyDrop::drop(&mut self.descriptor_pool) };
+        unsafe { ManuallyDrop::drop(&mut self.scene_descriptor_pool) };
 
         // Drop uniform buffers.
-        unsafe { ManuallyDrop::drop(&mut self.uniform_buffer) };
-
-        // Drop swapchain.
-        unsafe { ManuallyDrop::drop(&mut self.swapchain) };
+        unsafe { ManuallyDrop::drop(&mut self.scene_uniform_buffer) };
+        unsafe { ManuallyDrop::drop(&mut self.scene_buffers) };
 
         // Drop static resources.
         unsafe { ManuallyDrop::drop(&mut self.static_resources_guard) };
 
-        // Drop vulkan.
-        unsafe { ManuallyDrop::drop(&mut self.device) };
+        // Swapchain, device, surface and instance are automatically dropped.
+
+        // Drop swapchain.
+        // unsafe { ManuallyDrop::drop(&mut self.swapchain) };
+
+        // Drop device.
+        //unsafe { ManuallyDrop::drop(&mut self.device) };
 
         // Drop surface.
-        unsafe { ManuallyDrop::drop(&mut self.surface) };
+        //unsafe { ManuallyDrop::drop(&mut self.surface) };
 
         // Instance is automatically dropped.
     }

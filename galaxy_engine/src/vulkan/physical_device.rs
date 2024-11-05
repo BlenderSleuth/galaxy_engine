@@ -1,12 +1,21 @@
 // Copyright (c) 2024 Ben Sutherland.
 
 use std::ffi::CStr;
+use std::num::NonZeroU32;
 
 use arrayvec::ArrayVec;
 use ash::vk;
 
 use crate::vulkan;
 use crate::vulkan::surface::Surface;
+
+// Memory type that can be used for buffers that are written to every frame (Host Visible, Host Coherent and Device Local).
+pub struct VolatileMemoryType {
+    pub index: u32,
+    pub type_bits: NonZeroU32,
+    pub flags: vk::MemoryPropertyFlags,
+    pub size: vk::DeviceSize,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum PhysicalDeviceIncompatibility {
@@ -24,6 +33,15 @@ pub enum PhysicalDeviceIncompatibility {
     IncompatibleVulkanVersion(vulkan::IncompatibleVulkanVersion),
     #[error("{0} not supported")]
     FeatureNotSupported(&'static str),
+    #[error("Uniform memory not available")]
+    NoUniformMemoryAvailable,
+}
+
+#[derive(Default)]
+pub struct PhysicalDeviceFeatures {
+    pub features: vk::PhysicalDeviceFeatures,
+    pub features11: vk::PhysicalDeviceVulkan11Features<'static>,
+    pub features12: vk::PhysicalDeviceVulkan12Features<'static>,
 }
 
 pub struct PhysicalDevice {
@@ -38,7 +56,10 @@ pub struct PhysicalDevice {
     pub swapchain_image_count: u32,
     pub supported_msaa_samples: vk::SampleCountFlags,
     pub max_msaa_samples: vk::SampleCountFlags,
+    pub volatile_memory_type: VolatileMemoryType,
+    pub mem_properties: vk::PhysicalDeviceMemoryProperties,
     pub properties: vk::PhysicalDeviceProperties,
+    pub enabled_features: PhysicalDeviceFeatures,
 }
 
 //noinspection RsUnresolvedPath
@@ -186,9 +207,14 @@ impl PhysicalDevice {
         .rfind(|&sample_count| supported_msaa_samples.contains(sample_count))
         .unwrap_or(vk::SampleCountFlags::TYPE_1);
 
+        let mut vulkan11_features = vk::PhysicalDeviceVulkan11Features::default();
         let mut vulkan12_features = vk::PhysicalDeviceVulkan12Features::default();
-        let mut physical_device_features = vk::PhysicalDeviceFeatures2::default().push_next(&mut vulkan12_features);
+        let mut physical_device_features = vk::PhysicalDeviceFeatures2::default()
+            .push_next(&mut vulkan11_features)
+            .push_next(&mut vulkan12_features);
         unsafe { instance.get_physical_device_features2(handle, &mut physical_device_features) };
+
+        let mut enabled_features = PhysicalDeviceFeatures::default();
 
         // Require anisotropic filtering support.
         if physical_device_features.features.sampler_anisotropy == vk::FALSE {
@@ -196,6 +222,23 @@ impl PhysicalDevice {
                 "Anisotropic filtering",
             ));
         }
+        enabled_features.features.sampler_anisotropy = vk::TRUE;
+
+        // Require shader draw parameters support.
+        if vulkan11_features.shader_draw_parameters == vk::FALSE {
+            return Err(PhysicalDeviceIncompatibility::FeatureNotSupported(
+                "Shader draw parameters",
+            ));
+        }
+        enabled_features.features11.shader_draw_parameters = vk::TRUE;
+
+        // Require runtime descriptor array support.
+        if vulkan12_features.runtime_descriptor_array == vk::FALSE {
+            return Err(PhysicalDeviceIncompatibility::FeatureNotSupported(
+                "Runtime descriptor array",
+            ));
+        }
+        enabled_features.features12.runtime_descriptor_array = vk::TRUE;
 
         // Require buffer_device_address support.
         if vulkan12_features.buffer_device_address == vk::FALSE {
@@ -203,6 +246,7 @@ impl PhysicalDevice {
                 "Buffer device address",
             ));
         }
+        enabled_features.features12.buffer_device_address = vk::TRUE;
 
         // Require descriptor indexing support.
         //if vulkan12_features.descriptor_indexing == vk::FALSE {
@@ -217,8 +261,32 @@ impl PhysicalDevice {
         //    ));
         //}
 
-        // TODO: Need some amount of device-local + host-visible memory?
-        // let mem_props = unsafe { instance.get_physical_device_memory_properties(handle) };
+        let mem_properties = unsafe { instance.get_physical_device_memory_properties(handle) };
+        let mut uniform_memory_types: Vec<_> = mem_properties
+            .memory_types
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, mem_type)| {
+                if mem_type.property_flags.contains(vk::MemoryPropertyFlags::HOST_VISIBLE)
+                    && mem_type.property_flags.contains(vk::MemoryPropertyFlags::HOST_COHERENT)
+                    && mem_type.property_flags.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+                {
+                    Some(VolatileMemoryType {
+                        index: idx as u32,
+                        type_bits: NonZeroU32::new(1 << idx as u32).unwrap(),
+                        flags: mem_type.property_flags,
+                        size: mem_properties.memory_heaps[mem_type.heap_index as usize].size,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        uniform_memory_types.sort_unstable_by(|a, b| a.size.cmp(&b.size));
+        //TODO: handle when there are no uniform memory types available.
+        let uniform_memory_type = uniform_memory_types
+            .pop()
+            .ok_or(PhysicalDeviceIncompatibility::NoUniformMemoryAvailable)?;
 
         Ok(PhysicalDevice {
             handle,
@@ -232,7 +300,10 @@ impl PhysicalDevice {
             swapchain_image_count: image_count,
             supported_msaa_samples,
             max_msaa_samples,
+            volatile_memory_type: uniform_memory_type,
+            mem_properties,
             properties: physical_device_properties,
+            enabled_features,
         })
     }
 

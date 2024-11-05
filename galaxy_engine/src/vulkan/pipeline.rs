@@ -23,14 +23,14 @@ pub struct PipelineLayout {
 impl PipelineLayout {
     pub fn new(
         device: &Device,
-        descriptor_set_layout: Option<&vk::DescriptorSetLayout>,
+        descriptor_set_layout: Option<&[vk::DescriptorSetLayout]>,
         push_constant_range: Option<&vk::PushConstantRange>,
     ) -> VkResult<Self> {
         let loader = device.cloned_loader();
 
         let mut pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
         if let Some(descriptor_set_layout) = descriptor_set_layout {
-            pipeline_layout_info = pipeline_layout_info.set_layouts(slice::from_ref(descriptor_set_layout));
+            pipeline_layout_info = pipeline_layout_info.set_layouts(descriptor_set_layout);
         }
         if let Some(push_constant_range) = push_constant_range {
             pipeline_layout_info = pipeline_layout_info.push_constant_ranges(slice::from_ref(&push_constant_range));

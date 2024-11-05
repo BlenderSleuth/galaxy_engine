@@ -15,18 +15,17 @@ use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::extensions::DeviceExtensions;
 use crate::vulkan::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
 use crate::vulkan::queue::queue_type::QueueType;
-use crate::vulkan::{debug, gpu_alloc};
+use crate::vulkan::{debug, get_device_loader, gpu_alloc};
 
 pub struct ImageView {
-    loader: SharedDeviceLoader,
     handle: vk::ImageView,
 }
 
 impl ImageView {
     // Image in view_info must outlive the image view. Usually call Image::get_or_create_view() instead.
-    pub unsafe fn new(loader: SharedDeviceLoader, view_info: &vk::ImageViewCreateInfo) -> VkResult<Self> {
-        let handle = unsafe { loader.create_image_view(view_info, None) }?;
-        Ok(Self { loader, handle })
+    pub unsafe fn new(device: &Device, view_info: &vk::ImageViewCreateInfo) -> VkResult<Self> {
+        let handle = unsafe { device.loader().create_image_view(view_info, None) }?;
+        Ok(Self { handle })
     }
 
     pub fn handle(&self) -> vk::ImageView {
@@ -48,7 +47,7 @@ impl ImageView {
 
 impl Drop for ImageView {
     fn drop(&mut self) {
-        unsafe { self.loader.destroy_image_view(self.handle, None) };
+        unsafe { get_device_loader().destroy_image_view(self.handle, None) };
     }
 }
 
@@ -97,9 +96,6 @@ pub struct Image {
     handle: vk::Image,
     allocation: ManuallyFreeAllocation,
     view: ManuallyDrop<ImageView>,
-    // format: vk::Format,
-    // tiling: vk::ImageTiling,
-    // num_dimensions: vk::ImageType,
     extent: vk::Extent3D,
     subresource: vk::ImageSubresourceRange,
 }
@@ -151,7 +147,7 @@ impl Image {
             ))
             .format(info.format)
             .subresource_range(subresource);
-        let view = unsafe { ImageView::new(device.cloned_loader(), &view_info)? };
+        let view = unsafe { ImageView::new(device, &view_info)? };
 
         Ok(Self {
             loader: device.cloned_loader(),
@@ -159,9 +155,6 @@ impl Image {
             handle,
             allocation,
             view: ManuallyDrop::new(view),
-            // format: info.format,
-            // tiling: info.tiling,
-            // num_dimensions: info.image_type,
             extent: info.extent,
             subresource,
         })
@@ -206,6 +199,7 @@ impl Image {
             &device,
             total_mip_size as vk::DeviceSize,
             vk::BufferUsageFlags::TRANSFER_SRC,
+            None,
         )?;
 
         // Copy mip levels into buffer.
@@ -240,7 +234,7 @@ impl Image {
                             1
                         },
                     });
-                image_buffer.copy_into_buffer(&data, offset)?;
+                image_buffer.copy_slice_into_buffer(&data, offset)?;
                 offset += data.len();
                 Ok(region)
             })
@@ -375,3 +369,50 @@ impl Drop for Image {
         unsafe { gpu_alloc::free_or_log_on_fail(&self.alloc, &mut self.allocation) };
     }
 }
+
+pub struct Sampler {
+    handle: vk::Sampler,
+}
+
+impl Sampler {
+    pub fn new(device: &Device, info: &vk::SamplerCreateInfo) -> VkResult<Self> {
+        let handle = unsafe { device.loader().create_sampler(info, None) }?;
+        Ok(Self { handle })
+    }
+
+    pub fn handle(&self) -> vk::Sampler {
+        self.handle
+    }
+}
+
+impl Drop for Sampler {
+    fn drop(&mut self) {
+        unsafe { get_device_loader().destroy_sampler(self.handle, None) };
+    }
+}
+
+//pub struct CombinedImageSampler {
+//    image: Image,
+//    sampler: vk::Sampler,
+//}
+//
+//impl CombinedImageSampler {
+//    pub fn new(device: &Device, image: Image, sampler_info: &vk::SamplerCreateInfo) -> MemResult<Self> {
+//        let sampler = unsafe { device.loader().create_sampler(sampler_info, None) }?;
+//        Ok(Self { image, sampler })
+//    }
+//
+//    pub fn image(&self) -> &Image {
+//        &self.image
+//    }
+//
+//    pub fn sampler(&self) -> vk::Sampler {
+//        self.sampler
+//    }
+//}
+//
+//impl Drop for CombinedImageSampler {
+//    fn drop(&mut self) {
+//        unsafe { get_device_loader().destroy_sampler(self.sampler, None) };
+//    }
+//}

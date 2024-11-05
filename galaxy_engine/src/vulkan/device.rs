@@ -17,7 +17,9 @@ use crate::utils::ArcFinalOwner;
 use crate::vulkan::debug;
 use crate::vulkan::extensions::DeviceExtensions;
 use crate::vulkan::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
-use crate::vulkan::physical_device::{PhysicalDevice, PhysicalDeviceIncompatibility, PropertyQueueList};
+use crate::vulkan::physical_device::{
+    PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceIncompatibility, PropertyQueueList,
+};
 use crate::vulkan::queue::{queue_type, Queue};
 use crate::vulkan::surface::Surface;
 
@@ -25,7 +27,7 @@ use crate::vulkan::surface::Surface;
 static DEVICE_LOADER: OnceLock<ash::Device> = OnceLock::new();
 
 // Can be called once the vulkan is initialised by the engine. Device will be destroyed when the engine is dropped.
-pub unsafe fn get_device() -> &'static ash::Device {
+pub unsafe fn get_device_loader() -> &'static ash::Device {
     DEVICE_LOADER.get().unwrap()
 }
 
@@ -64,8 +66,6 @@ impl Device {
             khr::swapchain::NAME,
             khr::synchronization2::NAME,
             khr::dynamic_rendering::NAME,
-            // Promoted in Vulkan 1.2. Must enable as a device feature.
-            //khr::buffer_device_address::NAME,
         ];
 
         // MacOS compatibility.
@@ -110,6 +110,13 @@ impl Device {
             })
             .collect();
 
+        // Enable device features.
+        let PhysicalDeviceFeatures {
+            features,
+            mut features11,
+            mut features12,
+        } = physical_device.enabled_features;
+
         // Enable dynamic rendering.
         let mut dynamic_rendering_features =
             vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
@@ -118,19 +125,15 @@ impl Device {
         let mut synchronization2_features =
             vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
 
-        let device_features = vk::PhysicalDeviceFeatures::default().sampler_anisotropy(true);
-
-        // Enable buffer device address.
-        let mut device_features_12 = vk::PhysicalDeviceVulkan12Features::default().buffer_device_address(true);
-
         let device_extensions = utils::cstr_to_ptrs(&required_device_extensions);
         let device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_infos)
-            .enabled_features(&device_features)
             .enabled_extension_names(&device_extensions)
+            .enabled_features(&features)
+            .push_next(&mut features11)
+            .push_next(&mut features12)
             .push_next(&mut dynamic_rendering_features)
-            .push_next(&mut synchronization2_features)
-            .push_next(&mut device_features_12);
+            .push_next(&mut synchronization2_features);
 
         let device = unsafe { instance.create_device(physical_device.handle, &device_info, None) }?;
 
@@ -320,6 +323,10 @@ pub trait DeviceExt {
         create_info: &vk::GraphicsPipelineCreateInfo<'_>,
         allocation_callbacks: Option<&vk::AllocationCallbacks<'_>>,
     ) -> VkResult<vk::Pipeline>;
+    unsafe fn allocate_descriptor_sets_av<const N: usize>(
+        &self,
+        allocate_info: &vk::DescriptorSetAllocateInfo<'_>,
+    ) -> VkResult<ArrayVec<vk::DescriptorSet, N>>;
     unsafe fn allocate_command_buffer(
         &self,
         cmd_pool: vk::CommandPool,
@@ -352,6 +359,18 @@ impl DeviceExt for ash::Device {
             pipeline.as_mut_ptr(),
         )
         .assume_init_on_success(pipeline)
+    }
+
+    /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkAllocateDescriptorSets.html>
+    #[inline]
+    unsafe fn allocate_descriptor_sets_av<const N: usize>(
+        &self,
+        allocate_info: &vk::DescriptorSetAllocateInfo<'_>,
+    ) -> VkResult<ArrayVec<vk::DescriptorSet, N>> {
+        assert!(allocate_info.descriptor_set_count <= N as u32);
+        let mut desc_set = ArrayVec::new();
+        (self.fp_v1_0().allocate_descriptor_sets)(self.handle(), allocate_info, desc_set.as_mut_ptr())
+            .set_array_vec_len_on_success(desc_set, allocate_info.descriptor_set_count as usize)
     }
 
     /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkAllocateCommandBuffers.html>

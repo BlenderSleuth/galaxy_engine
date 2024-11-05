@@ -1,14 +1,18 @@
 // Copyright (c) 2024 Ben Sutherland.
 
-use ash::vk;
+use std::sync::Arc;
 
+use ash::vk;
+use ultraviolet::Vec4;
+
+use crate::mesh::{BindableVertex, Vertex};
 use crate::utils;
-use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
-use crate::vulkan::debug;
-use crate::vulkan::device::{Device, SharedDeviceLoader};
+use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingState};
+use crate::vulkan::descriptors::DescriptorSetLayout;
+use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::MemoryError;
-use crate::vulkan::image::{Image, ImageDimensions};
-use crate::vulkan::pipeline::GraphicsPipelineShaderStages;
+use crate::vulkan::pipeline::{GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout};
+use crate::vulkan::queue::queue_type::PrimaryQueue;
 use crate::vulkan::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
 
 #[derive(thiserror::Error, Debug)]
@@ -22,108 +26,83 @@ pub enum MaterialError {
 }
 
 pub struct Material {
-    loader: SharedDeviceLoader,
-    texture_image: Image,
-    sampler: vk::Sampler,
     vertex_shader_module: ShaderModule<VertexShaderStage>,
     fragment_shader_module: ShaderModule<FragmentShaderStage>,
+    pipeline: GraphicsPipeline,
+}
+
+// To be kept up to date with shader representation.
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct MaterialData {
+    pub albedo: Vec4,
+    pub texture_index: u32,
 }
 
 impl Material {
     pub fn new(
-        name: &str,
         device: &Device,
-        texture_path: &str,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        descriptor_set_layout: &DescriptorSetLayout,
+        samples: vk::SampleCountFlags,
     ) -> Result<Self, MaterialError> {
-        // Load texture.
-        let image_file = std::fs::read(texture_path)?;
-        let image = ktx2::Reader::new(image_file).unwrap();
-        let header = image.header();
-        let mip_levels = image.levels().collect::<Vec<_>>();
-        let extent = vk::Extent2D {
-            width: header.pixel_width,
-            height: header.pixel_height,
-        };
-        let texture_image = Image::new_from_mip_levels(
-            debug::debug_only_name!("{name} texture"),
-            device,
-            cmd_pool,
-            &mip_levels,
-            ImageDimensions::Type2D(extent),
-            header
-                .format
-                .map(utils::ktx_to_vulkan_format)
-                .unwrap_or(vk::Format::R8G8B8A8_SRGB),
-        )?;
-
-        // Create texture sampler.
-        let max_anisotropy = device.physical_device().properties.limits.max_sampler_anisotropy;
-        let sampler_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::LINEAR)
-            .min_filter(vk::Filter::LINEAR)
-            .address_mode_u(vk::SamplerAddressMode::REPEAT)
-            .address_mode_v(vk::SamplerAddressMode::REPEAT)
-            .address_mode_w(vk::SamplerAddressMode::REPEAT)
-            .anisotropy_enable(true)
-            .max_anisotropy(max_anisotropy)
-            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
-            .unnormalized_coordinates(false)
-            .compare_enable(false)
-            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
-            .mip_lod_bias(0.)
-            .min_lod(0.)
-            .max_lod(0.);
-        let sampler = unsafe { device.loader().create_sampler(&sampler_info, None) }?;
-
         // Load shaders.
         let vertex_shader_module = ShaderModule::new(&device, "galaxy_engine/shaders/shader.vert.spv")?;
         let fragment_shader_module = ShaderModule::new(&device, "galaxy_engine/shaders/shader.frag.spv")?;
 
+        let shader_stages =
+            utils::arrayvec_from_array([vertex_shader_module.stage_info(), fragment_shader_module.stage_info()]);
+
+        // Create pipeline layout.
+        let pipeline_layout = Arc::new(PipelineLayout::new(
+            &device,
+            Some(&[descriptor_set_layout.handle()]),
+            None,
+        )?);
+
+        // Create pipeline.
+        let pipeline_params = GraphicsPipelineParameters {
+            layout: pipeline_layout,
+            vertex_binding_description: Vertex::binding_description(),
+            vertex_attribute_descriptions: &Vertex::attribute_descriptions(),
+            shader_stages,
+            samples,
+            depth_test: true,
+        };
+        let pipeline = GraphicsPipeline::new(&device, pipeline_params)?;
+
         Ok(Self {
-            loader: device.cloned_loader(),
-            texture_image,
-            sampler,
             vertex_shader_module,
             fragment_shader_module,
+            pipeline,
         })
     }
 
-    pub fn shader_stages(&self) -> GraphicsPipelineShaderStages {
-        utils::arrayvec_from_array([
-            self.vertex_shader_module.stage_info(),
-            self.fragment_shader_module.stage_info(),
-        ])
+    pub fn bind(&self, cmd_buf: &mut RecordingCmdBuf<PrimaryQueue, impl RenderingState>) {
+        cmd_buf.bind_graphics_pipeline(&self.pipeline);
     }
 
-    pub fn texture_image(&self) -> &Image {
-        &self.texture_image
+    pub fn pipeline_layout(&self) -> &Arc<PipelineLayout> {
+        &self.pipeline.layout()
     }
 
-    pub fn sampler(&self) -> vk::Sampler {
-        self.sampler
-    }
+    // pub fn shader_stages(&self) -> GraphicsPipelineShaderStages {
+    //     utils::arrayvec_from_array([
+    //         self.vertex_shader_module.stage_info(),
+    //         self.fragment_shader_module.stage_info(),
+    //     ])
+    // }
 
-    pub fn descriptor_set_layout_bindings(&self) -> Vec<vk::DescriptorSetLayoutBinding> {
-        let ubo_layout_binding = vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
-            .descriptor_count(1)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .stage_flags(vk::ShaderStageFlags::VERTEX);
+    // pub fn texture_image(&self) -> &Image {
+    //     &self.texture_image.image()
+    // }
 
-        let sampler_layout_binding = vk::DescriptorSetLayoutBinding::default()
-            .binding(1)
-            .descriptor_count(1)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+    // pub fn sampler(&self) -> vk::Sampler {
+    //     self.texture_image.sampler()
+    // }
 
-        vec![ubo_layout_binding, sampler_layout_binding]
-    }
-}
+    // pub fn descriptor_set_layout(&self) -> vk::DescriptorSetLayout {
+    //     self.descriptor_set_layout
+    // }
 
-impl Drop for Material {
-    fn drop(&mut self) {
-        // Drop sampler.
-        unsafe { self.loader.destroy_sampler(self.sampler, None) };
-    }
+    // pub fn descriptor_set_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding> {}
 }

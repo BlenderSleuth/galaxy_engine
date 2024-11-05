@@ -90,7 +90,7 @@ impl Swapchain {
             .iter()
             .map(|swapchain_image| {
                 image_view_info.image = *swapchain_image;
-                unsafe { ImageView::new(device.cloned_loader(), &image_view_info) }
+                unsafe { ImageView::new(device, &image_view_info) }
             })
             .collect::<VkResult<Vec<_>>>()?;
 

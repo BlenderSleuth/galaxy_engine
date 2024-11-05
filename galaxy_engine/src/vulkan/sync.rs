@@ -4,7 +4,7 @@ use ash::prelude::VkResult;
 use ash::vk;
 
 use crate::vulkan::device::Device;
-use crate::vulkan::get_device;
+use crate::vulkan::get_device_loader;
 
 pub trait Semaphore {
     fn handle(&self) -> vk::Semaphore;
@@ -34,7 +34,7 @@ impl Semaphore for BinarySemaphore {
 
 impl Drop for BinarySemaphore {
     fn drop(&mut self) {
-        unsafe { get_device().destroy_semaphore(self.handle, None) }
+        unsafe { get_device_loader().destroy_semaphore(self.handle, None) }
     }
 }
 
@@ -48,9 +48,9 @@ pub struct Fence {
 }
 
 impl Fence {
-    pub fn new(device: &Device, signaled: bool) -> VkResult<Self> {
+    pub fn new(loader: &ash::Device, signaled: bool) -> VkResult<Self> {
         let handle = unsafe {
-            device.loader().create_fence(
+            loader.create_fence(
                 &vk::FenceCreateInfo::default().flags(if signaled {
                     vk::FenceCreateFlags::SIGNALED
                 } else {
@@ -66,17 +66,21 @@ impl Fence {
         self.handle
     }
 
-    pub fn reset(&self) -> VkResult<()> {
-        unsafe { get_device().reset_fences(&[self.handle]) }
+    pub fn reset(&self, loader: &ash::Device) -> VkResult<()> {
+        unsafe { loader.reset_fences(&[self.handle]) }
     }
 
-    pub fn wait(&self, timeout: u64) -> VkResult<()> {
-        unsafe { get_device().wait_for_fences(&[self.handle], true, timeout) }
+    pub fn wait_with_timeout(&self, loader: &ash::Device, timeout: u64) -> VkResult<()> {
+        unsafe { loader.wait_for_fences(&[self.handle], true, timeout) }
+    }
+
+    pub fn wait(&self, loader: &ash::Device) -> VkResult<()> {
+        self.wait_with_timeout(loader, u64::MAX)
     }
 }
 
 impl Drop for Fence {
     fn drop(&mut self) {
-        unsafe { get_device().destroy_fence(self.handle, None) }
+        unsafe { get_device_loader().destroy_fence(self.handle, None) }
     }
 }

@@ -6,20 +6,20 @@ use std::sync::Arc;
 use ash::vk;
 
 use crate::camera::ViewInfo;
+use crate::engine::GalaxyEngine;
 use crate::mesh::{BindableVertex, MeshBuffer, Vertex};
 use crate::prelude::*;
-use crate::uniform_buffer::VolatileUniformBuffer;
 use crate::vulkan::buffer::{Buffer, GpuOnly};
-use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingCmdBuf, TransientPrimaryCommandPool};
+use crate::vulkan::command_buffer::{CommandPool, RecordingCmdBuf, RenderingCmdBuf, Transient};
 use crate::vulkan::descriptors::DescriptorPool;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::MemResult;
 use crate::vulkan::pipeline::{
     ComputePipeline, ComputePipelineParameters, GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout,
 };
-use crate::vulkan::queue::queue_type::{ComputeQueueType, PrimaryQueue};
+use crate::vulkan::queue::queue_type::{ComputeQueueType, PrimaryQueue, QueueType};
 use crate::vulkan::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
-use crate::{engine, pod, utils};
+use crate::{engine, utils};
 
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
@@ -60,21 +60,20 @@ pub struct GpuParticleSystem {
     compute_pipeline: ComputePipeline,
     graphics_pipeline: GraphicsPipeline,
     _particle_storage_buffer: Buffer<GpuOnly>,
-    _particles_indirect_buffer: Buffer<GpuOnly>,
+    //_particles_indirect_buffer: Buffer<GpuOnly>,
+    _descriptor_pool: DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     compute_descriptor_set_layout: vk::DescriptorSetLayout,
     compute_descriptor_set: vk::DescriptorSet,
     mesh_buffer: Arc<MeshBuffer>,
 }
 
 impl GpuParticleSystem {
-    pub fn new(
+    pub fn new<Q: QueueType>(
         device: &Device,
         samples: vk::SampleCountFlags,
         max_num_particles: u32,
         window_size: vk::Extent2D,
-        uniform_buffer: &VolatileUniformBuffer,
-        cmd_pool: &mut TransientPrimaryCommandPool,
-        descriptor_pool: &mut DescriptorPool,
+        cmd_pool: &mut CommandPool<Q, Transient>,
     ) -> MemResult<Self> {
         // Set up particle system compute pipeline.
         let particle_shader_module = ShaderModule::new(&device, "galaxy_engine/shaders/particles.comp.spv")?;
@@ -106,42 +105,47 @@ impl GpuParticleSystem {
             vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::VERTEX_BUFFER,
+            None,
         )?;
+
         let mut cmd_buffer = cmd_pool.allocate_transient_cmd_buffer()?;
-        particle_storage_buffer.copy_via_staging_buffer(
+        // Ensures buffer sticks around for copy operation.
+        let _staging_buffer = particle_storage_buffer.copy_via_staging_buffer(
             &device,
             &mut cmd_buffer,
             bytemuck::must_cast_slice(&initial_particles),
         )?;
-        cmd_buffer.end_submit_wait_and_free()?;
+        let cmd_buffer = cmd_buffer.end()?.submit(&[], &[])?;
 
         // TODO: Don't allocate small buffers.
-        let num_particles_buffer = Buffer::<GpuOnly>::new_for_type::<pod::vk::DrawIndexedIndirectCommand>(
-            "Num particles buffer",
-            &device,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDIRECT_BUFFER,
-        )?;
+        //let num_particles_buffer = Buffer::<GpuOnly>::new_for_type::<pod::vk::DrawIndexedIndirectCommand>(
+        //    "Num particles buffer",
+        //    &device,
+        //    vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDIRECT_BUFFER,
+        //    None,
+        //)?;
+
+        // Create descriptor pool.
+        let descriptor_pool_sizes = [vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(4)];
+
+        let descriptor_pool = DescriptorPool::new(&device, &descriptor_pool_sizes)?;
 
         // Create compute descriptor set layout.
         let compute_layout_bindings = [
-            // TODO: Separate descriptor set for scene uniforms?
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
-                .descriptor_count(1)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
                 .descriptor_count(1)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .stage_flags(
                     vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                 ),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_count(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            //     vk::DescriptorSetLayoutBinding::default()
+            //         .binding(2)
+            //         .descriptor_count(1)
+            //         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            //         .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
         let compute_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&compute_layout_bindings);
         let compute_descriptor_set_layout =
@@ -155,39 +159,32 @@ impl GpuParticleSystem {
 
         // Write descriptor sets.
         let buffer_infos = [
-            uniform_buffer.descriptor_buffer_info(),
             particle_storage_buffer.descriptor_buffer_info(),
-            num_particles_buffer.descriptor_buffer_info(),
+            //num_particles_buffer.descriptor_buffer_info(),
         ];
 
         let descriptor_writes = [
+            // Current frame's storage buffer.
             vk::WriteDescriptorSet::default()
                 .dst_set(compute_descriptor_set)
                 .dst_binding(0)
                 .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(slice::from_ref(&buffer_infos[0])),
-            // Current frame's storage buffer.
-            vk::WriteDescriptorSet::default()
-                .dst_set(compute_descriptor_set)
-                .dst_binding(1)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(slice::from_ref(&buffer_infos[1])),
             // Draw indirect buffer.
-            vk::WriteDescriptorSet::default()
-                .dst_set(compute_descriptor_set)
-                .dst_binding(2)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(slice::from_ref(&buffer_infos[2])),
+            //vk::WriteDescriptorSet::default()
+            //    .dst_set(compute_descriptor_set)
+            //    .dst_binding(1)
+            //    .dst_array_element(0)
+            //    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            //    .buffer_info(slice::from_ref(&buffer_infos[1])),
         ];
 
         unsafe { device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
 
         let compute_pipeline_layout = Arc::new(PipelineLayout::new(
             &device,
-            Some(&compute_descriptor_set_layout),
+            Some(&[compute_descriptor_set_layout]),
             None,
         )?);
 
@@ -211,7 +208,7 @@ impl GpuParticleSystem {
             .size(std::mem::size_of::<Mat4>() as u32);
         let graphics_pipeline_layout = Arc::new(PipelineLayout::new(
             device,
-            Some(&compute_descriptor_set_layout),
+            Some(&[compute_descriptor_set_layout]),
             Some(&push_constant_range),
         )?);
 
@@ -225,13 +222,16 @@ impl GpuParticleSystem {
         };
         let graphics_pipeline = GraphicsPipeline::new(&device, pipeline_params)?;
 
+        cmd_buffer.wait_for_fence()?;
+
         Ok(Self {
             loader: device.cloned_loader(),
             max_num_particles,
             compute_pipeline,
             graphics_pipeline,
             _particle_storage_buffer: particle_storage_buffer,
-            _particles_indirect_buffer: num_particles_buffer,
+            //_particles_indirect_buffer: num_particles_buffer,
+            _descriptor_pool: descriptor_pool,
             compute_descriptor_set_layout,
             compute_descriptor_set,
             mesh_buffer: engine::static_resources().get_octagon_cloned(),

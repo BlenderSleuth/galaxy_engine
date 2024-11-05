@@ -20,7 +20,7 @@ pub mod sync;
 use std::ffi::CStr;
 
 use ash::vk;
-pub use device::get_device;
+pub use device::get_device_loader;
 
 pub const ENGINE_NAME: &'static CStr = c"Galaxy Engine";
 pub const ENGINE_VERSION_STR: &'static str = env!("CARGO_PKG_VERSION");

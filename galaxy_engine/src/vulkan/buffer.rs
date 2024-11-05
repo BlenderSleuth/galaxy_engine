@@ -1,7 +1,9 @@
 // Copyright (c) 2024 Ben Sutherland.
 
+use std::num::NonZeroU32;
+
 use ash::vk;
-use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme};
+use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme, MappedAllocationSlab};
 use gpu_allocator::MemoryLocation;
 
 use crate::vulkan::command_buffer::RecordingCmdBuf;
@@ -49,8 +51,19 @@ pub struct Buffer<L: MemLocation> {
 }
 
 impl<L: MemLocation> Buffer<L> {
-    pub fn new_for_type<T: bytemuck::Pod>(name: &str, device: &Device, usage: vk::BufferUsageFlags) -> MemResult<Self> {
-        Self::new(name, device, std::mem::size_of::<T>() as vk::DeviceSize, usage)
+    pub fn new_for_type<T: bytemuck::Pod>(
+        name: &str,
+        device: &Device,
+        usage: vk::BufferUsageFlags,
+        mem_type_override: Option<NonZeroU32>,
+    ) -> MemResult<Self> {
+        Self::new(
+            name,
+            device,
+            std::mem::size_of::<T>() as vk::DeviceSize,
+            usage,
+            mem_type_override,
+        )
     }
 
     pub fn new_for_slice<T: bytemuck::Pod>(
@@ -58,11 +71,25 @@ impl<L: MemLocation> Buffer<L> {
         device: &Device,
         slice: &[T],
         usage: vk::BufferUsageFlags,
+        mem_type_override: Option<NonZeroU32>,
     ) -> MemResult<Self> {
-        Self::new(name, device, std::mem::size_of_val(slice) as vk::DeviceSize, usage)
+        Self::new(
+            name,
+            device,
+            std::mem::size_of_val(slice) as vk::DeviceSize,
+            usage,
+            mem_type_override,
+        )
     }
 
-    pub fn new(name: &str, device: &Device, size: vk::DeviceSize, usage: vk::BufferUsageFlags) -> MemResult<Self> {
+    pub fn new(
+        name: &str,
+        device: &Device,
+        size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+        // TODO: Bake this into type state.
+        mem_type_override: Option<NonZeroU32>,
+    ) -> MemResult<Self> {
         let buffer_info = vk::BufferCreateInfo::default()
             .size(size)
             .usage(usage)
@@ -82,7 +109,14 @@ impl<L: MemLocation> Buffer<L> {
                 .get_buffer_memory_requirements2(&requirements_info, &mut requirements)
         };
 
-        let requirements = requirements.memory_requirements;
+        let mut requirements = requirements.memory_requirements;
+
+        // Allows using a more specific type of memory.
+        if let Some(override_memory_type_bits) = mem_type_override.map(|n| n.get()) {
+            assert_ne!(override_memory_type_bits & requirements.memory_type_bits, 0);
+            requirements.memory_type_bits = requirements.memory_type_bits;
+        }
+
         let allocation_scheme = if gpu_alloc::use_dedicated_allocation(dedicated_requirements) {
             AllocationScheme::DedicatedBuffer(handle)
         } else {
@@ -147,25 +181,40 @@ impl<L: MemLocation> Drop for Buffer<L> {
 }
 
 impl Buffer<GpuOnly> {
-    pub fn copy_via_staging_buffer(
+    pub fn copy_via_staging_buffer<Q: QueueType>(
         &mut self,
         device: &Device,
-        cmd_buf: &mut RecordingCmdBuf<impl QueueType>,
+        cmd_buf: &mut RecordingCmdBuf<Q>,
         src_data: &[u8],
-    ) -> MemResult<()> {
-        let mut staging_buffer =
-            Buffer::<CpuToGpu>::new_for_slice("Staging buffer", &device, src_data, vk::BufferUsageFlags::TRANSFER_SRC)?;
-        staging_buffer.copy_into_buffer(src_data, 0)?;
+    ) -> MemResult<Buffer<CpuToGpu>> {
+        let mut staging_buffer = Buffer::<CpuToGpu>::new_for_slice(
+            "Staging buffer",
+            &device,
+            src_data,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            None,
+        )?;
+        staging_buffer.copy_slice_into_buffer(src_data, 0)?;
         staging_buffer.copy_to_buffer(cmd_buf, self, staging_buffer.size());
-        Ok(())
+        Ok(staging_buffer)
     }
 }
 
 impl Buffer<CpuToGpu> {
-    pub fn copy_into_buffer<T: bytemuck::Pod>(&mut self, data: &[T], offset: usize) -> MemResult<()> {
+    fn get_mapped_memory(&mut self) -> MappedAllocationSlab {
         // CPU to GPU memory is always mappable.
-        let mut memory = self.allocation.try_as_mapped_slab().unwrap();
-        presser::copy_from_slice_to_offset_with_align(data, &mut memory, offset, align_of::<T>())?;
+        self.allocation.try_as_mapped_slab().unwrap()
+    }
+
+    pub fn copy_into_buffer<T: bytemuck::Pod>(&mut self, data: &T, offset: usize) -> MemResult<()> {
+        let mut memory = self.get_mapped_memory();
+        presser::copy_to_offset(data, &mut memory, offset)?;
+        Ok(())
+    }
+
+    pub fn copy_slice_into_buffer<T: bytemuck::Pod>(&mut self, data: &[T], offset: usize) -> MemResult<()> {
+        let mut memory = self.get_mapped_memory();
+        presser::copy_from_slice_to_offset(data, &mut memory, offset)?;
         Ok(())
     }
 }

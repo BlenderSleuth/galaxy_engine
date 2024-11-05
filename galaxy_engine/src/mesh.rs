@@ -3,24 +3,19 @@
 use std::alloc::Layout;
 use std::fs::File;
 use std::io::BufReader;
-use std::slice;
 use std::sync::Arc;
 
 use ash::vk;
 use meshopt::VertexDataAdapter;
 
-use crate::camera::ViewInfo;
-use crate::material::{Material, MaterialError};
+use crate::material::Material;
 use crate::prelude::*;
-use crate::uniform_buffer::VolatileUniformBuffer;
 use crate::vulkan::buffer::{Buffer, CpuToGpu, GpuOnly};
 use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingCmdBuf, RenderingState, TransientPrimaryCommandPool};
 use crate::vulkan::debug;
-use crate::vulkan::descriptors::DescriptorPool;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
-use crate::vulkan::pipeline::{GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout};
-use crate::vulkan::queue::queue_type::{PrimaryQueue, QueueType};
+use crate::vulkan::queue::queue_type::PrimaryQueue;
 
 // For vertices with N attributes.
 pub trait BindableVertex<const N: usize> {
@@ -87,7 +82,7 @@ impl MeshBuffer {
         vertices: &[V],
         indices: &[I],
         device: &Device,
-        cmd_buffer: &mut RecordingCmdBuf<impl QueueType>,
+        cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> MemResult<MeshBuffer> {
         // Ensure proper alignment.
         let indices_layout = Layout::for_value(indices);
@@ -105,6 +100,7 @@ impl MeshBuffer {
             vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::VERTEX_BUFFER
                 | vk::BufferUsageFlags::INDEX_BUFFER,
+            None,
         )?;
 
         let mut staging_buffer = Buffer::<CpuToGpu>::new(
@@ -112,10 +108,14 @@ impl MeshBuffer {
             &device,
             buffer_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
+            None,
         )?;
-        staging_buffer.copy_into_buffer(indices, 0)?;
-        staging_buffer.copy_into_buffer(vertices, vertices_offset)?;
-        staging_buffer.copy_to_buffer(cmd_buffer, &mut buffer, staging_buffer.size());
+        staging_buffer.copy_slice_into_buffer(indices, 0)?;
+        staging_buffer.copy_slice_into_buffer(vertices, vertices_offset)?;
+
+        let mut cmd_buffer = cmd_pool.allocate_transient_cmd_buffer()?;
+        staging_buffer.copy_to_buffer(&mut cmd_buffer, &mut buffer, staging_buffer.size());
+        cmd_buffer.end_submit_wait_and_free()?;
 
         Ok(Self {
             buffer,
@@ -182,18 +182,13 @@ pub enum MeshError {
     VulkanError(#[from] vk::Result),
     #[error("Memory error: {0}")]
     MemoryError(#[from] MemoryError),
-    #[error("Material error: {0}")]
-    MaterialError(#[from] MaterialError),
 }
 
 pub struct Mesh {
     loader: SharedDeviceLoader,
     mesh_buffer: MeshBuffer,
-    material: Material,
-    descriptor_set_layout: vk::DescriptorSetLayout,
-    descriptor_set: vk::DescriptorSet,
-    pipeline: GraphicsPipeline,
-    transform: Similarity3,
+    material: Arc<Material>,
+    pub transform: Similarity3,
 }
 
 impl Mesh {
@@ -202,19 +197,8 @@ impl Mesh {
         device: &Device,
         cmd_pool: &mut TransientPrimaryCommandPool,
         mesh_path: &str,
-        texture_path: &str,
-        samples: vk::SampleCountFlags,
-        uniform_buffer: &VolatileUniformBuffer,
-        descriptor_pool: &mut DescriptorPool,
+        material: Arc<Material>,
     ) -> Result<Self, MeshError> {
-        // Load material.
-        let material = Material::new(
-            debug::debug_only_name!("{name} material"),
-            device,
-            texture_path,
-            cmd_pool,
-        )?;
-
         // Load model. The obj crate already does indexing for us.
         let obj_model: obj::Obj<obj::TexturedVertex, u32> = obj::load_obj(BufReader::new(File::open(mesh_path)?))?;
 
@@ -241,78 +225,12 @@ impl Mesh {
         meshopt::optimize_overdraw_in_place(&mut indices, &vertex_data_adapter, 1.05);
         meshopt::optimize_vertex_fetch_in_place(&mut indices, &mut vertices);
 
-        let mut cmd_buffer = cmd_pool.allocate_transient_cmd_buffer()?;
-        let mesh_buffer =
-            MeshBuffer::new_from_vertices_and_indices(name, &vertices, &indices, device, &mut cmd_buffer)?;
-        cmd_buffer.end_submit_wait_and_free()?;
+        let mesh_buffer = MeshBuffer::new_from_vertices_and_indices(name, &vertices, &indices, device, cmd_pool)?;
 
-        let layout_bindings = material.descriptor_set_layout_bindings();
-        let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&layout_bindings);
-        let descriptor_set_layout = unsafe {
-            device
-                .loader()
-                .create_descriptor_set_layout(&descriptor_set_layout_info, None)
-        }?;
-
-        // Create pipeline layout.
-        let push_constant_range = vk::PushConstantRange::default()
-            .stage_flags(vk::ShaderStageFlags::VERTEX)
-            .offset(0)
-            .size(std::mem::size_of::<Mat4>() as u32);
-
-        let pipeline_layout = Arc::new(PipelineLayout::new(
-            &device,
-            Some(&descriptor_set_layout),
-            Some(&push_constant_range),
-        )?);
-
-        // Create pipeline.
-        let pipeline_params = GraphicsPipelineParameters {
-            layout: pipeline_layout,
-            vertex_binding_description: Vertex::binding_description(),
-            vertex_attribute_descriptions: &Vertex::attribute_descriptions(),
-            shader_stages: material.shader_stages(),
-            samples,
-            depth_test: true,
-        };
-        let pipeline = GraphicsPipeline::new(&device, pipeline_params)?;
-
-        // Create mesh descriptor sets.
-        let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(descriptor_pool.handle())
-            .set_layouts(slice::from_ref(&descriptor_set_layout));
-        let descriptor_set = unsafe { device.loader().allocate_descriptor_sets(&alloc_info) }?[0];
-
-        let buffer_info = uniform_buffer.descriptor_buffer_info();
-
-        let image_info = vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(material.texture_image().view().handle())
-            .sampler(material.sampler());
-
-        let descriptor_writes = [
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_set)
-                .dst_binding(0)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(slice::from_ref(&buffer_info)),
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_set)
-                .dst_binding(1)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(slice::from_ref(&image_info)),
-        ];
-
-        unsafe { device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
         Ok(Self {
             loader: device.cloned_loader(),
             mesh_buffer,
             material,
-            descriptor_set_layout,
-            descriptor_set,
-            pipeline,
             transform: Similarity3::identity(),
         })
     }
@@ -321,45 +239,17 @@ impl Mesh {
         &self.material
     }
 
-    pub fn descriptor_set_layout(&self) -> vk::DescriptorSetLayout {
-        self.descriptor_set_layout
-    }
-
-    pub fn record_graphics(
-        &self,
-        cmd_buffer: &mut RenderingCmdBuf<PrimaryQueue>,
-        view_info: &ViewInfo,
-        viewport: vk::Viewport,
-        scissor: vk::Rect2D,
-    ) {
-        let pipeline_layout = self.pipeline.layout().as_ref();
-        cmd_buffer.bind_graphics_pipeline(&self.pipeline);
+    pub fn record_graphics(&self, cmd_buffer: &mut RenderingCmdBuf<PrimaryQueue>) {
         self.mesh_buffer.bind(cmd_buffer);
-        let mvp = view_info.mvp_from_similarity(&self.transform);
-        cmd_buffer.push_constants(
-            pipeline_layout,
-            vk::ShaderStageFlags::VERTEX,
-            0,
-            bytemuck::cast_slice(&[mvp]),
-        );
-        cmd_buffer.bind_descriptor_sets(
-            vk::PipelineBindPoint::GRAPHICS,
-            pipeline_layout,
-            0,
-            slice::from_ref(&self.descriptor_set),
-            &[],
-        );
-        cmd_buffer.set_viewport(viewport);
-        cmd_buffer.set_scissor(scissor);
         cmd_buffer.draw_indexed(self.mesh_buffer.num_indices(), 1, 0, 0, 0);
     }
 }
 
-impl Drop for Mesh {
-    fn drop(&mut self) {
-        unsafe {
-            self.loader
-                .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-        }
-    }
-}
+//impl Drop for Mesh {
+//    fn drop(&mut self) {
+//        unsafe {
+//            self.loader
+//                .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+//        }
+//    }
+//}

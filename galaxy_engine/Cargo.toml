@@ -15,7 +15,7 @@ winit = "0.30.5"
 bitflags = "2.6.0"
 log = "0.4.0"
 thiserror = "1.0.64"
-bytemuck = { version = "1.19.0", features = ["derive", "must_cast"] }
+bytemuck = { version = "1.19.0", features = ["derive", "must_cast", "min_const_generics"] }
 gpu-allocator = { version = "0.27.0", default-features = false, features = ["vulkan"] }
 presser = "0.3.1"
 arrayvec = "0.7.6"
