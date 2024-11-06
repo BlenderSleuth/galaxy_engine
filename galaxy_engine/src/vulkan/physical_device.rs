@@ -207,46 +207,46 @@ impl PhysicalDevice {
         .rfind(|&sample_count| supported_msaa_samples.contains(sample_count))
         .unwrap_or(vk::SampleCountFlags::TYPE_1);
 
-        let mut vulkan11_features = vk::PhysicalDeviceVulkan11Features::default();
-        let mut vulkan12_features = vk::PhysicalDeviceVulkan12Features::default();
+        let mut features11 = vk::PhysicalDeviceVulkan11Features::default();
+        let mut features12 = vk::PhysicalDeviceVulkan12Features::default();
         let mut physical_device_features = vk::PhysicalDeviceFeatures2::default()
-            .push_next(&mut vulkan11_features)
-            .push_next(&mut vulkan12_features);
+            .push_next(&mut features11)
+            .push_next(&mut features12);
         unsafe { instance.get_physical_device_features2(handle, &mut physical_device_features) };
+        let features = physical_device_features.features;
 
         let mut enabled_features = PhysicalDeviceFeatures::default();
 
-        // Require anisotropic filtering support.
-        if physical_device_features.features.sampler_anisotropy == vk::FALSE {
-            return Err(PhysicalDeviceIncompatibility::FeatureNotSupported(
-                "Anisotropic filtering",
-            ));
+        macro_rules! check_and_enable_feature {
+            ($group:ident.$feature:ident) => {
+                if $group.$feature == vk::FALSE {
+                    return Err(PhysicalDeviceIncompatibility::FeatureNotSupported(stringify!(
+                        $feature
+                    )));
+                }
+                enabled_features.$group.$feature = vk::TRUE;
+            };
         }
-        enabled_features.features.sampler_anisotropy = vk::TRUE;
+
+        // Require anisotropic filtering support.
+        check_and_enable_feature!(features.sampler_anisotropy);
 
         // Require shader draw parameters support.
-        if vulkan11_features.shader_draw_parameters == vk::FALSE {
-            return Err(PhysicalDeviceIncompatibility::FeatureNotSupported(
-                "Shader draw parameters",
-            ));
+        check_and_enable_feature!(features11.shader_draw_parameters);
+
+        // Validation layers require some features enabled.
+        if cfg!(feature = "debug_info") {
+            check_and_enable_feature!(features.fragment_stores_and_atomics);
+            check_and_enable_feature!(features.vertex_pipeline_stores_and_atomics);
+            check_and_enable_feature!(features12.uniform_and_storage_buffer8_bit_access);
+            check_and_enable_feature!(features12.timeline_semaphore);
         }
-        enabled_features.features11.shader_draw_parameters = vk::TRUE;
 
         // Require runtime descriptor array support.
-        if vulkan12_features.runtime_descriptor_array == vk::FALSE {
-            return Err(PhysicalDeviceIncompatibility::FeatureNotSupported(
-                "Runtime descriptor array",
-            ));
-        }
-        enabled_features.features12.runtime_descriptor_array = vk::TRUE;
+        check_and_enable_feature!(features12.runtime_descriptor_array);
 
         // Require buffer_device_address support.
-        if vulkan12_features.buffer_device_address == vk::FALSE {
-            return Err(PhysicalDeviceIncompatibility::FeatureNotSupported(
-                "Buffer device address",
-            ));
-        }
-        enabled_features.features12.buffer_device_address = vk::TRUE;
+        check_and_enable_feature!(features12.buffer_device_address);
 
         // Require descriptor indexing support.
         //if vulkan12_features.descriptor_indexing == vk::FALSE {

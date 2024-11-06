@@ -8,7 +8,7 @@ use ash::prelude::VkResult;
 
 pub struct DeviceExtensions {
     #[cfg(feature = "debug_info")]
-    pub debug: Option<ash::ext::debug_utils::Device>,
+    pub debug_utils: Option<ash::ext::debug_utils::Device>,
     pub sync2: khr::synchronization2::Device,
     pub dyn_cmd: khr::dynamic_rendering::Device,
 }
@@ -28,7 +28,7 @@ impl DeviceExtensions {
         let dyn_cmd = khr::dynamic_rendering::Device::new(&instance, &device);
         Self {
             #[cfg(feature = "debug_info")]
-            debug,
+            debug_utils: debug,
             sync2,
             dyn_cmd,
         }
@@ -36,7 +36,7 @@ impl DeviceExtensions {
 
     #[cfg(feature = "debug_info")]
     pub fn run_debug(&self, f: impl FnOnce(&ash::ext::debug_utils::Device) -> VkResult<()>) -> VkResult<()> {
-        if let Some(debug) = &self.debug {
+        if let Some(debug) = &self.debug_utils {
             f(debug)
         } else {
             Ok(())

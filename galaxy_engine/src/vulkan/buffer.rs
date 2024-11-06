@@ -113,8 +113,11 @@ impl<L: MemLocation> Buffer<L> {
 
         // Allows using a more specific type of memory.
         if let Some(override_memory_type_bits) = mem_type_override.map(|n| n.get()) {
-            assert_ne!(override_memory_type_bits & requirements.memory_type_bits, 0);
-            requirements.memory_type_bits = requirements.memory_type_bits;
+            if override_memory_type_bits & requirements.memory_type_bits == 0 {
+                log::warn!("Buffer cannot use override memory type... reverting.")
+            } else {
+                requirements.memory_type_bits = requirements.memory_type_bits;
+            }
         }
 
         let allocation_scheme = if gpu_alloc::use_dedicated_allocation(dedicated_requirements) {

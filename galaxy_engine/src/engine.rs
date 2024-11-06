@@ -1,7 +1,6 @@
 // Copyright (c) 2024 Ben Sutherland.
 
 use std::collections::HashMap;
-use std::mem::ManuallyDrop;
 use std::slice;
 use std::sync::Arc;
 
@@ -124,14 +123,14 @@ pub fn static_resources() -> MappedRwLockReadGuard<'static, StaticResources> {
 }
 
 pub struct GalaxyEngine {
-    static_resources_guard: ManuallyDrop<StaticResourcesGuard>,
+    _static_resources_guard: StaticResourcesGuard,
     meshes: Vec<Mesh>,
-    material: ManuallyDrop<Arc<Material>>,
+    material: Arc<Material>,
     primary_cmd_pools: ArrayVec<ResettablePrimaryCommandPool<2>, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
-    transient_cmd_pool: ManuallyDrop<TransientPrimaryCommandPool>,
-    scene_descriptor_pool: ManuallyDrop<DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>>,
-    scene_uniform_buffer: ManuallyDrop<SceneUniformBuffer>,
-    scene_buffers: ManuallyDrop<Box<SceneBuffers>>,
+    transient_cmd_pool: TransientPrimaryCommandPool,
+    scene_descriptor_pool: DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
+    scene_uniform_buffer: SceneUniformBuffer,
+    scene_buffers: Box<SceneBuffers>,
     //particle_system: ManuallyDrop<GpuParticleSystem>,
     image_available_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     render_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
@@ -205,7 +204,7 @@ impl GalaxyEngine {
             .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
             .mip_lod_bias(0.)
             .min_lod(0.)
-            .max_lod(0.);
+            .max_lod(vk::LOD_CLAMP_NONE);
         let default_sampler = Sampler::new(&device, &sampler_info)?;
 
         // Load texture.
@@ -231,6 +230,8 @@ impl GalaxyEngine {
             materials: scene_material_buffer,
         });
 
+        const NUM_TEXTURES: u32 = 2;
+
         // Create scene descriptor pool.
         let scene_descriptor_pool_sizes = [
             vk::DescriptorPoolSize::default()
@@ -241,13 +242,13 @@ impl GalaxyEngine {
                 .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32 * 3),
             //vk::DescriptorPoolSize::default()
             //    .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            //    .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32), // TODO: x2?
+            //    .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::SAMPLED_IMAGE)
-                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32), // TODO: x2?
+                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32 * NUM_TEXTURES),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32), // TODO: x2?
+                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32 * NUM_TEXTURES - 1),
         ];
         let mut scene_descriptor_pool =
             DescriptorPool::<{ Self::MAX_FRAMES_IN_FLIGHT }>::new(&device, &scene_descriptor_pool_sizes)?;
@@ -283,13 +284,13 @@ impl GalaxyEngine {
             // Array of textures:
             vk::DescriptorSetLayoutBinding::default()
                 .binding(4)
-                .descriptor_count(2)
+                .descriptor_count(NUM_TEXTURES)
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             // Array of samplers:
             vk::DescriptorSetLayoutBinding::default()
                 .binding(5)
-                .descriptor_count(2)
+                .descriptor_count(NUM_TEXTURES)
                 .descriptor_type(vk::DescriptorType::SAMPLER)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
@@ -368,13 +369,6 @@ impl GalaxyEngine {
             .collect();
         unsafe { device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
 
-        // Create descriptor pool.
-        //let descriptor_pool_sizes = [vk::DescriptorPoolSize::default()
-        //    .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-        //    .descriptor_count(1)];
-
-        //let mut descriptor_pool = DescriptorPool::new(&device, &descriptor_pool_sizes)?;
-
         // Load material.
         let material = Arc::new(Material::new(
             &device,
@@ -440,15 +434,15 @@ impl GalaxyEngine {
             surface,
             device,
             swapchain,
-            static_resources_guard: ManuallyDrop::new(static_resources_guard),
+            _static_resources_guard: static_resources_guard,
             meshes: vec![mesh],
-            material: ManuallyDrop::new(material),
+            material,
             //particle_system: ManuallyDrop::new(particle_system),
             primary_cmd_pools,
-            transient_cmd_pool: ManuallyDrop::new(transient_cmd_pool),
-            scene_descriptor_pool: ManuallyDrop::new(scene_descriptor_pool),
-            scene_uniform_buffer: ManuallyDrop::new(scene_uniform_buffer),
-            scene_buffers: ManuallyDrop::new(scene_buffers),
+            transient_cmd_pool,
+            scene_descriptor_pool,
+            scene_uniform_buffer,
+            scene_buffers,
             image_available_semaphores,
             render_finished_semaphores,
             compute_finished_semaphores,
@@ -598,8 +592,8 @@ impl GalaxyEngine {
         let scissor = vk::Rect2D::default().extent(swapchain_extent);
 
         let color_optimal_transition = vk::ImageMemoryBarrier2::default()
-            .src_access_mask(vk::AccessFlags2::empty())
-            .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+            .src_access_mask(vk::AccessFlags2::NONE)
+            .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
             .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
             .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
             .old_layout(vk::ImageLayout::UNDEFINED)
@@ -623,7 +617,7 @@ impl GalaxyEngine {
             .store_op(vk::AttachmentStoreOp::STORE)
             .clear_value(vk::ClearValue {
                 color: vk::ClearColorValue {
-                    float32: [0.0, 0.0, 0.0, 1.0],
+                    float32: [0.0, 0.0, 0.0, 0.0],
                 },
             })
             .resolve_mode(vk::ResolveModeFlags::AVERAGE)
@@ -667,6 +661,7 @@ impl GalaxyEngine {
         let color_optimal_to_present_src_transition = vk::ImageMemoryBarrier2::default()
             .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
             .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+            .dst_access_mask(vk::AccessFlags2::NONE)
             .dst_stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE)
             .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
@@ -758,53 +753,9 @@ impl GalaxyEngine {
 
 impl Drop for GalaxyEngine {
     fn drop(&mut self) {
-        self.device.print_allocator_report();
-
+        // Wait for device before cleaning up.
         self.device
             .wait_idle()
             .unwrap_or_else(|e| log::error!("Failed to wait for device idle: {:?}", e));
-
-        // Drop sync objects.
-        self.image_available_semaphores.clear();
-        self.render_finished_semaphores.clear();
-        self.compute_finished_semaphores.clear();
-        //self.graphics_in_flight_fences.clear();
-        //self.compute_in_flight_fences.clear();
-
-        // Drop command_pools.
-        self.primary_cmd_pools.clear();
-        unsafe { ManuallyDrop::drop(&mut self.transient_cmd_pool) };
-
-        // Drop particle system.
-        //unsafe { ManuallyDrop::drop(&mut self.particle_system) };
-
-        // Drop meshes.
-        self.meshes.clear();
-
-        // Drop material.
-        unsafe { ManuallyDrop::drop(&mut self.material) };
-
-        // Drop descriptor pool.
-        unsafe { ManuallyDrop::drop(&mut self.scene_descriptor_pool) };
-
-        // Drop uniform buffers.
-        unsafe { ManuallyDrop::drop(&mut self.scene_uniform_buffer) };
-        unsafe { ManuallyDrop::drop(&mut self.scene_buffers) };
-
-        // Drop static resources.
-        unsafe { ManuallyDrop::drop(&mut self.static_resources_guard) };
-
-        // Swapchain, device, surface and instance are automatically dropped.
-
-        // Drop swapchain.
-        // unsafe { ManuallyDrop::drop(&mut self.swapchain) };
-
-        // Drop device.
-        //unsafe { ManuallyDrop::drop(&mut self.device) };
-
-        // Drop surface.
-        //unsafe { ManuallyDrop::drop(&mut self.surface) };
-
-        // Instance is automatically dropped.
     }
 }

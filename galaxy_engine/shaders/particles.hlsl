@@ -14,7 +14,7 @@ struct SceneUniforms {
     float delta_time;
 };
 
-[[vk::binding(0)]]
+[[vk::binding(0, 0)]]
 ConstantBuffer<SceneUniforms> scene_uniforms;
 
 struct Particle {
@@ -25,20 +25,20 @@ struct Particle {
     float4 colour;
 };
 
-[[vk::binding(1)]]
+[[vk::binding(0, 1)]]
 RWStructuredBuffer<Particle> Particles;
 
 // https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkDrawIndexedIndirectCommand.html
-struct VkDrawIndexedIndirectCommand {
-    uint indexCount;
-    uint instanceCount;
-    uint firstIndex;
-    int  vertexOffset;
-    uint firstInstance;
-};
+//struct VkDrawIndexedIndirectCommand {
+//    uint indexCount;
+//    uint instanceCount;
+//    uint firstIndex;
+//    int  vertexOffset;
+//    uint firstInstance;
+//};
 
-[[vk::binding(3)]]
-RWStructuredBuffer<VkDrawIndexedIndirectCommand> draw_commands;
+//[[vk::binding(3)]]
+//RWStructuredBuffer<VkDrawIndexedIndirectCommand> draw_commands;
 
 [numthreads(256, 1, 1)]
 void mainCS(uint index: SV_DispatchThreadID) {
@@ -64,7 +64,7 @@ void mainCS(uint index: SV_DispatchThreadID) {
     Particles[index] = particle;
 }
 
-[[vk::binding(1)]]
+[[vk::binding(0, 1)]]
 StructuredBuffer<Particle> DrawnParticles;
 
 struct VSInput {

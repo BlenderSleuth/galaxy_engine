@@ -431,6 +431,27 @@ impl<Q: ComputeQueueType, R: RenderingState> CommandBuffer<Q, Recording<R>> {
             )
         };
     }
+
+    pub fn debug_marker_begin(&mut self, _ext: &DeviceExtensions, _name: &str) {
+        #[cfg(feature = "debug_info")]
+        {
+            use std::ffi::CString;
+            let name = CString::new(_name).unwrap();
+            let label = vk::DebugUtilsLabelEXT::default()
+                .label_name(&name)
+                .color([0.0, 1.0, 0.0, 1.0]);
+            _ext.run_debug(|dbg| unsafe { Ok(dbg.cmd_begin_debug_utils_label(self.handle(), &label)) })
+                .unwrap();
+        }
+    }
+
+    pub fn debug_marker_end(&mut self, _ext: &DeviceExtensions) {
+        #[cfg(feature = "debug_info")]
+        {
+            _ext.run_debug(|dbg| unsafe { Ok(dbg.cmd_end_debug_utils_label(self.handle())) })
+                .unwrap();
+        }
+    }
 }
 
 // Compute dispatches.
