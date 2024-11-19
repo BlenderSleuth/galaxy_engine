@@ -131,6 +131,8 @@ pub struct GalaxyEngine {
     scene_descriptor_pool: DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     scene_uniform_buffer: SceneUniformBuffer,
     scene_buffers: Box<SceneBuffers>,
+    default_sampler: Sampler,
+    texture: Arc<Texture>,
     //particle_system: ManuallyDrop<GpuParticleSystem>,
     image_available_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     render_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
@@ -152,6 +154,7 @@ pub struct GalaxyEngine {
 
 impl GalaxyEngine {
     pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
+    pub const NUM_MSAA_SAMPLES: vk::SampleCountFlags = vk::SampleCountFlags::TYPE_4;
 
     pub(crate) fn new(
         app_info: &AppInfo,
@@ -242,13 +245,13 @@ impl GalaxyEngine {
                 .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32 * 3),
             //vk::DescriptorPoolSize::default()
             //    .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            //    .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32),
+            //    .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32 * NUM_TEXTURES),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::SAMPLED_IMAGE)
                 .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32 * NUM_TEXTURES),
             vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32 * NUM_TEXTURES - 1),
+                .ty(vk::DescriptorType::SAMPLER)
+                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32 * NUM_TEXTURES),
         ];
         let mut scene_descriptor_pool =
             DescriptorPool::<{ Self::MAX_FRAMES_IN_FLIGHT }>::new(&device, &scene_descriptor_pool_sizes)?;
@@ -443,6 +446,8 @@ impl GalaxyEngine {
             scene_descriptor_pool,
             scene_uniform_buffer,
             scene_buffers,
+            default_sampler,
+            texture,
             image_available_semaphores,
             render_finished_semaphores,
             compute_finished_semaphores,
@@ -550,13 +555,19 @@ impl GalaxyEngine {
         self.primary_cmd_pools[current_frame]
             .get_cmd_buffer(1)
             .wait_for_fence()?;
-        // Reset compute pool.
+        // Reset command pool.
         let primary_cmd_pool = &mut self.primary_cmd_pools[current_frame];
         primary_cmd_pool.reset()?;
 
         // Copy uniform buffer to GPU.
         self.scene_uniform_buffer.copy_to_gpu(current_frame)?;
         self.scene_buffers.copy_to_gpu(current_frame)?;
+        //crate::utils::run_number_not_threadsafe!(
+        //    {
+        //        self.scene_buffers.copy_to_gpu(current_frame)?;
+        //    },
+        //    GalaxyEngine::MAX_FRAMES_IN_FLIGHT
+        //);
 
         let compute_cmd_buffer = primary_cmd_pool.get_cmd_buffer(0);
         let _recording = compute_cmd_buffer.begin()?;
@@ -610,8 +621,8 @@ impl GalaxyEngine {
             vk::DependencyInfo::default().image_memory_barriers(slice::from_ref(&color_optimal_transition));
         recording.pipeline_barrier2(ext, &dependency_info);
 
-        let color_attachment_info = vk::RenderingAttachmentInfo::default()
-            .image_view(self.swapchain.get_colour_resolve_view().view().handle())
+        let mut color_attachment_info = vk::RenderingAttachmentInfo::default()
+            .image_view(self.swapchain.get_colour_resolve_view(image_idx).handle())
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::STORE)
@@ -620,9 +631,13 @@ impl GalaxyEngine {
                     float32: [0.0, 0.0, 0.0, 0.0],
                 },
             })
-            .resolve_mode(vk::ResolveModeFlags::AVERAGE)
-            .resolve_image_view(self.swapchain.get_image_views()[image_idx as usize].handle())
-            .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+            .resolve_mode(vk::ResolveModeFlags::NONE);
+        if self.swapchain.samples() != vk::SampleCountFlags::TYPE_1 {
+            color_attachment_info = color_attachment_info
+                .resolve_mode(vk::ResolveModeFlags::AVERAGE)
+                .resolve_image_view(self.swapchain.get_image_views()[image_idx as usize].handle())
+                .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        }
 
         let depth_attachment_info = vk::RenderingAttachmentInfo::default()
             .image_view(self.swapchain.get_depth_view().handle())

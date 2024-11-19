@@ -9,11 +9,10 @@ use ash::vk;
 use crate::vulkan;
 use crate::vulkan::surface::Surface;
 
-// Memory type that can be used for buffers that are written to every frame (Host Visible, Host Coherent and Device Local).
+// Memory type that can be used for buffers that are written to every frame (all of Host Visible, Host Coherent and Device Local).
+#[derive(Copy, Clone, Debug)]
 pub struct VolatileMemoryType {
-    pub index: u32,
     pub type_bits: NonZeroU32,
-    pub flags: vk::MemoryPropertyFlags,
     pub size: vk::DeviceSize,
 }
 
@@ -249,32 +248,27 @@ impl PhysicalDevice {
         check_and_enable_feature!(features12.buffer_device_address);
 
         // Require descriptor indexing support.
-        //if vulkan12_features.descriptor_indexing == vk::FALSE {
-        //    return Err(PhysicalDeviceIncompatibility::FeatureNotSupported(
-        //        "Descriptor indexing",
-        //    ));
-        //}
-
-        //if vulkan12_features.draw_indirect_count == vk::FALSE {
-        //    return Err(PhysicalDeviceIncompatibility::FeatureNotSupported(
-        //        "Draw indirect count",
-        //    ));
-        //}
+        //check_and_enable_feature!(features12.descriptor_indexing);
+        // Require draw indirect count.
+        //check_and_enable_feature!(features12.draw_indirect_count);
 
         let mem_properties = unsafe { instance.get_physical_device_memory_properties(handle) };
-        let mut uniform_memory_types: Vec<_> = mem_properties
+
+        // Choose the memory type to use for uniforms updated every frame.
+        //TODO: handle when there are no volatile memory types available.
+        let mut volatile_memory_types: Vec<_> = mem_properties
             .memory_types
             .iter()
+            .take(mem_properties.memory_type_count as usize)
             .enumerate()
             .filter_map(|(idx, mem_type)| {
-                if mem_type.property_flags.contains(vk::MemoryPropertyFlags::HOST_VISIBLE)
-                    && mem_type.property_flags.contains(vk::MemoryPropertyFlags::HOST_COHERENT)
-                    && mem_type.property_flags.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
-                {
+                if mem_type.property_flags.contains(
+                    vk::MemoryPropertyFlags::HOST_VISIBLE
+                        | vk::MemoryPropertyFlags::HOST_COHERENT
+                        | vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                ) {
                     Some(VolatileMemoryType {
-                        index: idx as u32,
                         type_bits: NonZeroU32::new(1 << idx as u32).unwrap(),
-                        flags: mem_type.property_flags,
                         size: mem_properties.memory_heaps[mem_type.heap_index as usize].size,
                     })
                 } else {
@@ -282,11 +276,19 @@ impl PhysicalDevice {
                 }
             })
             .collect();
-        uniform_memory_types.sort_unstable_by(|a, b| a.size.cmp(&b.size));
-        //TODO: handle when there are no uniform memory types available.
-        let uniform_memory_type = uniform_memory_types
-            .pop()
+        let volatile_memory_type_with_max_size = volatile_memory_types
+            .iter()
+            .max_by(|a, b| a.size.cmp(&b.size))
+            .copied()
             .ok_or(PhysicalDeviceIncompatibility::NoUniformMemoryAvailable)?;
+        volatile_memory_types.retain(|mem| mem.size == volatile_memory_type_with_max_size.size);
+        // Combine type bits.
+        let volatile_memory_type = volatile_memory_types
+            .iter()
+            .fold(volatile_memory_type_with_max_size, |acc, mem| VolatileMemoryType {
+                type_bits: NonZeroU32::new(acc.type_bits.get() | mem.type_bits.get()).unwrap(),
+                size: acc.size,
+            });
 
         Ok(PhysicalDevice {
             handle,
@@ -300,7 +302,7 @@ impl PhysicalDevice {
             swapchain_image_count: image_count,
             supported_msaa_samples,
             max_msaa_samples,
-            volatile_memory_type: uniform_memory_type,
+            volatile_memory_type,
             mem_properties,
             properties: physical_device_properties,
             enabled_features,

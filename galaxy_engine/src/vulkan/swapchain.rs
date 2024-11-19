@@ -6,6 +6,7 @@ use std::slice;
 use ash::prelude::VkResult;
 use ash::{khr, vk};
 
+use crate::engine::GalaxyEngine;
 use crate::utils;
 use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::device::Device;
@@ -21,7 +22,7 @@ pub struct Swapchain {
     handle: vk::SwapchainKHR,
     images: Vec<vk::Image>,
     image_views: Vec<ImageView>,
-    colour_resolve_image: ManuallyDrop<Image>,
+    colour_resolve_image: Option<Image>,
     depth_image: ManuallyDrop<Image>,
     extent: vk::Extent2D,
     msaa_samples: vk::SampleCountFlags,
@@ -94,26 +95,38 @@ impl Swapchain {
             })
             .collect::<VkResult<Vec<_>>>()?;
 
-        let msaa_samples = device.physical_device().max_msaa_samples;
+        let msaa_samples = if device
+            .physical_device()
+            .supported_msaa_samples
+            .contains(GalaxyEngine::NUM_MSAA_SAMPLES)
+        {
+            GalaxyEngine::NUM_MSAA_SAMPLES
+        } else {
+            vk::SampleCountFlags::TYPE_1
+        };
 
-        // Create colour resolve image.
-        let colour_resolve_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .extent(swapchain_extent.into())
-            .mip_levels(1)
-            .array_layers(1)
-            .format(device_properties.swapchain_format.format)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .usage(vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .samples(msaa_samples);
-        let colour_resolve_image = Image::new(
-            "Colour resolve image",
-            &device,
-            &colour_resolve_info,
-            Self::get_subresource_range(),
-        )?;
+        // Create colour resolve image for multisampling.
+        let colour_resolve_image = if msaa_samples > vk::SampleCountFlags::TYPE_1 {
+            let colour_resolve_info = vk::ImageCreateInfo::default()
+                .image_type(vk::ImageType::TYPE_2D)
+                .extent(swapchain_extent.into())
+                .mip_levels(1)
+                .array_layers(1)
+                .format(device_properties.swapchain_format.format)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .initial_layout(vk::ImageLayout::UNDEFINED)
+                .usage(vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                .samples(msaa_samples);
+            Some(Image::new(
+                "Colour resolve image",
+                &device,
+                &colour_resolve_info,
+                Self::get_subresource_range(),
+            )?)
+        } else {
+            None
+        };
 
         // Create depth image.
         let depth_image_info = vk::ImageCreateInfo::default()
@@ -152,7 +165,7 @@ impl Swapchain {
             handle,
             images,
             image_views,
-            colour_resolve_image: ManuallyDrop::new(colour_resolve_image),
+            colour_resolve_image,
             depth_image: ManuallyDrop::new(depth_image),
             extent: swapchain_extent,
             msaa_samples,
@@ -163,8 +176,11 @@ impl Swapchain {
         self.extent
     }
 
-    pub fn get_colour_resolve_view(&self) -> &Image {
-        &self.colour_resolve_image
+    pub fn get_colour_resolve_view(&self, image_idx: u32) -> &ImageView {
+        self.colour_resolve_image
+            .as_ref()
+            .map(|image| image.view())
+            .unwrap_or(&self.image_views[image_idx as usize])
     }
 
     pub fn get_images(&self) -> &[vk::Image] {
@@ -217,7 +233,7 @@ impl Drop for Swapchain {
         unsafe { ManuallyDrop::drop(&mut self.depth_image) };
 
         // Drop colour resolve image.
-        unsafe { ManuallyDrop::drop(&mut self.colour_resolve_image) };
+        self.colour_resolve_image.take();
 
         // Drop image views.
         self.image_views.clear();

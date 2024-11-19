@@ -113,10 +113,11 @@ impl<L: MemLocation> Buffer<L> {
 
         // Allows using a more specific type of memory.
         if let Some(override_memory_type_bits) = mem_type_override.map(|n| n.get()) {
-            if override_memory_type_bits & requirements.memory_type_bits == 0 {
-                log::warn!("Buffer cannot use override memory type... reverting.")
+            let overlap = override_memory_type_bits & requirements.memory_type_bits;
+            if overlap == 0 {
+                log::warn!("Buffer cannot use override memory type - using required memory type.")
             } else {
-                requirements.memory_type_bits = requirements.memory_type_bits;
+                requirements.memory_type_bits = overlap;
             }
         }
 
