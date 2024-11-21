@@ -562,12 +562,6 @@ impl GalaxyEngine {
         // Copy uniform buffer to GPU.
         self.scene_uniform_buffer.copy_to_gpu(current_frame)?;
         self.scene_buffers.copy_to_gpu(current_frame)?;
-        //crate::utils::run_number_not_threadsafe!(
-        //    {
-        //        self.scene_buffers.copy_to_gpu(current_frame)?;
-        //    },
-        //    GalaxyEngine::MAX_FRAMES_IN_FLIGHT
-        //);
 
         let compute_cmd_buffer = primary_cmd_pool.get_cmd_buffer(0);
         let _recording = compute_cmd_buffer.begin()?;

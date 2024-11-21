@@ -12,8 +12,22 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.81.0"
 
+[workspace.dependencies]
+ash = { version = "0.38.0", default-features = false, features = ["loaded"] }
+ash-window = "0.13.0"
+raw-window-handle = "0.6.2"
+winit = "0.30.5"
+bitflags = "2.6.0"
+log = "0.4.0"
+thiserror = "2.0.0"
+bytemuck = { version = "1.19.0", features = ["derive", "must_cast", "min_const_generics"] }
+arrayvec = "0.7.6"
+itertools = "0.13.0"
+fastrand = "2.1.1"
+ultraviolet = { version = "0.9.2", features = ["bytemuck"] }
+
 [profile.dev]
-#opt-level = 1
+opt-level = 1
 
 [profile.release]
 lto = true

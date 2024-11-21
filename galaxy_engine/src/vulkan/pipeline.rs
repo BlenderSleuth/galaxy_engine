@@ -50,8 +50,8 @@ impl Drop for PipelineLayout {
     }
 }
 
-// Vertex, Hull, Domain, Geometry, Fragment.
-pub const MAX_GRAPHICS_SHADER_STAGES: usize = 5;
+// Vertex, /*Hull~, Domain, Geometry,*/ Fragment.
+pub const MAX_GRAPHICS_SHADER_STAGES: usize = 2;
 pub type GraphicsPipelineShaderStages<'a> = ArrayVec<vk::PipelineShaderStageCreateInfo<'a>, MAX_GRAPHICS_SHADER_STAGES>;
 
 pub struct GraphicsPipelineParameters<'a> {
@@ -63,6 +63,7 @@ pub struct GraphicsPipelineParameters<'a> {
     pub depth_test: bool,
 }
 
+// TODO: Pipeline cache: https://zeux.io/2019/07/17/serializing-pipeline-cache/.
 pub struct GraphicsPipeline {
     loader: SharedDeviceLoader,
     handle: vk::Pipeline,

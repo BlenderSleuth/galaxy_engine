@@ -8,26 +8,26 @@ default = []
 debug_info = ["ash/debug"]
 
 [dependencies]
-ash = { version = "0.38.0", default-features = false, features = ["loaded"] }
-ash-window = "0.13.0"
-raw-window-handle = "0.6.2"
-winit = "0.30.5"
-bitflags = "2.6.0"
-log = "0.4.0"
-thiserror = "2.0.0"
-bytemuck = { version = "1.19.0", features = ["derive", "must_cast", "min_const_generics"] }
+ash = { workspace = true, default-features = false, features = ["loaded"] }
+ash-window.workspace = true
+raw-window-handle.workspace = true
+winit.workspace = true
+bitflags.workspace = true
+log.workspace = true
+thiserror.workspace = true
+bytemuck.workspace = true
+arrayvec.workspace = true
+itertools.workspace = true
+fastrand.workspace = true
+ultraviolet.workspace = true
 gpu-allocator = { version = "0.27.0", default-features = false, features = ["vulkan"] }
 presser = "0.3.1"
-arrayvec = "0.7.6"
-itertools = "0.13.0"
 obj-rs = "0.7.4"
 meshopt = "0.4.0"
 ktx2 = "0.3.0"
-fastrand = "2.1.1"
 parking_lot = { version = "0.12.3", default-features = false }
 castaway = { version = "0.2.3", default-features = false }
 smol_str = "0.3.2"
-ultraviolet = { version = "0.9.2", features = ["bytemuck"] }
 
 [build-dependencies]
 galaxy_engine_build = { path = "../galaxy_engine_build" }
