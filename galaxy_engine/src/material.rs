@@ -46,8 +46,8 @@ impl Material {
         samples: vk::SampleCountFlags,
     ) -> Result<Self, MaterialError> {
         // Load shaders.
-        let vertex_shader_module = ShaderModule::new(&device, "galaxy_engine/shaders/shader.vert.spv")?;
-        let fragment_shader_module = ShaderModule::new(&device, "galaxy_engine/shaders/shader.frag.spv")?;
+        let vertex_shader_module = ShaderModule::new(&device, "galaxy_engine/content/shaders/common/apply_mvp_vs.spv")?;
+        let fragment_shader_module = ShaderModule::new(&device, "galaxy_engine/content/shaders/unlit/unlit.spv")?;
 
         let shader_stages =
             utils::arrayvec_from_array([vertex_shader_module.stage_info(), fragment_shader_module.stage_info()]);

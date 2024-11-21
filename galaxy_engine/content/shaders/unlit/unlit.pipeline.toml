@@ -1,0 +1,13 @@
+[pipeline]
+name = "unlit"
+type = "graphics"
+
+[shaders]
+vertex = "common/apply_mvp_vs"
+fragment = "unlit/unlit"
+
+[vertex_input]
+
+[rasteriser]
+
+[depth_stencil]

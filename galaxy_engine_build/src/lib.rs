@@ -12,49 +12,7 @@ macro_rules! print_warning {
     }
 }
 
-// The command for using glslc:
-// $ glslc particles.vert -o particles.vert.spv
-
-fn compile_stage(path: &Path, current_dir: &str, shader_model: &str, entry: &str, output_ext: &str, debug: bool) {
-    let output_path = path.with_extension(format!("{output_ext}.spv").as_str());
-    // DXC seems to change the output spv each time it's run, so we shouldn't rerun if the output changes.
-    // println!("cargo::rerun-if-changed={output_path:?}");
-    let mut command = Command::new("dxc");
-    command
-        .current_dir(current_dir)
-        .arg("-spirv")
-        .arg(format!("-T {shader_model}").as_str())
-        .arg(format!("-E {entry}"))
-        .arg(path)
-        .arg(format!("-Fo {}", output_path.to_str().unwrap()).as_str());
-    if debug {
-        command.arg("-Zi");
-        command.arg("-fspv-debug=vulkan-with-source");
-    }
-
-    match command.output() {
-        Ok(output) => {
-            if output.stderr.len() > 0 {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                for line in stderr.lines() {
-                    print_warning!("{line}");
-                }
-                panic!("Shader compile failed.");
-            }
-            if output.stdout.len() > 0 {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for line in stdout.lines() {
-                    print_warning!("{line}");
-                }
-            }
-        }
-        Err(err) => {
-            print_warning!("{err}");
-            panic!("Shader compile failed. Make sure you have dxc installed.");
-        }
-    };
-}
-
+#[derive(Copy, Clone)]
 struct ShaderStages {
     vertex: bool,
     fragment: bool,
@@ -63,38 +21,95 @@ struct ShaderStages {
 
 impl ShaderStages {
     fn from_source(source: &str) -> Self {
-        let mut result = Self {
-            vertex: false,
-            fragment: false,
-            compute: false,
-        };
-        if source.contains("mainVS") {
-            result.vertex = true;
+        Self {
+            vertex: source.contains("shader(\"vertex\")"),
+            fragment: source.contains("shader(\"fragment\")"),
+            compute: source.contains("shader(\"compute\")"),
         }
-        if source.contains("mainFS") {
-            result.fragment = true;
-        }
-        if source.contains("mainCS") {
-            result.compute = true;
-        }
-        result
     }
 
-    fn compile(&self, path: &Path, debug: bool) {
+    fn any_stages(&self) -> bool {
+        self.vertex || self.fragment || self.compute
+    }
+
+    fn compile(&self, input_file_path: &Path, debug: bool) {
+        if !self.any_stages() {
+            return;
+        }
+
         let current_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
         println!(
             "cargo::rerun-if-changed={}",
-            current_dir.clone() + "/" + path.to_str().unwrap()
+            current_dir.clone() + "/" + input_file_path.to_str().unwrap()
         );
+
+        // Stage / output path pairs. If adding other stages, make a macro.
+        let output_file_path = input_file_path.with_extension("spv");
+        //let vert_output_path = input_file_path.with_extension("vert.spv");
+        //let frag_output_path = input_file_path.with_extension("frag.spv");
+        //let comp_output_path = input_file_path.with_extension("comp.spv");
+
+        let mut file_stage_args = Vec::new();
         if self.vertex {
-            compile_stage(path, &current_dir, "vs_6_0", "mainVS", "vert", debug);
+            file_stage_args.extend(["-entry", "mainVS", "-stage", "vertex"]);
+            //let vert_output_path = vert_output_path.to_str().unwrap();
+            //file_stage_args.extend(["-o", vert_output_path]);
+            //println!("cargo::rerun-if-changed={vert_output_path}");
         }
         if self.fragment {
-            compile_stage(path, &current_dir, "ps_6_0", "mainFS", "frag", debug);
+            file_stage_args.extend(["-entry", "mainFS", "-stage", "fragment"]);
+            //let frag_output_path = frag_output_path.to_str().unwrap();
+            //file_stage_args.extend(["-o", frag_output_path]);
+            //println!("cargo::rerun-if-changed={frag_output_path}");
         }
         if self.compute {
-            compile_stage(path, &current_dir, "cs_6_0", "mainCS", "comp", debug);
+            file_stage_args.extend(["-entry", "mainCS", "-stage", "compute"]);
+            //let comp_output_path = comp_output_path.to_str().unwrap();
+            //file_stage_args.extend(["-o", comp_output_path]);
+            //println!("cargo::rerun-if-changed={comp_output_path}");
         }
+        //print_warning!("{file_stage_args:?}");
+
+        let shader_model = "spirv_1_5";
+
+        let mut command = Command::new("slangc");
+        command
+            .current_dir(current_dir)
+            .arg(input_file_path)
+            .args(["-target", "spirv"])
+            .args(["-profile", shader_model])
+            .arg("-fvk-use-entrypoint-name")
+            .args(file_stage_args)
+            .args(["-I", "content/shaders"])
+            .args(["-o", output_file_path.to_str().unwrap()]);
+
+        if debug {
+            command.arg("-g2").arg("-O0");
+        } else {
+            command.arg("-g0").arg("-O2");
+        }
+
+        match command.output() {
+            Ok(output) => {
+                if output.stderr.len() > 0 {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    for line in stderr.lines() {
+                        print_warning!("{line}");
+                    }
+                    panic!("Shader compile failed.");
+                }
+                if output.stdout.len() > 0 {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    for line in stdout.lines() {
+                        print_warning!("{line}");
+                    }
+                }
+            }
+            Err(err) => {
+                print_warning!("{err}");
+                panic!("Shader compile failed. Make sure you have slangc installed.");
+            }
+        };
     }
 }
 
