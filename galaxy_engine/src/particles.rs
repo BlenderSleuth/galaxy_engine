@@ -7,8 +7,9 @@ use ash::vk;
 
 use crate::camera::ViewInfo;
 use crate::engine::GalaxyEngine;
-use crate::mesh::{BindableVertex, MeshBuffer, Vertex};
+use crate::mesh::MeshBuffer;
 use crate::prelude::*;
+use crate::vertex_input::{BindableVertex, PositionTexCoordVertex};
 use crate::vulkan::buffer::{Buffer, GpuOnly};
 use crate::vulkan::command_buffer::{CommandPool, RecordingCmdBuf, RenderingCmdBuf, Transient};
 use crate::vulkan::descriptors::DescriptorPool;
@@ -214,8 +215,8 @@ impl GpuParticleSystem {
 
         let pipeline_params = GraphicsPipelineParameters {
             layout: graphics_pipeline_layout,
-            vertex_binding_description: Vertex::binding_description(),
-            vertex_attribute_descriptions: &Vertex::attribute_descriptions(),
+            vertex_binding_description: PositionTexCoordVertex::binding_description(),
+            vertex_attribute_descriptions: &PositionTexCoordVertex::attribute_descriptions(),
             shader_stages: particle_shader_stages,
             samples,
             depth_test: true,

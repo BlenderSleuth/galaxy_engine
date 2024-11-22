@@ -4,7 +4,7 @@ type = "graphics"
 
 [shaders]
 vertex = "common/apply_mvp_vs"
-fragment = "unlit/unlit"
+fragment = "simple/unlit"
 
 [vertex_input]
 

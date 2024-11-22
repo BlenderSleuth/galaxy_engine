@@ -27,7 +27,9 @@ meshopt = "0.4.0"
 ktx2 = "0.3.0"
 parking_lot = { version = "0.12.3", default-features = false }
 castaway = { version = "0.2.3", default-features = false }
-smol_str = "0.3.2"
+toml = "0.8.19"
+smol_str = { version = "0.3.2", features = ["serde"] }
+serde.workspace = true
 
 [build-dependencies]
 galaxy_engine_build = { path = "../galaxy_engine_build" }

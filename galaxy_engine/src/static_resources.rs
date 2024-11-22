@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use crate::mesh::{MeshBuffer, Vertex};
+use crate::mesh::{MeshBuffer};
 use crate::prelude::*;
+use crate::vertex_input::PositionTexCoordVertex;
 use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::MemResult;
@@ -68,20 +69,20 @@ impl StaticResources {
         Arc::clone(&self.quad_buffer)
     }
 
-    const QUAD_VERTICES: [Vertex; 4] = [
-        Vertex {
+    const QUAD_VERTICES: [PositionTexCoordVertex; 4] = [
+        PositionTexCoordVertex {
             position: Vec3::new(-1.0, -1.0, 0.0),
             tex_coord: Vec2::new(0.0, 0.0),
         },
-        Vertex {
+        PositionTexCoordVertex {
             position: Vec3::new(1.0, -1.0, 0.0),
             tex_coord: Vec2::new(1.0, 0.0),
         },
-        Vertex {
+        PositionTexCoordVertex {
             position: Vec3::new(1.0, 1.0, 0.0),
             tex_coord: Vec2::new(1.0, 1.0),
         },
-        Vertex {
+        PositionTexCoordVertex {
             position: Vec3::new(-1.0, 1.0, 0.0),
             tex_coord: Vec2::new(0.0, 1.0),
         },
@@ -97,36 +98,36 @@ impl StaticResources {
         Arc::clone(&self.octagon_buffer)
     }
 
-    const OCTAGON_VERTICES: [Vertex; 8] = [
-        Vertex {
+    const OCTAGON_VERTICES: [PositionTexCoordVertex; 8] = [
+        PositionTexCoordVertex {
             position: Vec3::new(1.0, 0.0, 0.0),
             tex_coord: Vec2::new(1.0, 0.5),
         },
-        Vertex {
+        PositionTexCoordVertex {
             position: Vec3::new(FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0),
             tex_coord: Vec2::new(0.5 + FRAC_1_SQRT_8, 0.5 + FRAC_1_SQRT_8),
         },
-        Vertex {
+        PositionTexCoordVertex {
             position: Vec3::new(0.0, 1.0, 0.0),
             tex_coord: Vec2::new(0.5, 1.0),
         },
-        Vertex {
+        PositionTexCoordVertex {
             position: Vec3::new(-FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0),
             tex_coord: Vec2::new(0.5 - FRAC_1_SQRT_8, 0.5 + FRAC_1_SQRT_8),
         },
-        Vertex {
+        PositionTexCoordVertex {
             position: Vec3::new(-1.0, 0.0, 0.0),
             tex_coord: Vec2::new(0.0, 0.5),
         },
-        Vertex {
+        PositionTexCoordVertex {
             position: Vec3::new(-FRAC_1_SQRT_2, -FRAC_1_SQRT_2, 0.0),
             tex_coord: Vec2::new(0.5 - FRAC_1_SQRT_8, 0.5 - FRAC_1_SQRT_8),
         },
-        Vertex {
+        PositionTexCoordVertex {
             position: Vec3::new(0.0, -1.0, 0.0),
             tex_coord: Vec2::new(0.5, 0.0),
         },
-        Vertex {
+        PositionTexCoordVertex {
             position: Vec3::new(FRAC_1_SQRT_2, -FRAC_1_SQRT_2, 0.0),
             tex_coord: Vec2::new(0.5 + FRAC_1_SQRT_8, 0.5 - FRAC_1_SQRT_8),
         },

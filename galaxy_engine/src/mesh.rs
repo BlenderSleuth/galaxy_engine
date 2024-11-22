@@ -8,51 +8,15 @@ use std::sync::Arc;
 use ash::vk;
 use meshopt::VertexDataAdapter;
 
-use crate::material::Material;
+use crate::materials::Material;
 use crate::prelude::*;
+use crate::vertex_input::PositionTexCoordVertex;
 use crate::vulkan::buffer::{Buffer, CpuToGpu, GpuOnly};
 use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingCmdBuf, RenderingState, TransientPrimaryCommandPool};
 use crate::vulkan::debug;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
 use crate::vulkan::queue::queue_type::PrimaryQueue;
-
-// For vertices with N attributes.
-pub trait BindableVertex<const N: usize> {
-    fn binding_description() -> vk::VertexInputBindingDescription;
-    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; N];
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
-pub struct Vertex {
-    pub position: Vec3,
-    pub tex_coord: Vec2,
-}
-
-impl BindableVertex<2> for Vertex {
-    fn binding_description() -> vk::VertexInputBindingDescription {
-        vk::VertexInputBindingDescription::default()
-            .binding(0)
-            .stride(std::mem::size_of::<Vertex>() as u32)
-            .input_rate(vk::VertexInputRate::VERTEX)
-    }
-
-    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
-        [
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(0)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(std::mem::offset_of!(Vertex, position) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(1)
-                .format(vk::Format::R32G32_SFLOAT)
-                .offset(std::mem::offset_of!(Vertex, tex_coord) as u32),
-        ]
-    }
-}
 
 pub trait IndexTypeTrait: bytemuck::Pod {
     fn index_type() -> vk::IndexType;
@@ -135,43 +99,6 @@ impl MeshBuffer {
     }
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
-struct ColouredVertex {
-    pub position: Vec3,
-    pub colour: Vec3,
-    pub tex_coord: Vec2,
-}
-
-impl BindableVertex<3> for ColouredVertex {
-    fn binding_description() -> vk::VertexInputBindingDescription {
-        vk::VertexInputBindingDescription::default()
-            .binding(0)
-            .stride(std::mem::size_of::<ColouredVertex>() as u32)
-            .input_rate(vk::VertexInputRate::VERTEX)
-    }
-
-    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
-        [
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(0)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(std::mem::offset_of!(ColouredVertex, position) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(1)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(std::mem::offset_of!(ColouredVertex, colour) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(2)
-                .format(vk::Format::R32G32_SFLOAT)
-                .offset(std::mem::offset_of!(ColouredVertex, tex_coord) as u32),
-        ]
-    }
-}
-
 #[derive(thiserror::Error, Debug)]
 pub enum MeshError {
     #[error("IO error: {0}")]
@@ -205,11 +132,11 @@ impl Mesh {
         let vertices = obj_model
             .vertices
             .iter()
-            .map(|v| Vertex {
+            .map(|v| PositionTexCoordVertex {
                 position: Vec3::new(v.position[0], v.position[1], v.position[2]),
                 tex_coord: Vec2::new(v.texture[0], 1.0 - v.texture[1]),
             })
-            .collect::<Vec<Vertex>>();
+            .collect::<Vec<PositionTexCoordVertex>>();
 
         // Optimize model.
         let (vertex_count, vert_remap) = meshopt::generate_vertex_remap(&vertices, Some(&obj_model.indices));
@@ -218,8 +145,8 @@ impl Mesh {
         meshopt::optimize_vertex_cache_in_place(&mut indices, vertex_count);
         let vertex_data_adapter = VertexDataAdapter::new(
             bytemuck::must_cast_slice(&vertices),
-            std::mem::size_of::<Vertex>(),
-            std::mem::offset_of!(Vertex, position),
+            std::mem::size_of::<PositionTexCoordVertex>(),
+            std::mem::offset_of!(PositionTexCoordVertex, position),
         )
         .unwrap();
         meshopt::optimize_overdraw_in_place(&mut indices, &vertex_data_adapter, 1.05);

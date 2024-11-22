@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use ash::vk;
 use ultraviolet::Vec4;
-
-use crate::mesh::{BindableVertex, Vertex};
+use crate::materials::config::{get_material_config, MaterialConfigError};
 use crate::utils;
+use crate::vertex_input::{BindableVertex, PositionTexCoordVertex};
 use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingState};
 use crate::vulkan::descriptors::DescriptorSetLayout;
 use crate::vulkan::device::Device;
@@ -19,6 +19,8 @@ use crate::vulkan::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage
 pub enum MaterialError {
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+    #[error("Config error: {0}")]
+    ConfigError(#[from] MaterialConfigError),
     #[error("Material vulkan error: {0}")]
     VulkanError(#[from] vk::Result),
     #[error("Material memory error: {0}")]
@@ -42,12 +44,18 @@ pub struct MaterialData {
 impl Material {
     pub fn new(
         device: &Device,
+        filepath: &str,
         descriptor_set_layout: &DescriptorSetLayout,
         samples: vk::SampleCountFlags,
     ) -> Result<Self, MaterialError> {
+        // Load config.
+        let config_str = std::fs::read_to_string(filepath)?;
+        let config = get_material_config(&config_str)?;
+        println!("{:?}", config.pipeline());
+
         // Load shaders.
         let vertex_shader_module = ShaderModule::new(&device, "galaxy_engine/content/shaders/common/apply_mvp_vs.spv")?;
-        let fragment_shader_module = ShaderModule::new(&device, "galaxy_engine/content/shaders/unlit/unlit.spv")?;
+        let fragment_shader_module = ShaderModule::new(&device, "galaxy_engine/content/shaders/simple/unlit.spv")?;
 
         let shader_stages =
             utils::arrayvec_from_array([vertex_shader_module.stage_info(), fragment_shader_module.stage_info()]);
@@ -62,8 +70,8 @@ impl Material {
         // Create pipeline.
         let pipeline_params = GraphicsPipelineParameters {
             layout: pipeline_layout,
-            vertex_binding_description: Vertex::binding_description(),
-            vertex_attribute_descriptions: &Vertex::attribute_descriptions(),
+            vertex_binding_description: PositionTexCoordVertex::binding_description(),
+            vertex_attribute_descriptions: &PositionTexCoordVertex::attribute_descriptions(),
             shader_stages,
             samples,
             depth_test: true,

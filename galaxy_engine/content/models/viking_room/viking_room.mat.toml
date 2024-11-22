@@ -1,0 +1,4 @@
+[material]
+pipeline = "simple/unlit"
+
+texture = "viking_room"

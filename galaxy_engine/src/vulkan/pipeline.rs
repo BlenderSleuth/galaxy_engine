@@ -98,7 +98,7 @@ impl GraphicsPipeline {
             .depth_bias_enable(false);
 
         let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
-            .sample_shading_enable(false) // Sample shading adds extra samples to
+            .sample_shading_enable(false)
             .rasterization_samples(params.samples);
 
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()

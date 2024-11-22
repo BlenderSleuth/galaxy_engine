@@ -16,7 +16,7 @@ use winit::keyboard::{Key, SmolStr};
 use crate::app;
 use crate::camera::{Camera, FirstPersonCamera};
 use crate::engine::MainLoopError::VulkanError;
-use crate::material::{Material, MaterialData, MaterialError};
+use crate::materials::{Material, MaterialData, MaterialError};
 use crate::mesh::{Mesh, MeshError};
 use crate::prelude::*;
 use crate::static_resources::{StaticResources, StaticResourcesGuard, StaticResourcesLock};
@@ -191,6 +191,8 @@ impl GalaxyEngine {
         let window_size = vk::Extent2D { width, height };
         let swapchain = Swapchain::new(&instance, &device, &mut transient_cmd_pool, &surface, window_size, None)?;
 
+        // TODO: Find and compile pipelines to central store.
+
         // Create default texture sampler.
         let max_anisotropy = device.physical_device().properties.limits.max_sampler_anisotropy;
         let sampler_info = vk::SamplerCreateInfo::default()
@@ -213,7 +215,7 @@ impl GalaxyEngine {
         // Load texture.
         let texture = Arc::new(Texture::new_from_file(
             "Viking room texture",
-            "galaxy_engine/assets/viking_room.ktx2",
+            "galaxy_engine/content/models/viking_room/viking_room.ktx2",
             &device,
             &mut transient_cmd_pool,
         )?);
@@ -375,6 +377,7 @@ impl GalaxyEngine {
         // Load material.
         let material = Arc::new(Material::new(
             &device,
+            "galaxy_engine/content/models/viking_room/viking_room.mat.toml",
             &scene_descriptor_set_layout,
             swapchain.samples(),
         )?);
@@ -384,7 +387,7 @@ impl GalaxyEngine {
             "Viking room",
             &device,
             &mut transient_cmd_pool,
-            "galaxy_engine/assets/viking_room.obj",
+            "galaxy_engine/content/models/viking_room/viking_room.obj",
             Arc::clone(&material),
         )?;
 
@@ -619,7 +622,7 @@ impl GalaxyEngine {
             .image_view(self.swapchain.get_colour_resolve_view(image_idx).handle())
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::STORE)
+            .store_op(vk::AttachmentStoreOp::DONT_CARE)
             .clear_value(vk::ClearValue {
                 color: vk::ClearColorValue {
                     float32: [0.0, 0.0, 0.0, 0.0],
