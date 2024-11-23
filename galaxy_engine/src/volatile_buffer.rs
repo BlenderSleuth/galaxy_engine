@@ -43,7 +43,7 @@ impl VolatileBufferType {
         }
     }
     pub fn min_align(&self, device: &Device) -> usize {
-        let limits = &device.physical_device().properties.limits;
+        let limits = &device.physical_device().properties.base.limits;
         match self {
             Self::Uniform => limits.min_uniform_buffer_offset_alignment as usize,
             Self::Storage => limits.min_storage_buffer_offset_alignment as usize,

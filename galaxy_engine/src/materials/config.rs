@@ -1,30 +1,47 @@
 // Copyright (c) 2024 Ben Sutherland.
 
-use serde::de::DeserializeOwned;
-use serde::Deserialize;
-use smol_str::SmolStr;
+use indexmap::IndexMap;
+
+use crate::utils::ConfigID;
+
+pub enum MaterialLayoutBinding {
+    Constant(ConfigID),
+    Texture(ConfigID),
+}
+
+#[derive(serde::Deserialize, Debug)]
+#[serde(rename = "Material")]
+pub(crate) struct MaterialConfig {
+    pub pipeline: ConfigID,
+    // TODO: based on the pipeline, use a struct serialiser.
+    pub params: IndexMap<ConfigID, ConfigID>,
+}
+
+pub fn get_material_config(config_str: &str) -> ron::error::SpannedResult<MaterialConfig> {
+    ron::from_str::<MaterialConfig>(&config_str)
+}
+
+/*
+
+#[derive(thiserror::Error, Debug)]
+pub enum MaterialConfigError {
+    #[error("Unknown pipeline: {0}")]
+    UnknownPipeline(ConfigID),
+}
 
 pub trait MaterialConfig: std::fmt::Debug {
     fn pipeline(&self) -> &str;
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum MaterialConfigError {
-    #[error("Unknown pipeline: {0}")]
-    UnknownPipeline(SmolStr),
-    #[error("TOML parse error: {0}")]
-    TomlError(#[from] toml::de::Error),
-}
-
 pub fn get_material_config(config_str: &str) -> Result<Box<dyn MaterialConfig>, MaterialConfigError> {
-    #[derive(Deserialize)]
+    #[derive(serde::Deserialize)]
     struct ConfigWrapper<T> {
         material: T,
     }
 
-    #[derive(Deserialize)]
+    #[derive(serde::Deserialize)]
     struct PipelineName {
-        pipeline: SmolStr,
+        pipeline: ConfigID,
     }
 
     // Extract pipeline name.
@@ -52,9 +69,9 @@ pub fn get_material_config(config_str: &str) -> Result<Box<dyn MaterialConfig>, 
 }
 
 // Unlit material.
-#[derive(Deserialize, Debug)]
+#[derive(serde::Deserialize, Debug)]
 pub struct UnlitMaterialConfig {
-    texture: SmolStr,
+    texture: ConfigID,
 }
 
 impl UnlitMaterialConfig {
@@ -68,9 +85,9 @@ impl MaterialConfig for UnlitMaterialConfig {
 }
 
 // Lambertian material.
-#[derive(Deserialize, Debug)]
+#[derive(serde::Deserialize, Debug)]
 pub struct LambertianMaterialConfig {
-    albedo: SmolStr,
+    albedo: ConfigID,
 }
 
 impl LambertianMaterialConfig {
@@ -82,4 +99,4 @@ impl MaterialConfig for LambertianMaterialConfig {
         Self::PIPELINE
     }
 }
-
+*/

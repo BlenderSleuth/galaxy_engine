@@ -39,7 +39,7 @@ impl AppInfo {
     pub fn new_from_package_version(name: &str, flags: AppFlags) -> AppInfo {
         AppInfo {
             name: CString::new(name).unwrap_or(c"Unknown".into()),
-            version: utils::parse_version(env!("CARGO_PKG_VERSION")),
+            version: utils::parse_version!(env!("CARGO_PKG_VERSION")),
             flags,
         }
     }
@@ -176,7 +176,8 @@ impl ApplicationHandler for GalaxyApp {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        let window = self.window.as_ref().unwrap();
-        window.request_redraw();
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
     }
 }

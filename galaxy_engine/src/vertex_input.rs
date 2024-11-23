@@ -1,10 +1,33 @@
+// Copyright (c) 2024 Ben Sutherland.
+
+use std::slice;
+
 use ash::vk;
 use ultraviolet::{Vec2, Vec3};
 
-// For vertices with N attributes.
+pub const fn binding_description_for_type<T>() -> vk::VertexInputBindingDescription {
+    vk::VertexInputBindingDescription {
+        binding: 0,
+        stride: std::mem::size_of::<T>() as u32,
+        input_rate: vk::VertexInputRate::VERTEX,
+    }
+}
+
+// For vertices with N attributes. TODO: Generate with a macro.
 pub trait BindableVertex<const N: usize> {
-    fn binding_description() -> vk::VertexInputBindingDescription;
-    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; N];
+    fn binding_description() -> &'static vk::VertexInputBindingDescription;
+    fn attribute_descriptions() -> &'static [vk::VertexInputAttributeDescription; N];
+    fn vertex_input_state() -> vk::PipelineVertexInputStateCreateInfo<'static> {
+        vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(slice::from_ref(Self::binding_description()))
+            .vertex_attribute_descriptions(Self::attribute_descriptions())
+    }
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub enum VertexInputType {
+    PositionTexCoord,
+    PositionColourTexCoord,
 }
 
 #[repr(C)]
@@ -15,62 +38,65 @@ pub struct PositionTexCoordVertex {
 }
 
 impl BindableVertex<2> for PositionTexCoordVertex {
-    fn binding_description() -> vk::VertexInputBindingDescription {
-        vk::VertexInputBindingDescription::default()
-            .binding(0)
-            .stride(std::mem::size_of::<PositionTexCoordVertex>() as u32)
-            .input_rate(vk::VertexInputRate::VERTEX)
+    fn binding_description() -> &'static vk::VertexInputBindingDescription {
+        static DESCRIPTION: vk::VertexInputBindingDescription =
+            binding_description_for_type::<PositionTexCoordVertex>();
+        &DESCRIPTION
     }
-
-    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
-        [
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(0)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(std::mem::offset_of!(PositionTexCoordVertex, position) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(1)
-                .format(vk::Format::R32G32_SFLOAT)
-                .offset(std::mem::offset_of!(PositionTexCoordVertex, tex_coord) as u32),
-        ]
+    fn attribute_descriptions() -> &'static [vk::VertexInputAttributeDescription; 2] {
+        static DESCRIPTIONS: [vk::VertexInputAttributeDescription; 2] = [
+            vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 0,
+                format: vk::Format::R32G32B32_SFLOAT,
+                offset: std::mem::offset_of!(PositionTexCoordVertex, position) as u32,
+            },
+            vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 1,
+                format: vk::Format::R32G32_SFLOAT,
+                offset: std::mem::offset_of!(PositionTexCoordVertex, tex_coord) as u32,
+            },
+        ];
+        &DESCRIPTIONS
     }
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
-pub struct ColouredVertex {
+pub struct PositionColourTexCoordVertex {
     pub position: Vec3,
     pub colour: Vec3,
     pub tex_coord: Vec2,
 }
 
-impl BindableVertex<3> for ColouredVertex {
-    fn binding_description() -> vk::VertexInputBindingDescription {
-        vk::VertexInputBindingDescription::default()
-            .binding(0)
-            .stride(std::mem::size_of::<ColouredVertex>() as u32)
-            .input_rate(vk::VertexInputRate::VERTEX)
+impl BindableVertex<3> for PositionColourTexCoordVertex {
+    fn binding_description() -> &'static vk::VertexInputBindingDescription {
+        static DESCRIPTION: vk::VertexInputBindingDescription =
+            binding_description_for_type::<PositionColourTexCoordVertex>();
+        &DESCRIPTION
     }
-
-    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
-        [
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(0)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(std::mem::offset_of!(ColouredVertex, position) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(1)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(std::mem::offset_of!(ColouredVertex, colour) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(2)
-                .format(vk::Format::R32G32_SFLOAT)
-                .offset(std::mem::offset_of!(ColouredVertex, tex_coord) as u32),
-        ]
+    fn attribute_descriptions() -> &'static [vk::VertexInputAttributeDescription; 3] {
+        static DESCRIPTIONS: [vk::VertexInputAttributeDescription; 3] = [
+            vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 0,
+                format: vk::Format::R32G32B32_SFLOAT,
+                offset: std::mem::offset_of!(PositionColourTexCoordVertex, position) as u32,
+            },
+            vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 1,
+                format: vk::Format::R32G32B32_SFLOAT,
+                offset: std::mem::offset_of!(PositionColourTexCoordVertex, colour) as u32,
+            },
+            vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 2,
+                format: vk::Format::R32G32_SFLOAT,
+                offset: std::mem::offset_of!(PositionColourTexCoordVertex, tex_coord) as u32,
+            },
+        ];
+        &DESCRIPTIONS
     }
 }

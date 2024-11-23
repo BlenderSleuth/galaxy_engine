@@ -1,24 +1,18 @@
 import common.scene_uniforms;
 import common.draw_data;
-import common.apply_mvp_vs;
+import common.vertex_output_types;
+
+typedef PositionTexCoordVStoFS VSToFS;
 
 struct MaterialData {
-    float4 albedo;
-    uint texture_index;
+    uint index;
 };
 
-struct SceneParams {
-    ConstantBuffer<SceneUniforms> scene;
-    StructuredBuffer<DrawData> draw_data;
-    StructuredBuffer<float4x4> transforms;
-    StructuredBuffer<MaterialData> materials;
-    // Once arrays of combined image samplers are supported, use them here.
-    Texture2D<float4> texture;
-    SamplerState sampler;
-}
-ParameterBlock<SceneParams> scene_params;
+[[vk::binding(0, 0)]] 
+ParameterBlock<SceneData<MaterialData>> scene_data;
 
 [shader("fragment")]
-float4 mainFS(VSToFS input): SV_TARGET0 {
-    return scene_params.texture.Sample(scene_params.sampler, input.tex_coord);
+float4 mainFS(uniform DrawData draw, VSToFS input) : SV_TARGET0 {
+    let mat = scene_data.materials[draw.material_index];
+    return scene_data.textures[mat.index].Sample(input.tex_coord);
 }

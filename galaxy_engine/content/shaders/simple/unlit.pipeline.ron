@@ -1,0 +1,28 @@
+GraphicsPipeline(
+    name: "unlit",
+    shaders: (
+        vertex: (
+            id: "common/apply_mvp_vs",
+            input_type: PositionTexCoord,
+        ),
+        fragment: (
+            id: "simple/unlit",
+        ),
+    ),
+    rasteriser: (
+        multisample_enable: true,
+        depth_enable: true,
+    ),
+    layout: (
+        push_constant: (
+            type: DrawData, 
+            stages: "Vertex | Fragment",
+        ),
+        bindings: {
+            "base_colour": (
+                type: Float4, 
+                stages: "Fragment",
+            ),
+        }
+    ),
+)

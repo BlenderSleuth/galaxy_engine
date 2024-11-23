@@ -3,6 +3,7 @@
 use ash::prelude::VkResult;
 use ash::vk;
 
+use crate::engine::GalaxyEngine;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 
 // Shader stage type state pattern.
@@ -35,11 +36,14 @@ pub struct ShaderModule<S: ShaderStageType> {
 }
 
 impl<S: ShaderStageType> ShaderModule<S> {
-    pub fn new(device: &Device, path: &str) -> VkResult<Self> {
+    pub fn new(device: &Device, config_path: &str) -> VkResult<Self> {
+        let path = format!("{}/{config_path}.spv", GalaxyEngine::SHADER_PATH);
+
         // We unwrap here so we can provide a more informative error message for invalid shaders.
         // Ash util handles code alignment and endianness.
-        let code = ash::util::read_spv(&mut std::fs::File::open(path).expect(&format!("Invalid shader path: {path}.")))
-            .expect(&format!("Invalid shader file: {path}"));
+        let code =
+            ash::util::read_spv(&mut std::fs::File::open(&path).expect(&format!("Invalid shader path: {path}.")))
+                .expect(&format!("Invalid shader file: {path}"));
 
         let create_info = vk::ShaderModuleCreateInfo::default().code(&code);
         Ok(Self {

@@ -1,0 +1,6 @@
+Material(
+    pipeline: "unlit",
+    params: {
+        "base_colour": "viking_room.tex",
+    },
+)

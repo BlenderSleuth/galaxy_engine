@@ -1,6 +1,0 @@
-[texture]
-# TODO: Handle encoding from png/jpeg.
-path = "viking_room.ktx2"
-format = "rgba8"
-color_space = "srgb"
-compression = "bc7"

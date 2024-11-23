@@ -12,7 +12,7 @@ pub type ManuallyFreeAllocation = ManuallyDrop<Allocation>;
 #[derive(thiserror::Error, Debug)]
 pub enum MemoryError {
     #[error("Memory vulkan error: {0}")]
-    VkResult(#[from] vk::Result),
+    VulkanError(#[from] vk::Result),
     #[error("Allocation error: {0}")]
     AllocationError(#[from] gpu_allocator::AllocationError),
     #[error("Copy error: {0}")]

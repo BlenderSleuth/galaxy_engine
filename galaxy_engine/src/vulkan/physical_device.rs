@@ -36,6 +36,27 @@ pub enum PhysicalDeviceIncompatibility {
     NoUniformMemoryAvailable,
 }
 
+pub struct PhysicalDeviceProperties {
+    pub base: vk::PhysicalDeviceProperties,
+    pub descriptor_buffer: vk::PhysicalDeviceDescriptorBufferPropertiesEXT<'static>,
+}
+
+impl PhysicalDeviceProperties {
+    pub fn new(instance: &ash::Instance, handle: vk::PhysicalDevice) -> PhysicalDeviceProperties {
+        let mut descriptor_buffer_properties = vk::PhysicalDeviceDescriptorBufferPropertiesEXT::default();
+
+        // Require compatible physical device properties.
+        let mut physical_device_properties =
+            vk::PhysicalDeviceProperties2::default().push_next(&mut descriptor_buffer_properties);
+        unsafe { instance.get_physical_device_properties2(handle, &mut physical_device_properties) };
+
+        PhysicalDeviceProperties {
+            base: physical_device_properties.properties,
+            descriptor_buffer: descriptor_buffer_properties,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct PhysicalDeviceFeatures {
     pub features: vk::PhysicalDeviceFeatures,
@@ -57,7 +78,7 @@ pub struct PhysicalDevice {
     pub max_msaa_samples: vk::SampleCountFlags,
     pub volatile_memory_type: VolatileMemoryType,
     pub mem_properties: vk::PhysicalDeviceMemoryProperties,
-    pub properties: vk::PhysicalDeviceProperties,
+    pub properties: PhysicalDeviceProperties,
     pub enabled_features: PhysicalDeviceFeatures,
 }
 
@@ -178,18 +199,16 @@ impl PhysicalDevice {
             image_count = surface_capabilities.max_image_count;
         }
 
-        // Require compatible physical device properties.
-        let mut physical_device_properties = vk::PhysicalDeviceProperties2::default();
-        unsafe { instance.get_physical_device_properties2(handle, &mut physical_device_properties) };
-        let physical_device_properties = physical_device_properties.properties;
+        let physical_device_properties = PhysicalDeviceProperties::new(instance, handle);
 
-        if physical_device_properties.api_version < vulkan::MIN_VK_VERSION {
+        let device_properties = &physical_device_properties.base;
+        if device_properties.api_version < vulkan::MIN_VK_VERSION {
             return Err(PhysicalDeviceIncompatibility::IncompatibleVulkanVersion(
-                physical_device_properties.api_version.into(),
+                device_properties.api_version.into(),
             ));
         }
 
-        let device_limits = physical_device_properties.limits;
+        let device_limits = device_properties.limits;
         let supported_msaa_samples = device_limits.framebuffer_color_sample_counts
             & device_limits.framebuffer_depth_sample_counts
             & device_limits.framebuffer_stencil_sample_counts;
@@ -295,7 +314,7 @@ impl PhysicalDevice {
             primary_queue_family_idx,
             async_transfer_queue_family_idx,
             async_compute_queue_family_idx,
-            is_discrete: physical_device_properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU,
+            is_discrete: device_properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU,
             swapchain_format: surface_format,
             presentation_mode,
             depth_stencil_format: DEPTH_STENCIL_FORMAT,

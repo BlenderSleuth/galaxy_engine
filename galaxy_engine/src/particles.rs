@@ -1,6 +1,5 @@
 // Copyright (c) 2024 Ben Sutherland.
 
-use std::slice;
 use std::sync::Arc;
 
 use ash::vk;
@@ -8,19 +7,15 @@ use ash::vk;
 use crate::camera::ViewInfo;
 use crate::engine::GalaxyEngine;
 use crate::mesh::MeshBuffer;
+use crate::pipelines::{ComputePipeline, GraphicsPipeline, Pipeline};
 use crate::prelude::*;
-use crate::vertex_input::{BindableVertex, PositionTexCoordVertex};
+use crate::vertex_input::{binding_description_for_type, BindableVertex};
 use crate::vulkan::buffer::{Buffer, GpuOnly};
 use crate::vulkan::command_buffer::{CommandPool, RecordingCmdBuf, RenderingCmdBuf, Transient};
 use crate::vulkan::descriptors::DescriptorPool;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
-use crate::vulkan::gpu_alloc::MemResult;
-use crate::vulkan::pipeline::{
-    ComputePipeline, ComputePipelineParameters, GraphicsPipeline, GraphicsPipelineParameters, Pipeline, PipelineLayout,
-};
+use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
 use crate::vulkan::queue::queue_type::{ComputeQueueType, PrimaryQueue, QueueType};
-use crate::vulkan::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
-use crate::{engine, utils};
 
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
@@ -29,29 +24,30 @@ struct Particle {
     age: f32,
     velocity: Vec3,
     radius: f32,
-    color: Vec4,
+    colour: Vec4,
 }
 
 impl BindableVertex<2> for Particle {
-    fn binding_description() -> vk::VertexInputBindingDescription {
-        vk::VertexInputBindingDescription::default()
-            .binding(0)
-            .stride(std::mem::size_of::<Particle>() as u32)
-            .input_rate(vk::VertexInputRate::INSTANCE)
+    fn binding_description() -> &'static vk::VertexInputBindingDescription {
+        static DESCRIPTION: vk::VertexInputBindingDescription = binding_description_for_type::<Particle>();
+        &DESCRIPTION
     }
-    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
-        [
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(0)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(std::mem::offset_of!(Particle, position) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(1)
-                .format(vk::Format::R32G32B32A32_SFLOAT)
-                .offset(std::mem::offset_of!(Particle, color) as u32),
-        ]
+    fn attribute_descriptions() -> &'static [vk::VertexInputAttributeDescription; 2] {
+        static DESCRIPTIONS: [vk::VertexInputAttributeDescription; 2] = [
+            vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 0,
+                format: vk::Format::R32G32B32_SFLOAT,
+                offset: std::mem::offset_of!(Particle, position) as u32,
+            },
+            vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 1,
+                format: vk::Format::R32G32B32A32_SFLOAT,
+                offset: std::mem::offset_of!(Particle, colour) as u32,
+            },
+        ];
+        &DESCRIPTIONS
     }
 }
 
@@ -76,6 +72,9 @@ impl GpuParticleSystem {
         window_size: vk::Extent2D,
         cmd_pool: &mut CommandPool<Q, Transient>,
     ) -> MemResult<Self> {
+        Err(MemoryError::VulkanError(vk::Result::ERROR_UNKNOWN))
+
+        /*
         // Set up particle system compute pipeline.
         let particle_shader_module = ShaderModule::new(&device, "galaxy_engine/shaders/particles.comp.spv")?;
 
@@ -236,7 +235,7 @@ impl GpuParticleSystem {
             compute_descriptor_set_layout,
             compute_descriptor_set,
             mesh_buffer: engine::static_resources().get_octagon_cloned(),
-        })
+        })*/
     }
 
     pub fn record_compute(&self, cmd_buffer: &mut RecordingCmdBuf<impl ComputeQueueType>) {

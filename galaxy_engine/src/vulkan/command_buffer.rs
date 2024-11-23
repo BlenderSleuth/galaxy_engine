@@ -10,11 +10,11 @@ use ash::vk;
 use ash::vk::DependencyInfo;
 use castaway::cast;
 
+use crate::pipelines::{ComputePipeline, GraphicsPipeline, Pipeline, PipelineLayout};
 use crate::vulkan::buffer::{Buffer, GpuOnly, MemLocation};
 use crate::vulkan::device::{Device, DeviceExt, SharedDeviceLoader};
 use crate::vulkan::extensions::DeviceExtensions;
 use crate::vulkan::image::Image;
-use crate::vulkan::pipeline::{ComputePipeline, GraphicsPipeline, Pipeline, PipelineLayout};
 use crate::vulkan::queue::queue_type::{ComputeQueueType, PrimaryQueue, QueueType};
 use crate::vulkan::queue::Queue;
 use crate::vulkan::sync::{Fence, WaitSemaphore};

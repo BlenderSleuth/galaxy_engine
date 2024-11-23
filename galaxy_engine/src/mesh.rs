@@ -8,6 +8,7 @@ use std::sync::Arc;
 use ash::vk;
 use meshopt::VertexDataAdapter;
 
+use crate::engine::DrawData;
 use crate::materials::Material;
 use crate::prelude::*;
 use crate::vertex_input::PositionTexCoordVertex;
@@ -168,6 +169,15 @@ impl Mesh {
 
     pub fn record_graphics(&self, cmd_buffer: &mut RenderingCmdBuf<PrimaryQueue>) {
         self.mesh_buffer.bind(cmd_buffer);
+        cmd_buffer.push_constants(
+            self.material.pipeline_layout(),
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            0,
+            bytemuck::bytes_of(&DrawData {
+                transform_index: 0,
+                material_index: 0,
+            }),
+        );
         cmd_buffer.draw_indexed(self.mesh_buffer.num_indices(), 1, 0, 0, 0);
     }
 }

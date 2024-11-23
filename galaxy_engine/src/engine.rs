@@ -13,11 +13,11 @@ use raw_window_handle::{DisplayHandle, WindowHandle};
 use winit::event::{ElementState, KeyEvent, MouseButton};
 use winit::keyboard::{Key, SmolStr};
 
-use crate::app;
 use crate::camera::{Camera, FirstPersonCamera};
 use crate::engine::MainLoopError::VulkanError;
 use crate::materials::{Material, MaterialData, MaterialError};
 use crate::mesh::{Mesh, MeshError};
+use crate::pipelines::PipelineManager;
 use crate::prelude::*;
 use crate::static_resources::{StaticResources, StaticResourcesGuard, StaticResourcesLock};
 use crate::texture::Texture;
@@ -35,6 +35,7 @@ use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain::Swapchain;
 use crate::vulkan::sync::{BinarySemaphore, Semaphore, WaitSemaphore};
 use crate::vulkan::{device, instance};
+use crate::{app, pipelines};
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
@@ -45,6 +46,8 @@ pub enum EngineInitError {
     InstanceError(#[from] instance::InstanceInitError),
     #[error("Device init error: {0}")]
     DeviceInitError(#[from] device::DeviceInitError),
+    #[error("Pipeline manager init error: {0}")]
+    PipelineManagerInitError(#[from] pipelines::PipelineManagerError),
     #[error("Vulkan call failed: {0}")]
     VulkanError(#[from] vk::Result),
     #[error("IO error: {0}")]
@@ -80,33 +83,26 @@ pub type SceneUniformBuffer = VolatileBuffer<SceneUniformData>;
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
 pub struct DrawData {
-    transform_index: u32,
-    material_index: u32,
+    pub transform_index: u32,
+    pub material_index: u32,
 }
 
 pub struct SceneBuffers {
-    draws: VolatileBuffer<[DrawData; 1024]>,
     transforms: VolatileBuffer<[Mat4; 1024]>,
     materials: VolatileBuffer<[MaterialData; 1024]>,
 }
 
 impl SceneBuffers {
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut DrawData, &mut Mat4, &mut MaterialData)> {
-        izip!(
-            self.draws.local.iter_mut(),
-            self.transforms.local.iter_mut(),
-            self.materials.local.iter_mut()
-        )
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut Mat4, &mut MaterialData)> {
+        izip!(self.transforms.local.iter_mut(), self.materials.local.iter_mut())
     }
     pub fn copy_to_gpu(&mut self, frame: usize) -> Result<(), MemoryError> {
-        self.draws.copy_to_gpu(frame)?;
         self.transforms.copy_to_gpu(frame)?;
         self.materials.copy_to_gpu(frame)
     }
-    pub fn buffer_infos<const N: usize>(&self) -> [[vk::DescriptorBufferInfo; 3]; N] {
+    pub fn buffer_infos<const N: usize>(&self) -> [[vk::DescriptorBufferInfo; 2]; N] {
         core::array::from_fn(|frame| {
             [
-                self.draws.descriptor_buffer_info(frame),
                 self.transforms.descriptor_buffer_info(frame),
                 self.materials.descriptor_buffer_info(frame),
             ]
@@ -147,6 +143,7 @@ pub struct GalaxyEngine {
     key_input: HashMap<SmolStr, ElementState>,
     // These are at the bottom so they get dropped last.
     swapchain: Swapchain,
+    pipeline_manager: PipelineManager,
     device: Device,
     surface: Surface,
     instance: Instance,
@@ -155,6 +152,8 @@ pub struct GalaxyEngine {
 impl GalaxyEngine {
     pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
     pub const NUM_MSAA_SAMPLES: vk::SampleCountFlags = vk::SampleCountFlags::TYPE_4;
+    pub const SHADER_PATH: &'static str = "galaxy_engine/content/shaders/";
+    pub const NUM_TEXTURES: usize = 2;
 
     pub(crate) fn new(
         app_info: &AppInfo,
@@ -191,10 +190,10 @@ impl GalaxyEngine {
         let window_size = vk::Extent2D { width, height };
         let swapchain = Swapchain::new(&instance, &device, &mut transient_cmd_pool, &surface, window_size, None)?;
 
-        // TODO: Find and compile pipelines to central store.
+        let pipeline_manager = PipelineManager::new(&device, swapchain.msaa_samples())?;
 
         // Create default texture sampler.
-        let max_anisotropy = device.physical_device().properties.limits.max_sampler_anisotropy;
+        let max_anisotropy = device.physical_device().properties.base.limits.max_sampler_anisotropy;
         let sampler_info = vk::SamplerCreateInfo::default()
             .mag_filter(vk::Filter::LINEAR)
             .min_filter(vk::Filter::LINEAR)
@@ -225,17 +224,13 @@ impl GalaxyEngine {
         // Create scene uniform buffer.
         let scene_uniform_buffer = VolatileBuffer::new("Scene uniform buffer", &device, VolatileBufferType::Uniform)?;
 
-        let scene_draw_data_buffer = VolatileBuffer::new("Draw data buffer", &device, VolatileBufferType::Storage)?;
         let scene_transforms_buffer = VolatileBuffer::new("Transforms buffer", &device, VolatileBufferType::Storage)?;
-        // TODO: don't use volatile buffer for material data buffer and array of textures.
+        // TODO: don't use volatile buffer for material data buffer.
         let scene_material_buffer = VolatileBuffer::new("Material buffer", &device, VolatileBufferType::Storage)?;
         let scene_buffers = Box::new(SceneBuffers {
-            draws: scene_draw_data_buffer,
             transforms: scene_transforms_buffer,
             materials: scene_material_buffer,
         });
-
-        const NUM_TEXTURES: u32 = 2;
 
         // Create scene descriptor pool.
         let scene_descriptor_pool_sizes = [
@@ -245,64 +240,19 @@ impl GalaxyEngine {
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32 * 3),
-            //vk::DescriptorPoolSize::default()
-            //    .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            //    .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32 * NUM_TEXTURES),
             vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::SAMPLED_IMAGE)
-                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32 * NUM_TEXTURES),
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count((Self::MAX_FRAMES_IN_FLIGHT * Self::NUM_TEXTURES) as u32),
             vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::SAMPLER)
-                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32 * NUM_TEXTURES),
+                .ty(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32),
         ];
         let mut scene_descriptor_pool =
             DescriptorPool::<{ Self::MAX_FRAMES_IN_FLIGHT }>::new(&device, &scene_descriptor_pool_sizes)?;
 
-        // Allocate scene descriptor sets.
-        let scene_descriptor_set_layout_bindings = [
-            // Scene uniforms:
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_count(1)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .stage_flags(
-                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE,
-                ),
-            // Draw data:
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_count(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
-            // Transforms:
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_count(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .stage_flags(vk::ShaderStageFlags::VERTEX),
-            // Material data:
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(3)
-                .descriptor_count(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            // Array of textures:
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(4)
-                .descriptor_count(NUM_TEXTURES)
-                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            // Array of samplers:
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(5)
-                .descriptor_count(NUM_TEXTURES)
-                .descriptor_type(vk::DescriptorType::SAMPLER)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        ];
-        let scene_descriptor_set_layout = DescriptorSetLayout::new(&device, &scene_descriptor_set_layout_bindings)?;
         scene_descriptor_pool.allocate_descriptor_sets(
             &device,
-            &[scene_descriptor_set_layout.handle(); Self::MAX_FRAMES_IN_FLIGHT],
+            &[pipeline_manager.scene_descriptor_set_layout.handle(); Self::MAX_FRAMES_IN_FLIGHT],
         )?;
 
         let uniform_buffer_info: [_; Self::MAX_FRAMES_IN_FLIGHT] =
@@ -314,61 +264,48 @@ impl GalaxyEngine {
             .image_view(texture.image().view().handle())
             .sampler(default_sampler.handle());
         // 2 of the same image.
-        let image_infos = [image_info; 2];
+        let image_infos = [image_info; Self::NUM_TEXTURES];
 
         let descriptor_writes: ArrayVec<_, { Self::MAX_FRAMES_IN_FLIGHT * 8 }> = scene_descriptor_pool
             .iter()
             .enumerate()
             .flat_map(|(frame, set)| {
                 [
+                    // Uniform buffer:
                     vk::WriteDescriptorSet::default()
                         .dst_set(*set)
                         .dst_binding(0)
                         .dst_array_element(0)
                         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                         .buffer_info(slice::from_ref(&uniform_buffer_info[frame])),
+                    // Transforms buffer:
                     vk::WriteDescriptorSet::default()
                         .dst_set(*set)
                         .dst_binding(1)
                         .dst_array_element(0)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .buffer_info(slice::from_ref(&buffer_infos[frame][0])),
+                    // First texture:
                     vk::WriteDescriptorSet::default()
                         .dst_set(*set)
                         .dst_binding(2)
                         .dst_array_element(0)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(slice::from_ref(&buffer_infos[frame][1])),
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(slice::from_ref(&image_infos[0])),
+                    // Second texture:
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(*set)
+                        .dst_binding(2)
+                        .dst_array_element(1)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(slice::from_ref(&image_infos[1])),
+                    // Material data:
                     vk::WriteDescriptorSet::default()
                         .dst_set(*set)
                         .dst_binding(3)
                         .dst_array_element(0)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(slice::from_ref(&buffer_infos[frame][2])),
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(*set)
-                        .dst_binding(4)
-                        .dst_array_element(0)
-                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                        .image_info(slice::from_ref(&image_infos[0])),
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(*set)
-                        .dst_binding(5)
-                        .dst_array_element(0)
-                        .descriptor_type(vk::DescriptorType::SAMPLER)
-                        .image_info(slice::from_ref(&image_infos[0])),
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(*set)
-                        .dst_binding(4)
-                        .dst_array_element(1)
-                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                        .image_info(slice::from_ref(&image_infos[1])),
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(*set)
-                        .dst_binding(5)
-                        .dst_array_element(1)
-                        .descriptor_type(vk::DescriptorType::SAMPLER)
-                        .image_info(slice::from_ref(&image_infos[1])),
+                        .buffer_info(slice::from_ref(&buffer_infos[frame][1])),
                 ]
             })
             .collect();
@@ -377,9 +314,8 @@ impl GalaxyEngine {
         // Load material.
         let material = Arc::new(Material::new(
             &device,
-            "galaxy_engine/content/models/viking_room/viking_room.mat.toml",
-            &scene_descriptor_set_layout,
-            swapchain.samples(),
+            &pipeline_manager,
+            "galaxy_engine/content/models/viking_room/viking_room.mat.ron",
         )?);
 
         // Load mesh.
@@ -440,6 +376,7 @@ impl GalaxyEngine {
             surface,
             device,
             swapchain,
+            pipeline_manager,
             _static_resources_guard: static_resources_guard,
             meshes: vec![mesh],
             material,
@@ -540,14 +477,10 @@ impl GalaxyEngine {
         };
 
         // Update mesh data.
-        for (i, (mesh, (draw_data, transform, material_data))) in
-            self.meshes.iter().zip(self.scene_buffers.iter_mut()).enumerate()
+        for (i, (mesh, (transform, material_data))) in self.meshes.iter().zip(self.scene_buffers.iter_mut()).enumerate()
         {
             let i = i as u32;
-            draw_data.material_index = i;
-            draw_data.transform_index = i;
             *transform = view_info.mvp_from_similarity(&mesh.transform);
-            material_data.albedo = Vec4::new(1., 1., 1., 1.);
             material_data.texture_index = i;
         }
 
@@ -629,7 +562,7 @@ impl GalaxyEngine {
                 },
             })
             .resolve_mode(vk::ResolveModeFlags::NONE);
-        if self.swapchain.samples() != vk::SampleCountFlags::TYPE_1 {
+        if self.swapchain.msaa_samples() != vk::SampleCountFlags::TYPE_1 {
             color_attachment_info = color_attachment_info
                 .resolve_mode(vk::ResolveModeFlags::AVERAGE)
                 .resolve_image_view(self.swapchain.get_image_views()[image_idx as usize].handle())

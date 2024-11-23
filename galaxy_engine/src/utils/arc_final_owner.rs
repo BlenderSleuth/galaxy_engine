@@ -31,6 +31,10 @@ impl<T> ArcFinalOwner<T> {
             }
         }
     }
+
+    pub fn clone(&self) -> Arc<T> {
+        Arc::clone(&self.0)
+    }
 }
 
 impl<T> std::ops::Deref for ArcFinalOwner<T> {

@@ -205,7 +205,7 @@ impl Swapchain {
         }
     }
 
-    pub fn samples(&self) -> vk::SampleCountFlags {
+    pub fn msaa_samples(&self) -> vk::SampleCountFlags {
         self.msaa_samples
     }
 

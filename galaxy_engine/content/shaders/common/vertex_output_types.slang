@@ -1,0 +1,6 @@
+module vertex_output_types;
+
+public struct PositionTexCoordVStoFS {
+    public float4 position : SV_POSITION;
+    public float2 tex_coord : TEXCOORD0;
+};

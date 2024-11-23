@@ -10,7 +10,6 @@ pub mod gpu_alloc;
 pub mod image;
 pub mod instance;
 pub mod physical_device;
-pub mod pipeline;
 pub mod queue;
 pub mod shader;
 pub mod surface;
