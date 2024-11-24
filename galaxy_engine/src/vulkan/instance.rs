@@ -121,7 +121,7 @@ impl Instance {
             .application_name(&app_info.name)
             .application_version(app_info.version)
             .engine_name(super::ENGINE_NAME)
-            .engine_version(utils::parse_version!(super::ENGINE_VERSION_STR))
+            .engine_version(super::ENGINE_VERSION)
             .api_version(super::MIN_VK_VERSION);
 
         // MacOS compatibility.

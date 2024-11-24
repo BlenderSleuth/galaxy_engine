@@ -1,6 +1,7 @@
 // Copyright (c) 2024 Ben Sutherland.
 
 use std::ffi::CString;
+use std::path::{Path, PathBuf};
 
 pub use ash::vk::make_api_version;
 use bitflags::bitflags;
@@ -22,26 +23,31 @@ bitflags! {
     }
 }
 
+#[macro_export]
+macro_rules! app_dir {
+    () => {
+        std::path::Path::new(env!("CARGO_PKG_NAME"))
+    };
+}
+
 pub struct AppInfo {
     pub name: CString,
     pub version: u32,
     pub flags: AppFlags,
+    pub dir: PathBuf,
 }
 
 impl AppInfo {
-    pub fn new(name: &str, version: u32, flags: AppFlags) -> AppInfo {
+    pub fn new(name: &str, version: u32, flags: AppFlags, dir: &Path) -> AppInfo {
         AppInfo {
             name: CString::new(name).unwrap_or(c"Unknown".into()),
             version,
             flags,
+            dir: dir.join(GalaxyEngine::CONTENT_DIR),
         }
     }
-    pub fn new_from_package_version(name: &str, flags: AppFlags) -> AppInfo {
-        AppInfo {
-            name: CString::new(name).unwrap_or(c"Unknown".into()),
-            version: utils::parse_version!(env!("CARGO_PKG_VERSION")),
-            flags,
-        }
+    pub fn new_from_package_version(name: &str, flags: AppFlags, dir: &Path) -> AppInfo {
+        Self::new(name, utils::pkg_version(), flags, dir)
     }
 }
 

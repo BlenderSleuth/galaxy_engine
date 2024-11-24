@@ -7,6 +7,7 @@ use std::sync::Arc;
 use app::AppInfo;
 use arrayvec::ArrayVec;
 use ash::vk;
+use const_format::concatcp;
 use itertools::izip;
 use parking_lot::{MappedRwLockReadGuard, RwLockReadGuard};
 use raw_window_handle::{DisplayHandle, WindowHandle};
@@ -151,7 +152,12 @@ pub struct GalaxyEngine {
 impl GalaxyEngine {
     pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
     pub const NUM_MSAA_SAMPLES: vk::SampleCountFlags = vk::SampleCountFlags::TYPE_4;
-    pub const SHADER_PATH: &'static str = "galaxy_engine/content/shaders/";
+    pub const CONTENT_DIR: &'static str = if cfg!(feature = "packaged") {
+        "packaged"
+    } else {
+        "content/"
+    };
+    pub const SHADER_PATH: &'static str = concatcp!(env!("CARGO_PKG_NAME"), "/", GalaxyEngine::CONTENT_DIR, "shaders/");
     pub const NUM_TEXTURES: usize = 2;
 
     pub(crate) fn new(
@@ -211,12 +217,19 @@ impl GalaxyEngine {
         let default_sampler = Sampler::new(&device, &sampler_info)?;
 
         // Load texture.
-        let texture = Arc::new(Texture::new_from_file(
-            "Viking room texture",
-            "galaxy_engine/content/models/viking_room/viking_room.ktx2",
-            &device,
-            &mut transient_cmd_pool,
-        )?);
+        let texture = Arc::new(
+            Texture::new_from_file(
+                "Viking room texture",
+                app_info
+                    .dir
+                    .join("models/viking_room/viking_room.ktx2")
+                    .to_str()
+                    .unwrap(),
+                &device,
+                &mut transient_cmd_pool,
+            )
+            .map_err(MaterialError::from)?,
+        );
 
         // Set up scene.
 
@@ -313,7 +326,11 @@ impl GalaxyEngine {
         // Load material.
         let material = Arc::new(Material::new(
             &pipeline_manager,
-            "galaxy_engine/content/models/viking_room/viking_room.mat.ron",
+            app_info
+                .dir
+                .join("models/viking_room/viking_room.mat.ron")
+                .to_str()
+                .unwrap(),
         )?);
 
         // Load mesh.
@@ -321,7 +338,11 @@ impl GalaxyEngine {
             "Viking room",
             &device,
             &mut transient_cmd_pool,
-            "galaxy_engine/content/models/viking_room/viking_room.obj",
+            app_info
+                .dir
+                .join("models/viking_room/viking_room.obj")
+                .to_str()
+                .unwrap(),
             Arc::clone(&material),
         )?;
 

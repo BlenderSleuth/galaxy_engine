@@ -3,7 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use app::{AppFlags, AppInfo, GalaxyApp};
-use galaxy_engine::app;
+use galaxy_engine::{app, app_dir};
 use winit::error::EventLoopError;
 use winit::event_loop::{ControlFlow, EventLoop};
 
@@ -35,7 +35,7 @@ fn main() -> Result<(), MainError> {
     let flags = AppFlags::empty();
 
     // Set up the engine and run the application.
-    let app_info = AppInfo::new_from_package_version("Gravity Game", flags);
+    let app_info = AppInfo::new_from_package_version("Gravity Game", flags, app_dir!());
     let mut app = GalaxyApp::new(app_info);
     event_loop.run_app(&mut app)?;
 

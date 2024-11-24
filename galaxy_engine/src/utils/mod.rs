@@ -10,6 +10,7 @@ mod extensions;
 
 use std::ffi::{c_char, CStr};
 
+use ash::vk;
 //pub use array::*;
 pub(crate) use config::*;
 pub use extensions::*;
@@ -29,17 +30,21 @@ pub(crate) const fn parse_num(num: &'static str) -> u32 {
     }
 }
 
-macro_rules! parse_version {
-    ($version:expr) => {{
-        use crate::utils::parse_num;
-        let [major, minor, patch] = const_format::str_split!($version, '.');
-        ash::vk::make_api_version(0, parse_num(major), parse_num(minor), parse_num(patch))
-    }};
-    () => {};
-}
-pub(crate) use parse_version;
-
-//pub(crate) const fn parse_version(version: &'static str) -> u32 {
-//    let [major, minor, patch] = const_format::str_split!(version, '.');
-//    vk::make_api_version(0, parse_num(major), parse_num(minor), parse_num(patch))
+//macro_rules! parse_version {
+//    ($version:expr) => {{
+//        use crate::utils::parse_num;
+//        let [major, minor, patch] = const_format::str_split!($version, '.');
+//        ash::vk::make_api_version(0, parse_num(major), parse_num(minor), parse_num(patch))
+//    }};
+//    () => {};
 //}
+//pub(crate) use parse_version;
+
+pub const fn pkg_version() -> u32 {
+    vk::make_api_version(
+        0,
+        parse_num(env!("CARGO_PKG_VERSION_MAJOR")),
+        parse_num(env!("CARGO_PKG_VERSION_MINOR")),
+        parse_num(env!("CARGO_PKG_VERSION_PATCH")),
+    )
+}

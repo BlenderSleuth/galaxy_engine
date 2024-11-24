@@ -22,6 +22,8 @@ pub enum MaterialError {
     MemoryError(#[from] MemoryError),
     #[error("Material pipeline not found")]
     PipelineNotFound,
+    #[error("Texture error: {0}")]
+    TextureError(#[from] crate::texture::TextureError),
 }
 
 // To be kept up to date with shader representation.

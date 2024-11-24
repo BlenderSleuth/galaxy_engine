@@ -6,6 +6,7 @@ edition.workspace = true
 [features]
 default = []
 debug_info = ["ash/debug"]
+packaged = []
 
 [dependencies]
 ash = { workspace = true, default-features = false, features = ["loaded"] }

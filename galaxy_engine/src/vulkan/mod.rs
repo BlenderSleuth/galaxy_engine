@@ -23,7 +23,8 @@ pub use device::get_device_loader;
 
 pub const ENGINE_NAME: &'static CStr = c"Galaxy Engine";
 pub const ENGINE_VERSION_STR: &'static str = env!("CARGO_PKG_VERSION");
-pub const MIN_VK_VERSION: u32 = ash::vk::make_api_version(0, 1, 2, 0);
+pub const ENGINE_VERSION: u32 = crate::utils::pkg_version();
+pub const MIN_VK_VERSION: u32 = vk::make_api_version(0, 1, 2, 0);
 
 #[derive(Debug, thiserror::Error)]
 #[error("App requires Vulkan {}.{}.{} (Current: {}.{}.{}). Consider updating your graphics drivers",
