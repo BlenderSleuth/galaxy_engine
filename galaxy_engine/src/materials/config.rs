@@ -4,10 +4,10 @@ use indexmap::IndexMap;
 
 use crate::utils::ConfigID;
 
-pub enum MaterialLayoutBinding {
-    Constant(ConfigID),
-    Texture(ConfigID),
-}
+//pub enum MaterialLayoutBinding {
+//    Constant(ConfigID),
+//    Texture(ConfigID),
+//}
 
 #[derive(serde::Deserialize, Debug)]
 #[serde(rename = "Material")]

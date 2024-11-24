@@ -15,7 +15,7 @@ use crate::vertex_input::PositionTexCoordVertex;
 use crate::vulkan::buffer::{Buffer, CpuToGpu, GpuOnly};
 use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingCmdBuf, RenderingState, TransientPrimaryCommandPool};
 use crate::vulkan::debug;
-use crate::vulkan::device::{Device, SharedDeviceLoader};
+use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
 use crate::vulkan::queue::queue_type::PrimaryQueue;
 
@@ -113,7 +113,6 @@ pub enum MeshError {
 }
 
 pub struct Mesh {
-    loader: SharedDeviceLoader,
     mesh_buffer: MeshBuffer,
     material: Arc<Material>,
     pub transform: Similarity3,
@@ -156,7 +155,6 @@ impl Mesh {
         let mesh_buffer = MeshBuffer::new_from_vertices_and_indices(name, &vertices, &indices, device, cmd_pool)?;
 
         Ok(Self {
-            loader: device.cloned_loader(),
             mesh_buffer,
             material,
             transform: Similarity3::identity(),

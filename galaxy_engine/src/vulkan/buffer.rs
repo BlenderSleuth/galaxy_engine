@@ -1,10 +1,13 @@
 // Copyright (c) 2024 Ben Sutherland.
 
+use std::mem::MaybeUninit;
 use std::num::NonZeroU32;
+use std::ops::DerefMut;
 
 use ash::vk;
-use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme, MappedAllocationSlab};
+use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme};
 use gpu_allocator::MemoryLocation;
+use presser::Slab;
 
 use crate::vulkan::command_buffer::RecordingCmdBuf;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
@@ -16,25 +19,29 @@ use crate::vulkan::{debug, gpu_alloc};
 pub trait MemLocation {
     fn location() -> MemoryLocation;
 }
-pub struct Unknown;
+
+pub enum Unknown {}
 impl MemLocation for Unknown {
     fn location() -> MemoryLocation {
         MemoryLocation::Unknown
     }
 }
-pub struct GpuOnly;
+
+pub enum GpuOnly {}
 impl MemLocation for GpuOnly {
     fn location() -> MemoryLocation {
         MemoryLocation::GpuOnly
     }
 }
-pub struct CpuToGpu;
+
+pub enum CpuToGpu {}
 impl MemLocation for CpuToGpu {
     fn location() -> MemoryLocation {
         MemoryLocation::CpuToGpu
     }
 }
-pub struct GpuToCpu;
+
+pub enum GpuToCpu {}
 impl MemLocation for GpuToCpu {
     fn location() -> MemoryLocation {
         MemoryLocation::GpuToCpu
@@ -205,20 +212,31 @@ impl Buffer<GpuOnly> {
 }
 
 impl Buffer<CpuToGpu> {
-    fn get_mapped_memory(&mut self) -> MappedAllocationSlab {
+    fn get_mapped_memory(&mut self) -> &mut impl Slab {
         // CPU to GPU memory is always mappable.
-        self.allocation.try_as_mapped_slab().unwrap()
+        self.allocation.deref_mut()
+    }
+
+    pub fn zero_memory(&mut self) {
+        self.allocation.as_maybe_uninit_bytes_mut().fill(MaybeUninit::zeroed());
+    }
+
+    // Casts the buffer memory to a mutable reference of type T.
+    // Safety: buffer memory must be initialised.
+    pub unsafe fn get_mut<T: bytemuck::Pod>(&mut self, offset: usize) -> &mut T {
+        let size = std::mem::size_of::<T>();
+        let range = offset..(offset + size);
+        let bytes = unsafe { self.allocation.assume_range_initialized_as_bytes_mut(range) };
+        bytemuck::from_bytes_mut(bytes)
     }
 
     pub fn copy_into_buffer<T: bytemuck::Pod>(&mut self, data: &T, offset: usize) -> MemResult<()> {
-        let mut memory = self.get_mapped_memory();
-        presser::copy_to_offset(data, &mut memory, offset)?;
+        presser::copy_to_offset(data, self.get_mapped_memory(), offset)?;
         Ok(())
     }
 
     pub fn copy_slice_into_buffer<T: bytemuck::Pod>(&mut self, data: &[T], offset: usize) -> MemResult<()> {
-        let mut memory = self.get_mapped_memory();
-        presser::copy_from_slice_to_offset(data, &mut memory, offset)?;
+        presser::copy_from_slice_to_offset(data, self.get_mapped_memory(), offset)?;
         Ok(())
     }
 }

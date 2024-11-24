@@ -1,29 +1,24 @@
 // Copyright (c) 2024 Ben Sutherland.
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ash::prelude::VkResult;
 use ash::vk;
 use const_format::concatcp;
 use glob::glob;
 use itertools::{Either, Itertools};
 
 use crate::engine::GalaxyEngine;
+use crate::pipelines;
 use crate::pipelines::config::{
-    FragmentShaderModuleCache, GraphicsPipelineConfig, PipelineConfig, PipelineLayoutBinding, PipelineLayoutCache,
-    VertexShaderModuleCache,
+    FragmentShaderModuleCache, PipelineConfig, PipelineLayoutCache, VertexShaderModuleCache,
 };
 use crate::pipelines::pipeline::{ComputePipeline, GraphicsPipeline, Pipeline};
 use crate::pipelines::PipelineLayout;
 use crate::utils::{ArcFinalOwner, ConfigID, EntryExt};
-use crate::vertex_input::{BindableVertex, PositionTexCoordVertex};
 use crate::vulkan::descriptors::DescriptorSetLayout;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
-use crate::vulkan::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
-use crate::{pipelines, utils};
+use crate::vulkan::shader::ShaderModule;
 
 #[derive(thiserror::Error, Debug)]
 pub enum PipelineManagerError {
@@ -150,7 +145,7 @@ impl PipelineManager {
                 .try_or_insert_with(|| ShaderModule::new(&device, &config.shaders.fragment.id))?;
         }
 
-        let mut graphics_pipelines = GraphicsPipeline::batch_new(
+        let graphics_pipelines = GraphicsPipeline::batch_new(
             &device,
             &pipeline_layouts,
             &vertex_shaders,

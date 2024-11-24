@@ -66,11 +66,11 @@ pub struct GpuParticleSystem {
 
 impl GpuParticleSystem {
     pub fn new<Q: QueueType>(
-        device: &Device,
-        samples: vk::SampleCountFlags,
-        max_num_particles: u32,
-        window_size: vk::Extent2D,
-        cmd_pool: &mut CommandPool<Q, Transient>,
+        _device: &Device,
+        _samples: vk::SampleCountFlags,
+        _max_num_particles: u32,
+        _window_size: vk::Extent2D,
+        _cmd_pool: &mut CommandPool<Q, Transient>,
     ) -> MemResult<Self> {
         Err(MemoryError::VulkanError(vk::Result::ERROR_UNKNOWN))
 

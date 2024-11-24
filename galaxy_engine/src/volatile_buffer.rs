@@ -55,8 +55,8 @@ impl VolatileBufferType {
 // Update the local data and call copy_to_gpu to update the GPU buffer.
 pub struct VolatileBuffer<T: bytemuck::Pod, const N: usize = { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }> {
     buffer: Buffer<CpuToGpu>,
-    pub local: T,
     size: usize,
+    marker: std::marker::PhantomData<T>,
 }
 
 impl<T: bytemuck::Pod, const N: usize> VolatileBuffer<T, N> {
@@ -68,43 +68,58 @@ impl<T: bytemuck::Pod, const N: usize> VolatileBuffer<T, N> {
             .pad_to_align()
             .size();
 
+        let mut buffer = Buffer::new(
+            name,
+            device,
+            (size * N) as vk::DeviceSize,
+            buffer_type.usage(),
+            Some(device.physical_device().volatile_memory_type.type_bits),
+        )?;
+
+        // Zero-init memory (which allows it to be soundly casted to a Pod type).
+        buffer.zero_memory();
+
         Ok(Self {
-            buffer: Buffer::new(
-                name,
-                device,
-                (size * N) as vk::DeviceSize,
-                buffer_type.usage(),
-                Some(device.physical_device().volatile_memory_type.type_bits),
-            )?,
-            local: bytemuck::Zeroable::zeroed(),
+            buffer,
             size,
+            marker: std::marker::PhantomData,
         })
     }
 
-    fn frame_offset(&self, frame: usize) -> vk::DeviceSize {
+    fn frame_offset(&self, frame: usize) -> usize {
         debug_assert!(frame < N);
-        (self.size * frame) as vk::DeviceSize
+        self.size * frame
     }
 
-    pub fn copy_to_gpu(&mut self, current_frame: usize) -> MemResult<()> {
-        self.buffer
-            .copy_into_buffer(&self.local, self.frame_offset(current_frame) as usize)
+    //fn frame_range(&self, frame: usize) -> std::ops::Range<usize> {
+    //    let offset = self.frame_offset(frame) as usize;
+    //    offset..(offset + self.size)
+    //}
+
+    //pub fn copy_to_gpu(&mut self, current_frame: usize) -> MemResult<()> {
+    //    self.buffer
+    //        .copy_into_buffer(&self.local, self.frame_offset(current_frame) as usize)
+    //}
+
+    pub fn get_mut(&mut self, frame: usize) -> &mut T {
+        // Safety: The buffer is zero-initialized, so this is a safe operation.
+        unsafe { self.buffer.get_mut(self.frame_offset(frame)) }
     }
 
     pub fn descriptor_buffer_info(&self, frame: usize) -> vk::DescriptorBufferInfo {
         vk::DescriptorBufferInfo::default()
             .buffer(self.buffer.handle())
-            .offset(self.frame_offset(frame))
+            .offset(self.frame_offset(frame) as vk::DeviceSize)
             .range(std::mem::size_of::<T>() as vk::DeviceSize)
     }
 }
 
-impl<T: bytemuck::Pod, const N: usize> VolatileBuffer<[T; N]> {
-    pub fn iter(&self) -> impl Iterator<Item = &T> {
-        self.local.iter()
-    }
-
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
-        self.local.iter_mut()
-    }
-}
+//impl<T: bytemuck::Pod, const N: usize> VolatileBuffer<[T; N]> {
+//    pub fn iter(&self) -> impl Iterator<Item = &T> {
+//        self.local.iter()
+//    }
+//
+//    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+//        self.local.iter_mut()
+//    }
+//}

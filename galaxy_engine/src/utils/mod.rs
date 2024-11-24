@@ -9,15 +9,14 @@ mod config;
 mod extensions;
 
 use std::ffi::{c_char, CStr};
-use std::ops::{Add, Sub};
 
-pub use array::*;
-pub use config::*;
+//pub use array::*;
+pub(crate) use config::*;
 pub use extensions::*;
 
-pub(crate) const fn align_up(value: u32, alignment: u32) -> u32 {
-    (value + alignment - 1) & !(alignment - 1)
-}
+//pub(crate) const fn align_up(value: u32, alignment: u32) -> u32 {
+//    (value + alignment - 1) & !(alignment - 1)
+//}
 
 pub(crate) fn cstr_to_ptrs(c_strs: &[&'static CStr]) -> Vec<*const c_char> {
     c_strs.iter().map(|cstr| cstr.as_ptr()).collect()

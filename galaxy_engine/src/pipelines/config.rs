@@ -60,17 +60,17 @@ impl PipelineLayoutDataType {
             Self::DrawData => std::mem::size_of::<DrawData>(),
         }) as u32
     }
-    pub fn align(&self) -> u32 {
-        (match self {
-            Self::Float => std::mem::align_of::<f32>(),
-            Self::Float2 => std::mem::align_of::<[f32; 2]>(),
-            Self::Float3 => std::mem::align_of::<[f32; 4]>(),
-            Self::Float4 => std::mem::align_of::<[f32; 4]>(),
-            Self::Int => std::mem::align_of::<i32>(),
-            Self::UInt => std::mem::align_of::<u32>(),
-            Self::DrawData => std::mem::align_of::<DrawData>(),
-        }) as u32
-    }
+    //pub fn align(&self) -> u32 {
+    //    (match self {
+    //        Self::Float => std::mem::align_of::<f32>(),
+    //        Self::Float2 => std::mem::align_of::<[f32; 2]>(),
+    //        Self::Float3 => std::mem::align_of::<[f32; 4]>(),
+    //        Self::Float4 => std::mem::align_of::<[f32; 4]>(),
+    //        Self::Int => std::mem::align_of::<i32>(),
+    //        Self::UInt => std::mem::align_of::<u32>(),
+    //        Self::DrawData => std::mem::align_of::<DrawData>(),
+    //    }) as u32
+    //}
 }
 
 bitflags::bitflags! {

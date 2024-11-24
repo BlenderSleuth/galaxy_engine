@@ -26,7 +26,7 @@ use crate::vulkan::command_buffer::{
     CmdBufStateTransitionError, ResettablePrimaryCommandPool, TransientPrimaryCommandPool,
 };
 use crate::vulkan::debug::debug_only_name;
-use crate::vulkan::descriptors::{DescriptorPool, DescriptorSetLayout};
+use crate::vulkan::descriptors::DescriptorPool;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
 use crate::vulkan::image::Sampler;
@@ -93,12 +93,11 @@ pub struct SceneBuffers {
 }
 
 impl SceneBuffers {
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut Mat4, &mut MaterialData)> {
-        izip!(self.transforms.local.iter_mut(), self.materials.local.iter_mut())
-    }
-    pub fn copy_to_gpu(&mut self, frame: usize) -> Result<(), MemoryError> {
-        self.transforms.copy_to_gpu(frame)?;
-        self.materials.copy_to_gpu(frame)
+    pub fn iter_mut(&mut self, frame: usize) -> impl Iterator<Item = (&mut Mat4, &mut MaterialData)> {
+        izip!(
+            self.transforms.get_mut(frame).iter_mut(),
+            self.materials.get_mut(frame).iter_mut()
+        )
     }
     pub fn buffer_infos<const N: usize>(&self) -> [[vk::DescriptorBufferInfo; 2]; N] {
         core::array::from_fn(|frame| {
@@ -126,9 +125,9 @@ pub struct GalaxyEngine {
     transient_cmd_pool: TransientPrimaryCommandPool,
     scene_descriptor_pool: DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     scene_uniform_buffer: SceneUniformBuffer,
-    scene_buffers: Box<SceneBuffers>,
-    default_sampler: Sampler,
-    texture: Arc<Texture>,
+    scene_buffers: SceneBuffers,
+    _default_sampler: Sampler,
+    _texture: Arc<Texture>,
     //particle_system: ManuallyDrop<GpuParticleSystem>,
     image_available_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     render_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
@@ -142,8 +141,8 @@ pub struct GalaxyEngine {
     camera: Camera,
     key_input: HashMap<SmolStr, ElementState>,
     // These are at the bottom so they get dropped last.
+    _pipeline_manager: PipelineManager,
     swapchain: Swapchain,
-    pipeline_manager: PipelineManager,
     device: Device,
     surface: Surface,
     instance: Instance,
@@ -227,10 +226,10 @@ impl GalaxyEngine {
         let scene_transforms_buffer = VolatileBuffer::new("Transforms buffer", &device, VolatileBufferType::Storage)?;
         // TODO: don't use volatile buffer for material data buffer.
         let scene_material_buffer = VolatileBuffer::new("Material buffer", &device, VolatileBufferType::Storage)?;
-        let scene_buffers = Box::new(SceneBuffers {
+        let scene_buffers = SceneBuffers {
             transforms: scene_transforms_buffer,
             materials: scene_material_buffer,
-        });
+        };
 
         // Create scene descriptor pool.
         let scene_descriptor_pool_sizes = [
@@ -313,7 +312,6 @@ impl GalaxyEngine {
 
         // Load material.
         let material = Arc::new(Material::new(
-            &device,
             &pipeline_manager,
             "galaxy_engine/content/models/viking_room/viking_room.mat.ron",
         )?);
@@ -376,7 +374,7 @@ impl GalaxyEngine {
             surface,
             device,
             swapchain,
-            pipeline_manager,
+            _pipeline_manager: pipeline_manager,
             _static_resources_guard: static_resources_guard,
             meshes: vec![mesh],
             material,
@@ -386,8 +384,8 @@ impl GalaxyEngine {
             scene_descriptor_pool,
             scene_uniform_buffer,
             scene_buffers,
-            default_sampler,
-            texture,
+            _default_sampler: default_sampler,
+            _texture: texture,
             image_available_semaphores,
             render_finished_semaphores,
             compute_finished_semaphores,
@@ -468,22 +466,6 @@ impl GalaxyEngine {
         // Now that the camera has been updated, calculate the view info.
         let view_info = self.camera.view_info();
 
-        // Update uniform buffer.
-        self.scene_uniform_buffer.local = SceneUniformData {
-            view: view_info.view,
-            proj: view_info.projection,
-            sun_direction: Vec3::new(time.sin().abs(), (time + 0.3).sin().abs(), (time + 0.6).sin().abs()),
-            delta_time,
-        };
-
-        // Update mesh data.
-        for (i, (mesh, (transform, material_data))) in self.meshes.iter().zip(self.scene_buffers.iter_mut()).enumerate()
-        {
-            let i = i as u32;
-            *transform = view_info.mvp_from_similarity(&mesh.transform);
-            material_data.texture_index = i;
-        }
-
         // Wait for fences of the buffered frame.
         self.primary_cmd_pools[current_frame]
             .get_cmd_buffer(0)
@@ -495,9 +477,25 @@ impl GalaxyEngine {
         let primary_cmd_pool = &mut self.primary_cmd_pools[current_frame];
         primary_cmd_pool.reset()?;
 
-        // Copy uniform buffer to GPU.
-        self.scene_uniform_buffer.copy_to_gpu(current_frame)?;
-        self.scene_buffers.copy_to_gpu(current_frame)?;
+        // Update GPU buffers.
+        *self.scene_uniform_buffer.get_mut(current_frame) = SceneUniformData {
+            view: view_info.view,
+            proj: view_info.projection,
+            sun_direction: Vec3::new(time.sin().abs(), (time + 0.3).sin().abs(), (time + 0.6).sin().abs()),
+            delta_time,
+        };
+
+        // Update mesh data.
+        for (i, (mesh, (transform, material_data))) in self
+            .meshes
+            .iter()
+            .zip(self.scene_buffers.iter_mut(current_frame))
+            .enumerate()
+        {
+            let i = i as u32;
+            *transform = view_info.mvp_from_similarity(&mesh.transform);
+            material_data.texture_index = i;
+        }
 
         let compute_cmd_buffer = primary_cmd_pool.get_cmd_buffer(0);
         let _recording = compute_cmd_buffer.begin()?;

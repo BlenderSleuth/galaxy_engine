@@ -7,7 +7,6 @@ use ash::vk;
 use crate::materials::config::get_material_config;
 use crate::pipelines::{GraphicsPipeline, Pipeline, PipelineLayout, PipelineManager};
 use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingState};
-use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::MemoryError;
 use crate::vulkan::queue::queue_type::PrimaryQueue;
 
@@ -25,13 +24,6 @@ pub enum MaterialError {
     PipelineNotFound,
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct DrawData {
-    pub transform_index: u32,
-    pub material_index: u32,
-}
-
 // To be kept up to date with shader representation.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -44,17 +36,16 @@ pub struct Material {
 }
 
 impl Material {
-    pub fn new(device: &Device, pipeline_manager: &PipelineManager, config_path: &str) -> Result<Self, MaterialError> {
+    pub fn new(pipeline_manager: &PipelineManager, config_path: &str) -> Result<Self, MaterialError> {
         // Load config.
         let config_str = std::fs::read_to_string(config_path)?;
         let config = get_material_config(&config_str)?;
-        println!("{:?}", config);
 
         let pipeline = pipeline_manager
             .get_graphics_pipeline(&config.pipeline)
             .ok_or(MaterialError::PipelineNotFound)?;
 
-        for (bind_point, binding) in config.params {}
+        //for (bind_point, binding) in config.params {}
 
         Ok(Self { pipeline })
     }

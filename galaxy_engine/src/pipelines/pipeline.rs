@@ -3,7 +3,6 @@
 use std::slice;
 use std::sync::Arc;
 
-use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::vk;
 use ash::vk::Handle;
@@ -24,14 +23,14 @@ pub enum PipelineType {
     Compute,
 }
 
-impl PipelineType {
-    pub fn bind_point(&self) -> vk::PipelineBindPoint {
-        match self {
-            Self::Graphics => vk::PipelineBindPoint::GRAPHICS,
-            Self::Compute => vk::PipelineBindPoint::COMPUTE,
-        }
-    }
-}
+//impl PipelineType {
+//    pub fn bind_point(&self) -> vk::PipelineBindPoint {
+//        match self {
+//            Self::Graphics => vk::PipelineBindPoint::GRAPHICS,
+//            Self::Compute => vk::PipelineBindPoint::COMPUTE,
+//        }
+//    }
+//}
 
 pub trait Pipeline {
     fn handle(&self) -> vk::Pipeline;
@@ -39,9 +38,9 @@ pub trait Pipeline {
 }
 
 // Vertex, /*Hull, Domain, Geometry,*/ Fragment.
-pub const MAX_GRAPHICS_SHADER_STAGES: usize = 2;
-pub type GraphicsPipelineShaderStages =
-    ArrayVec<vk::PipelineShaderStageCreateInfo<'static>, MAX_GRAPHICS_SHADER_STAGES>;
+//pub const MAX_GRAPHICS_SHADER_STAGES: usize = 2;
+//pub type GraphicsPipelineShaderStages =
+//    ArrayVec<vk::PipelineShaderStageCreateInfo<'static>, MAX_GRAPHICS_SHADER_STAGES>;
 
 //pub struct GraphicsPipelineParameters {
 //    pub layout: Arc<PipelineLayout>,
@@ -94,7 +93,7 @@ impl GraphicsPipeline {
         let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
             .logic_op_enable(false)
             .attachments(slice::from_ref(&color_blend_attachment));
-        let mut dynamic_pipeline_info = vk::PipelineRenderingCreateInfo::default()
+        let dynamic_pipeline_info = vk::PipelineRenderingCreateInfo::default()
             .color_attachment_formats(slice::from_ref(&device_properties.swapchain_format.format))
             .depth_attachment_format(device.physical_device().depth_stencil_format);
 
