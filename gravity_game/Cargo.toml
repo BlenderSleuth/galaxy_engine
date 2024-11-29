@@ -12,4 +12,5 @@ packaged = ["galaxy_engine/packaged"]
 galaxy_engine = { path = "../galaxy_engine" }
 winit.workspace = true
 thiserror.workspace = true
+log.workspace = true
 env_logger = { version = "0.11.5", default-features = false, features = ["auto-color"] }

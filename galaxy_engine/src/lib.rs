@@ -3,6 +3,7 @@
 pub mod app;
 pub mod camera;
 pub mod engine;
+pub mod game;
 pub mod materials;
 pub mod maths;
 pub mod mesh;
@@ -10,6 +11,7 @@ pub mod particles;
 mod pipelines;
 mod pod;
 pub mod prelude;
+mod scene;
 pub mod static_resources;
 pub mod texture;
 mod utils;

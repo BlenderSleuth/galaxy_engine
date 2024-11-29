@@ -14,6 +14,7 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::engine::GalaxyEngine;
+use crate::game::Game;
 use crate::utils;
 
 bitflags! {
@@ -69,15 +70,18 @@ pub struct GalaxyApp {
     app_info: AppInfo,
     window: Option<Window>,
     engine: Option<GalaxyEngine>,
+    // Temporary storage for the game init data until the engine is created.
+    game_temp: Option<Box<dyn Game>>,
     last_frame_time: std::time::Instant,
 }
 
 impl GalaxyApp {
-    pub fn new(app_info: AppInfo) -> Self {
+    pub fn new(app_info: AppInfo, game: Box<dyn Game>) -> Self {
         Self {
             app_info,
             window: None,
             engine: None,
+            game_temp: Some(game),
             last_frame_time: std::time::Instant::now(),
         }
     }
@@ -115,12 +119,23 @@ impl ApplicationHandler for GalaxyApp {
         let PhysicalSize { width, height } = window.inner_size();
 
         self.engine = Some(unwrap_or_exit!(
-            GalaxyEngine::new(&self.app_info, display_handle, window_handle, width, height),
+            GalaxyEngine::new(
+                &self.app_info,
+                display_handle,
+                window_handle,
+                width,
+                height,
+                self.game_temp.take().unwrap()
+            ),
             "Failed to create engine: {}\nExiting.",
             event_loop
         ));
         self.window = Some(window);
         self.last_frame_time = std::time::Instant::now();
+
+        if let Some(engine) = self.engine.as_mut() {
+            unwrap_or_exit!(engine.startup(), "Failed to start engine: {}\nExiting.", event_loop);
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
@@ -181,7 +196,11 @@ impl ApplicationHandler for GalaxyApp {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if event_loop.exiting() {
+            return;
+        }
+
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }

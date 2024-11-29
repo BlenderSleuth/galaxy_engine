@@ -1,6 +1,8 @@
 // Copyright (c) 2024 Ben Sutherland.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::slice;
 use std::sync::Arc;
 
@@ -16,6 +18,7 @@ use winit::keyboard::{Key, SmolStr};
 
 use crate::camera::{Camera, FirstPersonCamera};
 use crate::engine::MainLoopError::VulkanError;
+use crate::game::Game;
 use crate::materials::{Material, MaterialData, MaterialError};
 use crate::mesh::{Mesh, MeshError};
 use crate::pipelines::PipelineManager;
@@ -59,6 +62,13 @@ pub enum EngineInitError {
     MeshError(#[from] MeshError),
     #[error("Material error: {0}")]
     MaterialError(#[from] MaterialError),
+}
+
+#[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
+pub enum StartupError {
+    #[error("Memory error: {0}")]
+    MemoryError(#[from] MemoryError),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -119,6 +129,8 @@ pub fn static_resources() -> MappedRwLockReadGuard<'static, StaticResources> {
 }
 
 pub struct GalaxyEngine {
+    game: RefCell<Box<dyn Game>>,
+    game_dir: PathBuf,
     _static_resources_guard: StaticResourcesGuard,
     meshes: Vec<Mesh>,
     material: Arc<Material>,
@@ -153,7 +165,7 @@ impl GalaxyEngine {
     pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
     pub const NUM_MSAA_SAMPLES: vk::SampleCountFlags = vk::SampleCountFlags::TYPE_4;
     pub const CONTENT_DIR: &'static str = if cfg!(feature = "packaged") {
-        "packaged"
+        "packaged/"
     } else {
         "content/"
     };
@@ -166,6 +178,7 @@ impl GalaxyEngine {
         window: WindowHandle,
         width: u32,
         height: u32,
+        game: Box<dyn Game>,
     ) -> Result<Self, EngineInitError> {
         // Currently the engine can only be initialised once.
         static ONCE: std::sync::Once = std::sync::Once::new();
@@ -391,6 +404,8 @@ impl GalaxyEngine {
         };
 
         Ok(Self {
+            game: RefCell::new(game),
+            game_dir: app_info.dir.clone(),
             instance,
             surface,
             device,
@@ -421,6 +436,22 @@ impl GalaxyEngine {
         })
     }
 
+    pub(crate) fn startup(&mut self) -> Result<(), StartupError> {
+        // Run game startup callback.
+        self.game.borrow_mut().startup(self)?;
+
+        Ok(())
+    }
+
+    pub fn load_scene(&self, scene_path: &str) -> MemResult<()> {
+        log::info!(
+            "Loading scene: {}",
+            self.game_dir.join(scene_path).canonicalize().unwrap().display()
+        );
+
+        Ok(())
+    }
+
     const MAX_FRAME_TIME: f32 = 1.0 / 60.0;
 
     pub(crate) fn main_loop(&mut self) -> Result<(), MainLoopError> {
@@ -433,8 +464,6 @@ impl GalaxyEngine {
         let time = self.start_time.elapsed().as_secs_f32();
         let delta_time = self.last_frame_time.elapsed().as_secs_f32().min(Self::MAX_FRAME_TIME);
         self.last_frame_time = std::time::Instant::now();
-
-        let ext = self.device.extensions();
 
         let current_frame = self.current_frame as usize;
 
@@ -486,6 +515,9 @@ impl GalaxyEngine {
 
         // Now that the camera has been updated, calculate the view info.
         let view_info = self.camera.view_info();
+
+        // Run game update.
+        self.game.borrow_mut().update(delta_time);
 
         // Wait for fences of the buffered frame.
         self.primary_cmd_pools[current_frame]
@@ -560,6 +592,8 @@ impl GalaxyEngine {
             .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .image(self.swapchain.get_images()[image_idx as usize])
             .subresource_range(Swapchain::get_subresource_range());
+
+        let ext = self.device.extensions();
 
         // Record graphics command buffer.
         let gfx_cmd_buffer = primary_cmd_pool.get_cmd_buffer(1);

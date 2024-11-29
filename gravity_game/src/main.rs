@@ -3,6 +3,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use app::{AppFlags, AppInfo, GalaxyApp};
+use galaxy_engine::engine::{GalaxyEngine, StartupError};
+use galaxy_engine::game::Game;
 use galaxy_engine::{app, app_dir};
 use winit::error::EventLoopError;
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -11,6 +13,27 @@ use winit::event_loop::{ControlFlow, EventLoop};
 enum MainError {
     #[error("Event loop error: {0}.")]
     EventLoopError(#[from] EventLoopError),
+}
+
+struct GravityGame {}
+
+impl GravityGame {
+    fn new() -> Self {
+        GravityGame {}
+    }
+}
+
+impl Game for GravityGame {
+    fn startup(&mut self, engine: &GalaxyEngine) -> Result<(), StartupError> {
+        log::info!("Gravity Game started.");
+
+        // Load scene.
+        engine.load_scene("default.scene.ron")?;
+
+        Ok(())
+    }
+
+    fn update(&mut self, _delta_time: f32) {}
 }
 
 fn main() -> Result<(), MainError> {
@@ -34,9 +57,10 @@ fn main() -> Result<(), MainError> {
     #[cfg(not(feature = "debug_info"))]
     let flags = AppFlags::empty();
 
-    // Set up the engine and run the application.
+    // Set up the game and run the application.
     let app_info = AppInfo::new_from_package_version("Gravity Game", flags, app_dir!());
-    let mut app = GalaxyApp::new(app_info);
+    let game = Box::new(GravityGame::new());
+    let mut app = GalaxyApp::new(app_info, game);
     event_loop.run_app(&mut app)?;
 
     Ok(())
