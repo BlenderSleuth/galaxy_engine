@@ -1,5 +1,6 @@
 // Copyright (c) 2024 Ben Sutherland.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use ash::vk;
@@ -22,8 +23,6 @@ pub enum MaterialError {
     MemoryError(#[from] MemoryError),
     #[error("Material pipeline not found")]
     PipelineNotFound,
-    #[error("Texture error: {0}")]
-    TextureError(#[from] crate::texture::TextureError),
 }
 
 // To be kept up to date with shader representation.
@@ -38,7 +37,7 @@ pub struct Material {
 }
 
 impl Material {
-    pub fn new(pipeline_manager: &PipelineManager, config_path: &str) -> Result<Self, MaterialError> {
+    pub fn new(pipeline_manager: &PipelineManager, config_path: &Path) -> Result<Self, MaterialError> {
         // Load config.
         let config_str = std::fs::read_to_string(config_path)?;
         let config = get_material_config(&config_str)?;

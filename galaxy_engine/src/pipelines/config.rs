@@ -10,19 +10,18 @@ use indexmap::IndexMap;
 
 use crate::engine::DrawData;
 use crate::pipelines::PipelineLayout;
-use crate::utils::ConfigID;
 use crate::vertex_input::VertexInputType;
 use crate::vulkan::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
 
 #[derive(serde::Deserialize, Debug)]
 pub(super) struct VertexShaderConfig {
-    pub id: ConfigID,
+    pub id: String,
     pub input_type: VertexInputType,
 }
 
 #[derive(serde::Deserialize, Debug)]
 pub(super) struct FragmentShaderConfig {
-    pub id: ConfigID,
+    pub id: String,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -114,7 +113,7 @@ impl PipelineLayoutBinding {
 #[derive(serde::Deserialize, Debug, Default)]
 pub(crate) struct PipelineLayoutNamedBindings {
     push_constant: Option<PipelineLayoutBinding>,
-    bindings: IndexMap<ConfigID, PipelineLayoutBinding>,
+    bindings: IndexMap<String, PipelineLayoutBinding>,
 }
 
 impl PipelineLayoutNamedBindings {
@@ -137,7 +136,7 @@ pub(crate) struct PipelineLayoutBindings {
 
 #[derive(serde::Deserialize, Debug)]
 pub(super) struct GraphicsPipelineConfig {
-    pub name: ConfigID,
+    pub name: String,
     pub shaders: GraphicsShaderConfig,
     pub rasteriser: RasteriserConfig,
     #[serde(default)]
@@ -146,8 +145,8 @@ pub(super) struct GraphicsPipelineConfig {
 
 #[derive(serde::Deserialize, Debug)]
 pub(super) struct ComputePipelineConfig {
-    name: ConfigID,
-    shader: ConfigID,
+    name: String,
+    shader: String,
     layout: PipelineLayoutNamedBindings,
 }
 
@@ -160,11 +159,8 @@ pub(crate) enum PipelineConfig {
 }
 
 pub(super) fn load_config(config_str: &str) -> ron::error::SpannedResult<PipelineConfig> {
-    use ron::extensions::Extensions;
-    ron::Options::default()
-        .with_default_extension(Extensions::UNWRAP_VARIANT_NEWTYPES | Extensions::IMPLICIT_SOME)
-        .from_str(config_str)
+    crate::utils::load_config(config_str)
 }
 pub type PipelineLayoutCache = HashMap<Option<PipelineLayoutBinding>, Arc<PipelineLayout>>;
-pub type VertexShaderModuleCache = HashMap<ConfigID, ShaderModule<VertexShaderStage>>;
-pub type FragmentShaderModuleCache = HashMap<ConfigID, ShaderModule<FragmentShaderStage>>;
+pub type VertexShaderModuleCache = HashMap<String, ShaderModule<VertexShaderStage>>;
+pub type FragmentShaderModuleCache = HashMap<String, ShaderModule<FragmentShaderStage>>;

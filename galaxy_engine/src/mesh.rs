@@ -3,6 +3,7 @@
 use std::alloc::Layout;
 use std::fs::File;
 use std::io::BufReader;
+use std::path::Path;
 use std::sync::Arc;
 
 use ash::vk;
@@ -123,7 +124,7 @@ impl Mesh {
         name: &str,
         device: &Device,
         cmd_pool: &mut TransientPrimaryCommandPool,
-        mesh_path: &str,
+        mesh_path: &Path,
         material: Arc<Material>,
     ) -> Result<Self, MeshError> {
         // Load model. The obj crate already does indexing for us.

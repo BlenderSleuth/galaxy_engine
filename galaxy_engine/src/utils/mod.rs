@@ -11,7 +11,6 @@ mod extensions;
 use std::ffi::{c_char, CStr};
 
 use ash::vk;
-//pub use array::*;
 pub(crate) use config::*;
 pub use extensions::*;
 

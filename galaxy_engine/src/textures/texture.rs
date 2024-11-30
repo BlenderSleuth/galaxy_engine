@@ -1,5 +1,7 @@
 // Copyright (c) 2024 Ben Sutherland.
 
+use std::path::Path;
+
 use ash::vk;
 
 use crate::utils;
@@ -24,15 +26,15 @@ pub struct Texture {
 }
 
 impl Texture {
-    pub fn new_from_file(
+    pub fn new_from_ktx_file(
         name: &str,
-        path: &str,
+        path: &Path,
         device: &Device,
         cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<Self, TextureError> {
         // Load texture.
-        let texture_file = std::fs::read(path)?;
-        let image = ktx2::Reader::new(texture_file)?;
+        let texture_data = std::fs::read(path)?;
+        let image = ktx2::Reader::new(texture_data)?;
         let header = image.header();
         let mip_levels = image.levels().collect::<Vec<_>>();
         let extent = vk::Extent2D {

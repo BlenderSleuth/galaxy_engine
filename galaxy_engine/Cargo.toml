@@ -16,11 +16,12 @@ winit.workspace = true
 bitflags = { workspace = true, features = ["serde"] }
 log.workspace = true
 thiserror.workspace = true
+anyhow.workspace = true
 bytemuck = { workspace = true, features = ["derive", "must_cast", "min_const_generics"] }
 arrayvec = { workspace = true, features = ["serde"] }
 itertools.workspace = true
-fastrand.workspace = true
-ultraviolet = { workspace = true, features = ["bytemuck"] }
+#fastrand.workspace = true
+ultraviolet = { workspace = true, features = ["bytemuck", "serde"] }
 serde = { workspace = true, features = ["derive"] }
 gpu-allocator = { version = "0.27.0", default-features = false, features = ["vulkan"] }
 presser = "0.3.1"
@@ -33,8 +34,10 @@ glob.workspace = true
 const_format = { version = "0.2.33", features = ["rust_1_64"] }
 indexmap = { version = "2.6.0", features = ["serde"] }
 ron = { version = "0.8.1", features = ["indexmap"] }
-static_assertions = "1.1.0"
+#static_assertions = "1.1.0"
 typetag = "0.2.18"
+shipyard = "0.7.4"
+#bump-scope = { version = "0.13.0", features = ["serde"] }
 
 [build-dependencies]
 galaxy_engine_build = { path = "../galaxy_engine_build" }

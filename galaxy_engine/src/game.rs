@@ -1,8 +1,8 @@
 // Copyright (c) 2024 Ben Sutherland.
 
-use crate::engine::{GalaxyEngine, StartupError};
+use crate::engine::GalaxyEngine;
 
 pub trait Game {
-    fn startup(&mut self, engine: &GalaxyEngine) -> Result<(), StartupError>;
+    fn startup(&mut self, engine: &GalaxyEngine) -> anyhow::Result<()>;
     fn update(&mut self, delta_time: f32);
 }

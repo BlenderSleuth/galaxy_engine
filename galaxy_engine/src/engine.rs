@@ -2,9 +2,10 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::ops::{Deref, DerefMut};
+use std::path::{Path, PathBuf};
 use std::slice;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use app::AppInfo;
 use arrayvec::ArrayVec;
@@ -16,15 +17,16 @@ use raw_window_handle::{DisplayHandle, WindowHandle};
 use winit::event::{ElementState, KeyEvent, MouseButton};
 use winit::keyboard::{Key, SmolStr};
 
-use crate::camera::{Camera, FirstPersonCamera};
+use crate::camera::{Camera, FirstPersonCamera, ViewInfo};
 use crate::engine::MainLoopError::VulkanError;
 use crate::game::Game;
+use crate::level::{Level, LevelLoadError};
 use crate::materials::{Material, MaterialData, MaterialError};
 use crate::mesh::{Mesh, MeshError};
 use crate::pipelines::PipelineManager;
 use crate::prelude::*;
 use crate::static_resources::{StaticResources, StaticResourcesGuard, StaticResourcesLock};
-use crate::texture::Texture;
+use crate::textures::TextureManager;
 use crate::volatile_buffer::{VolatileBuffer, VolatileBufferType};
 use crate::vulkan::command_buffer::{
     CmdBufStateTransitionError, ResettablePrimaryCommandPool, TransientPrimaryCommandPool,
@@ -33,7 +35,6 @@ use crate::vulkan::debug::debug_only_name;
 use crate::vulkan::descriptors::DescriptorPool;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
-use crate::vulkan::image::Sampler;
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain::Swapchain;
@@ -62,13 +63,6 @@ pub enum EngineInitError {
     MeshError(#[from] MeshError),
     #[error("Material error: {0}")]
     MaterialError(#[from] MaterialError),
-}
-
-#[derive(thiserror::Error, Debug)]
-#[non_exhaustive]
-pub enum StartupError {
-    #[error("Memory error: {0}")]
-    MemoryError(#[from] MemoryError),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -128,20 +122,17 @@ pub fn static_resources() -> MappedRwLockReadGuard<'static, StaticResources> {
     RwLockReadGuard::map(STATIC_RESOURCES.read(), |r| r.as_ref().unwrap())
 }
 
+pub type SceneDescriptorPool = DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>;
+
 pub struct GalaxyEngine {
     game: RefCell<Box<dyn Game>>,
-    game_dir: PathBuf,
-    _static_resources_guard: StaticResourcesGuard,
-    meshes: Vec<Mesh>,
-    material: Arc<Material>,
+    pub(crate) game_dir: PathBuf,
+    level: Mutex<Option<Level>>,
     primary_cmd_pools: ArrayVec<ResettablePrimaryCommandPool<2>, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
-    transient_cmd_pool: TransientPrimaryCommandPool,
-    scene_descriptor_pool: DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
+    transient_cmd_pool: Mutex<TransientPrimaryCommandPool>,
+    scene_descriptor_pool: SceneDescriptorPool,
     scene_uniform_buffer: SceneUniformBuffer,
     scene_buffers: SceneBuffers,
-    _default_sampler: Sampler,
-    _texture: Arc<Texture>,
-    //particle_system: ManuallyDrop<GpuParticleSystem>,
     image_available_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     render_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     compute_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
@@ -151,12 +142,13 @@ pub struct GalaxyEngine {
     window_size: vk::Extent2D,
     window_resized: bool,
     accumulated_mouse_delta: Vec2,
-    camera: Camera,
     key_input: HashMap<SmolStr, ElementState>,
     // These are at the bottom so they get dropped last.
-    _pipeline_manager: PipelineManager,
+    _static_resources_guard: StaticResourcesGuard,
+    pub(crate) texture_manager: TextureManager,
+    pub(crate) pipeline_manager: PipelineManager,
     swapchain: Swapchain,
-    device: Device,
+    pub(crate) device: Device,
     surface: Surface,
     instance: Instance,
 }
@@ -209,44 +201,9 @@ impl GalaxyEngine {
         let swapchain = Swapchain::new(&instance, &device, &mut transient_cmd_pool, &surface, window_size, None)?;
 
         let pipeline_manager = PipelineManager::new(&device, swapchain.msaa_samples())?;
+        let texture_manager = TextureManager::new(&device)?;
 
-        // Create default texture sampler.
-        let max_anisotropy = device.physical_device().properties.base.limits.max_sampler_anisotropy;
-        let sampler_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::LINEAR)
-            .min_filter(vk::Filter::LINEAR)
-            .address_mode_u(vk::SamplerAddressMode::REPEAT)
-            .address_mode_v(vk::SamplerAddressMode::REPEAT)
-            .address_mode_w(vk::SamplerAddressMode::REPEAT)
-            .anisotropy_enable(true)
-            .max_anisotropy(max_anisotropy)
-            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
-            .unnormalized_coordinates(false)
-            .compare_enable(false)
-            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
-            .mip_lod_bias(0.)
-            .min_lod(0.)
-            .max_lod(vk::LOD_CLAMP_NONE);
-        let default_sampler = Sampler::new(&device, &sampler_info)?;
-
-        // Load texture.
-        let texture = Arc::new(
-            Texture::new_from_file(
-                "Viking room texture",
-                app_info
-                    .dir
-                    .join("models/viking_room/viking_room.ktx2")
-                    .to_str()
-                    .unwrap(),
-                &device,
-                &mut transient_cmd_pool,
-            )
-            .map_err(MaterialError::from)?,
-        );
-
-        // Set up scene.
-
-        // Create scene uniform buffer.
+        // Create level uniform buffer.
         let scene_uniform_buffer = VolatileBuffer::new("Scene uniform buffer", &device, VolatileBufferType::Uniform)?;
 
         let scene_transforms_buffer = VolatileBuffer::new("Transforms buffer", &device, VolatileBufferType::Storage)?;
@@ -257,7 +214,7 @@ impl GalaxyEngine {
             materials: scene_material_buffer,
         };
 
-        // Create scene descriptor pool.
+        // Create level descriptor pool.
         let scene_descriptor_pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
@@ -284,13 +241,6 @@ impl GalaxyEngine {
             core::array::from_fn(|frame| scene_uniform_buffer.descriptor_buffer_info(frame));
         let buffer_infos = scene_buffers.buffer_infos::<{ Self::MAX_FRAMES_IN_FLIGHT }>();
 
-        let image_info = vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(texture.image().view().handle())
-            .sampler(default_sampler.handle());
-        // 2 of the same image.
-        let image_infos = [image_info; Self::NUM_TEXTURES];
-
         let descriptor_writes: ArrayVec<_, { Self::MAX_FRAMES_IN_FLIGHT * 8 }> = scene_descriptor_pool
             .iter()
             .enumerate()
@@ -310,20 +260,6 @@ impl GalaxyEngine {
                         .dst_array_element(0)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .buffer_info(slice::from_ref(&buffer_infos[frame][0])),
-                    // First texture:
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(*set)
-                        .dst_binding(2)
-                        .dst_array_element(0)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(slice::from_ref(&image_infos[0])),
-                    // Second texture:
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(*set)
-                        .dst_binding(2)
-                        .dst_array_element(1)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(slice::from_ref(&image_infos[1])),
                     // Material data:
                     vk::WriteDescriptorSet::default()
                         .dst_set(*set)
@@ -335,39 +271,6 @@ impl GalaxyEngine {
             })
             .collect();
         unsafe { device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
-
-        // Load material.
-        let material = Arc::new(Material::new(
-            &pipeline_manager,
-            app_info
-                .dir
-                .join("models/viking_room/viking_room.mat.ron")
-                .to_str()
-                .unwrap(),
-        )?);
-
-        // Load mesh.
-        let mesh = Mesh::new(
-            "Viking room",
-            &device,
-            &mut transient_cmd_pool,
-            app_info
-                .dir
-                .join("models/viking_room/viking_room.obj")
-                .to_str()
-                .unwrap(),
-            Arc::clone(&material),
-        )?;
-
-        // Create particle system.
-        //const MAX_NUM_PARTICLES: u32 = 1024;
-        //let particle_system = GpuParticleSystem::new(
-        //    &device,
-        //    swapchain.samples(),
-        //    MAX_NUM_PARTICLES,
-        //    window_size,
-        //    &mut setup_cmd_buffer,
-        //)?;
 
         // Create per-frame objects.
         let mut primary_cmd_pools = ArrayVec::new();
@@ -391,37 +294,22 @@ impl GalaxyEngine {
             compute_finished_semaphores.push(BinarySemaphore::new(&device)?);
         }
 
-        // Set up camera.
-        let camera_position = Vec3::new(2., 2., 2.);
-        let look_at = Mat4::look_at(camera_position, Vec3::zero(), Vec3::unit_z());
-        let camera_transform = Isometry3::new(look_at.extract_translation(), look_at.extract_rotation()).inversed();
-
-        let camera = Camera {
-            transform: camera_transform,
-            aspect: width as f32 / height as f32,
-            fov: 45.,
-            near: 0.1,
-        };
-
         Ok(Self {
             game: RefCell::new(game),
             game_dir: app_info.dir.clone(),
+            level: Mutex::new(None),
             instance,
             surface,
             device,
             swapchain,
-            _pipeline_manager: pipeline_manager,
+            pipeline_manager,
+            texture_manager,
             _static_resources_guard: static_resources_guard,
-            meshes: vec![mesh],
-            material,
-            //particle_system: ManuallyDrop::new(particle_system),
             primary_cmd_pools,
-            transient_cmd_pool,
+            transient_cmd_pool: Mutex::new(transient_cmd_pool),
             scene_descriptor_pool,
             scene_uniform_buffer,
             scene_buffers,
-            _default_sampler: default_sampler,
-            _texture: texture,
             image_available_semaphores,
             render_finished_semaphores,
             compute_finished_semaphores,
@@ -429,25 +317,49 @@ impl GalaxyEngine {
             start_time: std::time::Instant::now(),
             last_frame_time: std::time::Instant::now(),
             accumulated_mouse_delta: Vec2::zero(),
-            camera,
             window_size,
             key_input: HashMap::new(),
             window_resized: false,
         })
     }
 
-    pub(crate) fn startup(&mut self) -> Result<(), StartupError> {
+    pub(crate) fn startup(&mut self) -> anyhow::Result<()> {
         // Run game startup callback.
         self.game.borrow_mut().startup(self)?;
 
         Ok(())
     }
 
-    pub fn load_scene(&self, scene_path: &str) -> MemResult<()> {
+    pub fn load_scene(&self, scene_path: &Path) -> Result<(), LevelLoadError> {
         log::info!(
-            "Loading scene: {}",
-            self.game_dir.join(scene_path).canonicalize().unwrap().display()
+            "Loading level: {}",
+            self.game_dir.join(scene_path).canonicalize()?.display()
         );
+
+        // TODO: Unload previous level.
+
+        // Lock transient command pool.
+        let mut transient_cmd_pool = self.transient_cmd_pool.lock().unwrap();
+
+        // Load level config.
+        *self.level.lock().unwrap() = Some(Level::new(
+            &self.game_dir.join(scene_path),
+            self,
+            &mut transient_cmd_pool,
+        )?);
+
+        self.texture_manager
+            .write_textures_to_descriptor_array(self, &self.scene_descriptor_pool);
+
+        // Create particle system.
+        //const MAX_NUM_PARTICLES: u32 = 1024;
+        //let particle_system = GpuParticleSystem::new(
+        //    &device,
+        //    swapchain.samples(),
+        //    MAX_NUM_PARTICLES,
+        //    window_size,
+        //    &mut setup_cmd_buffer,
+        //)?;
 
         Ok(())
     }
@@ -471,50 +383,70 @@ impl GalaxyEngine {
         let mouse_delta = self.accumulated_mouse_delta;
         self.accumulated_mouse_delta = Vec2::zero();
 
-        // Update camera rotation.
-        {
-            const ROTATE_SPEED: f32 = 0.1;
-            let first_person_mouse = -Vec2::new(mouse_delta.x, mouse_delta.y) * ROTATE_SPEED;
-            self.camera.apply_first_person_mouse(first_person_mouse);
-        }
-        // Update camera position.
-        {
-            const MOVE_SPEED: f32 = 3.;
+        let view_info = {
+            let mut level_lock = self.level.lock().unwrap();
+            let Some(level) = level_lock.deref_mut() else {
+                return Ok(());
+            };
 
-            let mut camera_velocity = Vec3::zero();
-            if self.is_key_pressed("w") {
-                camera_velocity += self.camera.forward();
+            let camera = &mut level.camera;
+
+            // Update camera rotation.
+            {
+                const ROTATE_SPEED: f32 = 0.1;
+                let first_person_mouse = -Vec2::new(mouse_delta.x, mouse_delta.y) * ROTATE_SPEED;
+                camera.apply_first_person_mouse(first_person_mouse);
             }
 
-            if self.is_key_pressed("s") {
-                camera_velocity -= self.camera.forward();
+            //let Some(camera) = self.level.as_ref().map(|l| &l.camera) else {
+            //    return Ok(());
+            //};
+
+            // Update camera position.
+            {
+                const MOVE_SPEED: f32 = 3.;
+
+                let mut camera_velocity = Vec3::zero();
+                if self.is_key_pressed("w") {
+                    camera_velocity += camera.forward();
+                }
+
+                if self.is_key_pressed("s") {
+                    camera_velocity -= camera.forward();
+                }
+
+                if self.is_key_pressed("a") {
+                    camera_velocity -= camera.right();
+                }
+
+                if self.is_key_pressed("d") {
+                    camera_velocity += camera.right();
+                }
+
+                if self.is_key_pressed("e") {
+                    camera_velocity += Vec3::unit_z();
+                }
+
+                if self.is_key_pressed("q") {
+                    camera_velocity -= Vec3::unit_z();
+                }
+
+                if camera_velocity.mag_sq() > 1e-6 {
+                    camera_velocity.normalize();
+                }
+
+                //let Some(camera) = self.level.as_mut().map(|l| &mut l.camera) else {
+                //    return Ok(());
+                //};
+                camera.transform.translation += camera_velocity * MOVE_SPEED * delta_time;
             }
 
-            if self.is_key_pressed("a") {
-                camera_velocity -= self.camera.right();
-            }
-
-            if self.is_key_pressed("d") {
-                camera_velocity += self.camera.right();
-            }
-
-            if self.is_key_pressed("e") {
-                camera_velocity += Vec3::unit_z();
-            }
-
-            if self.is_key_pressed("q") {
-                camera_velocity -= Vec3::unit_z();
-            }
-
-            if camera_velocity.mag_sq() > 1e-6 {
-                camera_velocity.normalize();
-            }
-
-            self.camera.transform.translation += camera_velocity * MOVE_SPEED * delta_time;
-        }
-
-        // Now that the camera has been updated, calculate the view info.
-        let view_info = self.camera.view_info();
+            // Now that the camera has been updated, calculate the view info.
+            //let Some(camera) = self.level.as_ref().map(|l| &l.camera) else {
+            //    return Ok(());
+            //};
+            camera.view_info()
+        };
 
         // Run game update.
         self.game.borrow_mut().update(delta_time);
@@ -539,15 +471,22 @@ impl GalaxyEngine {
         };
 
         // Update mesh data.
-        for (i, (mesh, (transform, material_data))) in self
-            .meshes
-            .iter()
-            .zip(self.scene_buffers.iter_mut(current_frame))
-            .enumerate()
         {
-            let i = i as u32;
-            *transform = view_info.mvp_from_similarity(&mesh.transform);
-            material_data.texture_index = i;
+            let mut level_lock = self.level.lock().unwrap();
+            let Some(level) = level_lock.deref_mut() else {
+                return Ok(());
+            };
+
+            for (i, (mesh, (transform, material_data))) in level
+                .meshes
+                .iter()
+                .zip(self.scene_buffers.iter_mut(current_frame))
+                .enumerate()
+            {
+                let i = i as u32;
+                *transform = view_info.mvp_from_similarity(&mesh.transform);
+                material_data.texture_index = i;
+            }
         }
 
         let compute_cmd_buffer = primary_cmd_pool.get_cmd_buffer(0);
@@ -644,15 +583,21 @@ impl GalaxyEngine {
         let rendering = gfx_cmd_buffer.begin_rendering(ext, &rendering_info)?;
         rendering.set_viewport(viewport);
         rendering.set_scissor(scissor);
-        self.material.bind(rendering);
-        rendering.bind_descriptor_sets(
-            vk::PipelineBindPoint::GRAPHICS,
-            self.material.pipeline_layout(),
-            0,
-            slice::from_ref(&self.scene_descriptor_pool.get(current_frame)),
-            &[],
-        );
-        self.meshes.iter().for_each(|m| m.record_graphics(rendering));
+        {
+            let level_lock = self.level.lock().unwrap();
+            let Some(level) = level_lock.deref() else {
+                return Ok(());
+            };
+            level.material.bind(rendering);
+            rendering.bind_descriptor_sets(
+                vk::PipelineBindPoint::GRAPHICS,
+                level.material.pipeline_layout(),
+                0,
+                slice::from_ref(&self.scene_descriptor_pool.get(current_frame)),
+                &[],
+            );
+            level.meshes.iter().for_each(|m| m.record_graphics(rendering));
+        }
         //self.particle_system.record_graphics(rendering, &view_info, time, viewport, scissor);
         let recording = gfx_cmd_buffer.end_rendering(ext)?;
 
@@ -708,13 +653,17 @@ impl GalaxyEngine {
         let new_swapchain = Swapchain::new(
             &self.instance,
             &self.device,
-            &mut self.transient_cmd_pool,
+            self.transient_cmd_pool.get_mut().unwrap(),
             &self.surface,
             self.window_size,
             Some(&self.swapchain),
         )?;
         let _ = std::mem::replace(&mut self.swapchain, new_swapchain);
         Ok(())
+    }
+
+    pub fn get_window_aspect(&self) -> f32 {
+        self.window_size.width as f32 / self.window_size.height as f32
     }
 
     fn get_key_state(&self, key: &str) -> ElementState {

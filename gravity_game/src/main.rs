@@ -2,8 +2,10 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::path::Path;
+
 use app::{AppFlags, AppInfo, GalaxyApp};
-use galaxy_engine::engine::{GalaxyEngine, StartupError};
+use galaxy_engine::engine::GalaxyEngine;
 use galaxy_engine::game::Game;
 use galaxy_engine::{app, app_dir};
 use winit::error::EventLoopError;
@@ -24,11 +26,11 @@ impl GravityGame {
 }
 
 impl Game for GravityGame {
-    fn startup(&mut self, engine: &GalaxyEngine) -> Result<(), StartupError> {
+    fn startup(&mut self, engine: &GalaxyEngine) -> anyhow::Result<()> {
         log::info!("Gravity Game started.");
 
-        // Load scene.
-        engine.load_scene("default.scene.ron")?;
+        // Load level.
+        engine.load_scene(Path::new("default.level.ron"))?;
 
         Ok(())
     }

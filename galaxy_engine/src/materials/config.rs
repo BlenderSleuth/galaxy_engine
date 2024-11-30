@@ -2,8 +2,6 @@
 
 use indexmap::IndexMap;
 
-use crate::utils::ConfigID;
-
 //pub enum MaterialLayoutBinding {
 //    Constant(ConfigID),
 //    Texture(ConfigID),
@@ -12,9 +10,9 @@ use crate::utils::ConfigID;
 #[derive(serde::Deserialize, Debug)]
 #[serde(rename = "Material")]
 pub(crate) struct MaterialConfig {
-    pub pipeline: ConfigID,
+    pub pipeline: String,
     // TODO: based on the pipeline, use a struct serialiser.
-    pub params: IndexMap<ConfigID, ConfigID>,
+    pub params: IndexMap<String, String>,
 }
 
 pub fn get_material_config(config_str: &str) -> ron::error::SpannedResult<MaterialConfig> {

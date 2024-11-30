@@ -15,7 +15,7 @@ use crate::pipelines::config::{
 };
 use crate::pipelines::pipeline::{ComputePipeline, GraphicsPipeline, Pipeline};
 use crate::pipelines::PipelineLayout;
-use crate::utils::{ArcFinalOwner, ConfigID, EntryExt};
+use crate::utils::{ArcFinalOwner, EntryExt};
 use crate::vulkan::descriptors::DescriptorSetLayout;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::shader::ShaderModule;
@@ -35,8 +35,8 @@ pub enum PipelineManagerError {
 pub struct PipelineManager {
     loader: SharedDeviceLoader,
     pub(crate) scene_descriptor_set_layout: DescriptorSetLayout,
-    graphics_pipelines: HashMap<ConfigID, ArcFinalOwner<GraphicsPipeline>>,
-    compute_pipelines: HashMap<ConfigID, ArcFinalOwner<ComputePipeline>>,
+    graphics_pipelines: HashMap<String, ArcFinalOwner<GraphicsPipeline>>,
+    compute_pipelines: HashMap<String, ArcFinalOwner<ComputePipeline>>,
 }
 
 impl PipelineManager {}
@@ -76,7 +76,7 @@ impl PipelineManager {
     }
 
     pub fn new(device: &Device, msaa_samples: vk::SampleCountFlags) -> Result<Self, PipelineManagerError> {
-        // Create scene descriptor set layout.
+        // Create level descriptor set layout.
         // TODO: Pipeline manager handles descriptor set layout lifetimes?
         let scene_descriptor_set_layout =
             DescriptorSetLayout::new(&device, &Self::scene_descriptor_set_layout_bindings())?;
@@ -138,10 +138,10 @@ impl PipelineManager {
 
             // Load shaders.
             vertex_shaders
-                .entry(config.shaders.vertex.id)
+                .entry(config.shaders.vertex.id.clone())
                 .try_or_insert_with(|| ShaderModule::new(&device, &config.shaders.vertex.id))?;
             fragment_shaders
-                .entry(config.shaders.fragment.id)
+                .entry(config.shaders.fragment.id.clone())
                 .try_or_insert_with(|| ShaderModule::new(&device, &config.shaders.fragment.id))?;
         }
 
@@ -155,7 +155,7 @@ impl PipelineManager {
         )?
         .into_iter()
         .zip(&graphics_configs)
-        .map(|(pipeline, config)| (config.name, ArcFinalOwner::new(pipeline)))
+        .map(|(pipeline, config)| (config.name.clone(), ArcFinalOwner::new(pipeline)))
         .collect();
 
         Ok(Self {
@@ -166,14 +166,14 @@ impl PipelineManager {
         })
     }
 
-    pub fn get_graphics_pipeline(&self, name: &ConfigID) -> Option<Arc<GraphicsPipeline>> {
+    pub fn get_graphics_pipeline(&self, name: &String) -> Option<Arc<GraphicsPipeline>> {
         self.graphics_pipelines.get(name).as_deref().map(ArcFinalOwner::clone)
     }
 }
 
 impl Drop for PipelineManager {
     fn drop(&mut self) {
-        fn destroy_pipeline<T: Pipeline>(loader: &ash::Device, id: ConfigID, pipeline: &mut ArcFinalOwner<T>) {
+        fn destroy_pipeline<T: Pipeline>(loader: &ash::Device, id: String, pipeline: &mut ArcFinalOwner<T>) {
             unsafe { pipeline.destroy_as_final(|pipeline| loader.destroy_pipeline(pipeline.handle(), None)) }
                 .unwrap_or_else(|_| log::error!("Pipeline manager not final owner of pipeline: {id}."));
         }

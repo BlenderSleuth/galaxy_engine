@@ -1,15 +1,16 @@
 // Copyright (c) 2024 Ben Sutherland.
 
-use arrayvec::ArrayString;
-
 #[derive(thiserror::Error, Debug)]
-pub(crate) enum ConfigLoadError {
+pub enum ConfigLoadError {
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
     #[error("RON parse error at {0}")]
     RonError(#[from] ron::de::SpannedError),
 }
 
-// Same size as a standard string, but limited and stack allocated.
-pub(crate) type ConfigID = ArrayString<20>;
-static_assertions::assert_eq_size!(ConfigID, String);
+pub fn load_config<'de, T: serde::Deserialize<'de>>(config_str: &'de str) -> ron::error::SpannedResult<T> {
+    use ron::extensions::Extensions;
+    ron::Options::default()
+        .with_default_extension(Extensions::UNWRAP_VARIANT_NEWTYPES | Extensions::IMPLICIT_SOME)
+        .from_str(config_str)
+}
