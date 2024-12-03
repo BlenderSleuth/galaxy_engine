@@ -75,8 +75,7 @@ impl TextureManager {
 
         let descriptor_writes: ArrayVec<_, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }> = scene_descriptor_pool
             .iter()
-            .enumerate()
-            .map(|(frame, set)| {
+            .map(|set| {
                 vk::WriteDescriptorSet::default()
                     .dst_set(*set)
                     .dst_binding(2) // Texture buffer is index 2 the in scene descriptor set layout.

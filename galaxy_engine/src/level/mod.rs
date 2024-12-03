@@ -4,6 +4,7 @@ use std::fmt::Debug;
 use std::path::Path;
 use std::sync::Arc;
 
+//use enum_dispatch::enum_dispatch;
 use serde::{Deserialize, Serialize};
 use shipyard::{Component, EntityId, World};
 use ultraviolet::{Isometry3, Mat4, Rotor3, Vec3};
@@ -15,11 +16,9 @@ use crate::mesh::{Mesh, MeshError};
 use crate::textures::TextureError;
 use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::gpu_alloc::MemoryError;
-//mod config;
 
-// TODO: Better RON serialization for ComponentConfigs.
-#[typetag::serde]
-pub trait ComponentConfig: Debug {
+#[enum_delegate::register]
+pub trait ComponentConfig {
     fn load(
         &self,
         entity_id: EntityId,
@@ -29,17 +28,19 @@ pub trait ComponentConfig: Debug {
     ) -> Result<(), LevelLoadError>;
 }
 
+pub trait DeserializableComponentConfig: ComponentConfig + for<'a> Deserialize<'a> {}
+impl<T> DeserializableComponentConfig for T where T: ComponentConfig + for<'a> Deserialize<'a> {}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CameraConfig {}
 
-#[typetag::serde(name = "Camera")]
 impl ComponentConfig for CameraConfig {
     fn load(
         &self,
-        entity_id: EntityId,
-        world: &mut World,
-        engine: &GalaxyEngine,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        _entity_id: EntityId,
+        _world: &mut World,
+        _engine: &GalaxyEngine,
+        _cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<(), LevelLoadError> {
         Ok(())
     }
@@ -51,14 +52,13 @@ pub struct LightConfig {
     pub intensity: f32,
 }
 
-#[typetag::serde(name = "Light")]
 impl ComponentConfig for LightConfig {
     fn load(
         &self,
-        entity_id: EntityId,
-        world: &mut World,
-        engine: &GalaxyEngine,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        _entity_id: EntityId,
+        _world: &mut World,
+        _engine: &GalaxyEngine,
+        _cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<(), LevelLoadError> {
         Ok(())
     }
@@ -71,7 +71,6 @@ pub struct Transform {
     pub scale: Vec3,
 }
 
-#[typetag::serde]
 impl ComponentConfig for Transform {
     fn load(
         &self,
@@ -97,24 +96,40 @@ pub struct Model {
     material: Arc<Material>,
 }
 
-#[typetag::serde(name = "Model")]
 impl ComponentConfig for ModelConfig {
     fn load(
         &self,
-        entity_id: EntityId,
-        world: &mut World,
-        engine: &GalaxyEngine,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        _entity_id: EntityId,
+        _world: &mut World,
+        _engine: &GalaxyEngine,
+        _cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<(), LevelLoadError> {
         Ok(())
     }
 }
 
+// TODO: This is a hack to avoid needing to write a custom deserialiser for the enum.
+#[macro_export]
+macro_rules! register_components {
+    ($enum_name:ident, $($name:ident: $config:ident),*) => {
+        use galaxy_engine::level::*;
+        #[derive(Serialize, Deserialize, Debug)]
+        #[enum_delegate::implement(ComponentConfig)]
+        pub enum $enum_name {
+            Camera(CameraConfig),
+            Light(LightConfig),
+            Transform(Transform),
+            Model(ModelConfig),
+            $($name($config)),*
+        }
+    };
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename = "Entity")]
-pub struct EntityConfig<'a> {
+pub struct EntityConfig<'a, T> {
     pub name: &'a str,
-    pub components: Vec<Box<dyn ComponentConfig>>,
+    pub components: Vec<T>,
 }
 
 #[derive(Component)]
@@ -128,11 +143,11 @@ impl Name {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename = "Level")]
-pub struct LevelConfig<'a> {
+pub struct LevelConfig<'a, T> {
     #[serde(borrow = "'a")]
-    pub entities: Vec<EntityConfig<'a>>,
+    pub entities: Vec<EntityConfig<'a, T>>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -159,14 +174,14 @@ pub struct Level {
 }
 
 impl Level {
-    pub fn new(
+    pub fn new<T: DeserializableComponentConfig>(
         config_filepath: &Path,
         engine: &GalaxyEngine,
         cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<Self, LevelLoadError> {
         // Parse config.
         let config_str = std::fs::read_to_string(config_filepath)?;
-        let config = crate::utils::load_config::<LevelConfig>(&config_str)?;
+        let config = crate::utils::load_config::<LevelConfig<T>>(&config_str)?;
 
         let mut world = World::new();
         for entity_config in config.entities {
@@ -177,7 +192,7 @@ impl Level {
         }
 
         // Load texture.
-        let texture = engine.texture_manager.load_texture(
+        let _texture = engine.texture_manager.load_texture(
             "Viking room texture",
             &engine.game_dir.join("models/viking_room/viking_room.ktx2"),
             &engine.device,

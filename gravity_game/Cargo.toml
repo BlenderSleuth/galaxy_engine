@@ -15,3 +15,6 @@ thiserror.workspace = true
 anyhow.workspace = true
 log.workspace = true
 env_logger = { version = "0.11.5", default-features = false, features = ["auto-color"] }
+serde.workspace = true
+enum_delegate.workspace = true
+shipyard.workspace = true

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::slice;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use app::AppInfo;
 use arrayvec::ArrayVec;
@@ -17,12 +17,12 @@ use raw_window_handle::{DisplayHandle, WindowHandle};
 use winit::event::{ElementState, KeyEvent, MouseButton};
 use winit::keyboard::{Key, SmolStr};
 
-use crate::camera::{Camera, FirstPersonCamera, ViewInfo};
+use crate::camera::FirstPersonCamera;
 use crate::engine::MainLoopError::VulkanError;
 use crate::game::Game;
-use crate::level::{Level, LevelLoadError};
-use crate::materials::{Material, MaterialData, MaterialError};
-use crate::mesh::{Mesh, MeshError};
+use crate::level::{DeserializableComponentConfig, Level, LevelLoadError};
+use crate::materials::{MaterialData, MaterialError};
+use crate::mesh::MeshError;
 use crate::pipelines::PipelineManager;
 use crate::prelude::*;
 use crate::static_resources::{StaticResources, StaticResourcesGuard, StaticResourcesLock};
@@ -330,7 +330,7 @@ impl GalaxyEngine {
         Ok(())
     }
 
-    pub fn load_scene(&self, scene_path: &Path) -> Result<(), LevelLoadError> {
+    pub fn load_scene<T: DeserializableComponentConfig>(&self, scene_path: &Path) -> Result<(), LevelLoadError> {
         log::info!(
             "Loading level: {}",
             self.game_dir.join(scene_path).canonicalize()?.display()
@@ -342,7 +342,7 @@ impl GalaxyEngine {
         let mut transient_cmd_pool = self.transient_cmd_pool.lock().unwrap();
 
         // Load level config.
-        *self.level.lock().unwrap() = Some(Level::new(
+        *self.level.lock().unwrap() = Some(Level::new::<T>(
             &self.game_dir.join(scene_path),
             self,
             &mut transient_cmd_pool,

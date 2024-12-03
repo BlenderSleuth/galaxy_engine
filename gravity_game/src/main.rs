@@ -7,7 +7,11 @@ use std::path::Path;
 use app::{AppFlags, AppInfo, GalaxyApp};
 use galaxy_engine::engine::GalaxyEngine;
 use galaxy_engine::game::Game;
-use galaxy_engine::{app, app_dir};
+use galaxy_engine::level::{CameraConfig, ComponentConfig, LevelLoadError, Transform};
+use galaxy_engine::vulkan::command_buffer::TransientPrimaryCommandPool;
+use galaxy_engine::{app, app_dir, register_components};
+use serde::{Deserialize, Serialize};
+use shipyard::{EntityId, World};
 use winit::error::EventLoopError;
 use winit::event_loop::{ControlFlow, EventLoop};
 
@@ -16,6 +20,25 @@ enum MainError {
     #[error("Event loop error: {0}.")]
     EventLoopError(#[from] EventLoopError),
 }
+
+#[derive(Serialize, Deserialize, Debug)]
+struct GravitySourceConfig {
+    strength: f32,
+}
+
+impl ComponentConfig for GravitySourceConfig {
+    fn load(
+        &self,
+        _entity_id: EntityId,
+        _world: &mut World,
+        _engine: &GalaxyEngine,
+        _cmd_pool: &mut TransientPrimaryCommandPool,
+    ) -> Result<(), LevelLoadError> {
+        Ok(())
+    }
+}
+
+register_components!(ComponentConfigEnum, GravitySource: GravitySourceConfig);
 
 struct GravityGame {}
 
@@ -30,7 +53,7 @@ impl Game for GravityGame {
         log::info!("Gravity Game started.");
 
         // Load level.
-        engine.load_scene(Path::new("default.level.ron"))?;
+        engine.load_scene::<ComponentConfigEnum>(Path::new("default.level.ron"))?;
 
         Ok(())
     }
