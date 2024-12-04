@@ -7,7 +7,7 @@ use std::path::Path;
 use app::{AppFlags, AppInfo, GalaxyApp};
 use galaxy_engine::engine::GalaxyEngine;
 use galaxy_engine::game::Game;
-use galaxy_engine::level::{CameraConfig, ComponentConfig, LevelLoadError, Transform};
+use galaxy_engine::level::{ComponentConfig, LevelLoadError};
 use galaxy_engine::vulkan::command_buffer::TransientPrimaryCommandPool;
 use galaxy_engine::{app, app_dir, register_components};
 use serde::{Deserialize, Serialize};

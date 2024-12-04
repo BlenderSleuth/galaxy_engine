@@ -4,10 +4,9 @@ use std::fmt::Debug;
 use std::path::Path;
 use std::sync::Arc;
 
-//use enum_dispatch::enum_dispatch;
 use serde::{Deserialize, Serialize};
-use shipyard::{Component, EntityId, World};
-use ultraviolet::{Isometry3, Mat4, Rotor3, Vec3};
+use shipyard::{Component, EntityId, IntoIter, IntoWithId, Ref, RefMut, View, World};
+use ultraviolet::{Isometry3, Rotor3, Vec3};
 
 use crate::camera::Camera;
 use crate::engine::GalaxyEngine;
@@ -28,23 +27,25 @@ pub trait ComponentConfig {
     ) -> Result<(), LevelLoadError>;
 }
 
-pub trait DeserializableComponentConfig: ComponentConfig + for<'a> Deserialize<'a> {}
-impl<T> DeserializableComponentConfig for T where T: ComponentConfig + for<'a> Deserialize<'a> {}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct CameraConfig {}
-
-impl ComponentConfig for CameraConfig {
+// Allow adding configs that are components themselves directly.
+impl<T> ComponentConfig for T
+where
+    T: Component + Clone,
+{
     fn load(
         &self,
-        _entity_id: EntityId,
-        _world: &mut World,
+        entity_id: EntityId,
+        world: &mut World,
         _engine: &GalaxyEngine,
         _cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<(), LevelLoadError> {
+        world.add_component(entity_id, self.clone());
         Ok(())
     }
 }
+
+pub trait DeserializableComponentConfig: ComponentConfig + for<'a> Deserialize<'a> {}
+impl<T> DeserializableComponentConfig for T where T: ComponentConfig + for<'a> Deserialize<'a> {}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct LightConfig {
@@ -71,18 +72,9 @@ pub struct Transform {
     pub scale: Vec3,
 }
 
-impl ComponentConfig for Transform {
-    fn load(
-        &self,
-        entity_id: EntityId,
-        world: &mut World,
-        _engine: &GalaxyEngine,
-        _cmd_pool: &mut TransientPrimaryCommandPool,
-    ) -> Result<(), LevelLoadError> {
-        world.add_component(entity_id, self.clone());
-        Ok(())
-    }
-}
+#[derive(Serialize, Deserialize, Component, Debug, Clone)]
+#[serde(transparent)]
+pub struct IsometryComponent(pub(crate) Isometry3);
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ModelConfig {
@@ -109,17 +101,18 @@ impl ComponentConfig for ModelConfig {
 }
 
 // TODO: This is a hack to avoid needing to write a custom deserialiser for the enum.
+// Do this properly with a custom deserialiser.
 #[macro_export]
 macro_rules! register_components {
     ($enum_name:ident, $($name:ident: $config:ident),*) => {
-        use galaxy_engine::level::*;
         #[derive(Serialize, Deserialize, Debug)]
         #[enum_delegate::implement(ComponentConfig)]
         pub enum $enum_name {
-            Camera(CameraConfig),
-            Light(LightConfig),
-            Transform(Transform),
-            Model(ModelConfig),
+            Camera(galaxy_engine::camera::CameraConfig),
+            Light(galaxy_engine::level::LightConfig),
+            Transform(galaxy_engine::level::Transform),
+            Isometry(galaxy_engine::level::IsometryComponent),
+            Model(galaxy_engine::level::ModelConfig),
             $($name($config)),*
         }
     };
@@ -164,11 +157,13 @@ pub enum LevelLoadError {
     MeshError(#[from] MeshError),
     #[error("Texture error: {0}")]
     TextureError(#[from] TextureError),
+    #[error("No camera component found")]
+    NoCameraComponent,
 }
 
 pub struct Level {
-    world: World,
-    pub camera: Camera,
+    pub world: World,
+    camera: EntityId,
     pub meshes: Vec<Mesh>,
     pub material: Arc<Material>,
 }
@@ -215,16 +210,25 @@ impl Level {
         )?;
 
         // Set up camera.
-        let camera_position = Vec3::new(2., 2., 2.);
-        let look_at = Mat4::look_at(camera_position, Vec3::zero(), Vec3::unit_z());
-        let camera_transform = Isometry3::new(look_at.extract_translation(), look_at.extract_rotation()).inversed();
+        let camera = world.run(|v_cameras: View<Camera>| -> Result<EntityId, LevelLoadError> {
+            // Get the first entity with a camera component.
+            let (id, _) = v_cameras
+                .iter()
+                .with_id()
+                .next()
+                .ok_or(LevelLoadError::NoCameraComponent)?;
+            Ok(id)
+        })?;
+        //let camera_position = Vec3::new(2., 2., 2.);
+        //let look_at = Mat4::look_at(camera_position, Vec3::zero(), Vec3::unit_z());
+        //let camera_transform = Isometry3::new(look_at.extract_translation(), look_at.extract_rotation()).inversed();
 
-        let camera = Camera {
-            transform: camera_transform,
-            aspect: engine.get_window_aspect(),
-            fov: 45.,
-            near: 0.1,
-        };
+        //let camera = Camera {
+        //    transform: camera_transform,
+        //    aspect: engine.get_window_aspect(),
+        //    fov: 45.,
+        //    near: 0.1,
+        //};
 
         Ok(Self {
             world,
@@ -232,5 +236,13 @@ impl Level {
             meshes: vec![mesh],
             material,
         })
+    }
+
+    pub fn get_camera(&mut self) -> (RefMut<&mut Isometry3>, Ref<&Camera>) {
+        let (cam_transform, cam) = self
+            .world
+            .get::<(&mut IsometryComponent, &Camera)>(self.camera)
+            .unwrap();
+        (RefMut::map(cam_transform, |t| &mut t.0), cam)
     }
 }

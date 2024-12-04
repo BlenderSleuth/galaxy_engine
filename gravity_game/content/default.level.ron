@@ -3,17 +3,13 @@ Level(
         Entity(
             name: "camera",
             components: [
-                Transform(
-                    translation: Vec3(x: 0.0, y: 0.0, z: 0.0),
-                    rotation: Rotor3(s: 0.0, bv: Bivec3(xy: 0.0, xz: 0.0, yz: 1.0)),
-                    scale: Vec3(x: 1.0, y: 1.0, z: 1.0),
+                Isometry(
+                    translation: Vec3(x: 2.0, y: 2.0, z: 2.0), 
+                    rotation: Rotor3(s: 0.33985114, bv: Bivec3(xy: -0.8204732, xz: 0.42470822, yz: -0.17591988)),
                 ),
                 Camera(
-                //projection: CameraProjection::Perspective(
-                //    fov: 45.0,
-                //    near: 0.1,
-                //    far: 100.0
-                //),
+                    fov: 45.0,
+                    near: 0.1,
                 ),
             ],
         ),

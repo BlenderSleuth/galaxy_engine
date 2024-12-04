@@ -17,7 +17,7 @@ use raw_window_handle::{DisplayHandle, WindowHandle};
 use winit::event::{ElementState, KeyEvent, MouseButton};
 use winit::keyboard::{Key, SmolStr};
 
-use crate::camera::FirstPersonCamera;
+use crate::camera::{CamIsometry, FirstPersonCamera, ViewInfo};
 use crate::engine::MainLoopError::VulkanError;
 use crate::game::Game;
 use crate::level::{DeserializableComponentConfig, Level, LevelLoadError};
@@ -389,38 +389,34 @@ impl GalaxyEngine {
                 return Ok(());
             };
 
-            let camera = &mut level.camera;
+            let (mut cam_transform, cam) = level.get_camera();
 
             // Update camera rotation.
             {
                 const ROTATE_SPEED: f32 = 0.1;
                 let first_person_mouse = -Vec2::new(mouse_delta.x, mouse_delta.y) * ROTATE_SPEED;
-                camera.apply_first_person_mouse(first_person_mouse);
+                cam_transform.apply_first_person_mouse(first_person_mouse);
             }
-
-            //let Some(camera) = self.level.as_ref().map(|l| &l.camera) else {
-            //    return Ok(());
-            //};
 
             // Update camera position.
             {
                 const MOVE_SPEED: f32 = 3.;
 
                 let mut camera_velocity = Vec3::zero();
-                if self.is_key_pressed("w") {
-                    camera_velocity += camera.forward();
-                }
 
+                if self.is_key_pressed("w") {
+                    camera_velocity += cam_transform.cam_forward();
+                }
                 if self.is_key_pressed("s") {
-                    camera_velocity -= camera.forward();
+                    camera_velocity -= cam_transform.cam_forward();
                 }
 
                 if self.is_key_pressed("a") {
-                    camera_velocity -= camera.right();
+                    camera_velocity -= cam_transform.cam_right();
                 }
 
                 if self.is_key_pressed("d") {
-                    camera_velocity += camera.right();
+                    camera_velocity += cam_transform.cam_right();
                 }
 
                 if self.is_key_pressed("e") {
@@ -435,17 +431,11 @@ impl GalaxyEngine {
                     camera_velocity.normalize();
                 }
 
-                //let Some(camera) = self.level.as_mut().map(|l| &mut l.camera) else {
-                //    return Ok(());
-                //};
-                camera.transform.translation += camera_velocity * MOVE_SPEED * delta_time;
+                cam_transform.translation += camera_velocity * MOVE_SPEED * delta_time;
             }
 
             // Now that the camera has been updated, calculate the view info.
-            //let Some(camera) = self.level.as_ref().map(|l| &l.camera) else {
-            //    return Ok(());
-            //};
-            camera.view_info()
+            ViewInfo::new(&cam, &cam_transform)
         };
 
         // Run game update.
