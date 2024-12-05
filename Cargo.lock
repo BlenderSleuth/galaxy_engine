@@ -601,6 +601,7 @@ dependencies = [
  "const_format",
  "enum_delegate",
  "galaxy_engine_build",
+ "galaxy_engine_utils",
  "glob",
  "gpu-allocator",
  "indexmap",
@@ -624,7 +625,17 @@ dependencies = [
 name = "galaxy_engine_build"
 version = "0.1.0"
 dependencies = [
+ "galaxy_engine_utils",
  "glob",
+ "serde",
+]
+
+[[package]]
+name = "galaxy_engine_utils"
+version = "0.1.0"
+dependencies = [
+ "ron",
+ "serde",
 ]
 
 [[package]]
@@ -674,6 +685,7 @@ dependencies = [
  "enum_delegate",
  "env_logger",
  "galaxy_engine",
+ "galaxy_engine_build",
  "log",
  "serde",
  "shipyard",

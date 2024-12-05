@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Ben Sutherland.
 
 use std::ffi::CString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub use ash::vk::make_api_version;
 use bitflags::bitflags;
@@ -25,9 +25,13 @@ bitflags! {
 }
 
 #[macro_export]
-macro_rules! app_dir {
+macro_rules! game_dir {
     () => {
-        std::path::Path::new(env!("CARGO_PKG_NAME"))
+        if cfg!(feature = "packaged") {
+            std::path::PathBuf::new()
+        } else {
+            std::path::PathBuf::from(env!("CARGO_PKG_NAME"))
+        }
     };
 }
 
@@ -35,20 +39,20 @@ pub struct AppInfo {
     pub name: CString,
     pub version: u32,
     pub flags: AppFlags,
-    pub dir: PathBuf,
+    pub game_dir: PathBuf,
 }
 
 impl AppInfo {
-    pub fn new(name: &str, version: u32, flags: AppFlags, dir: &Path) -> AppInfo {
+    pub fn new(name: &str, version: u32, flags: AppFlags, game_dir: PathBuf) -> AppInfo {
         AppInfo {
             name: CString::new(name).unwrap_or(c"Unknown".into()),
             version,
             flags,
-            dir: dir.join(GalaxyEngine::CONTENT_DIR),
+            game_dir,
         }
     }
-    pub fn new_from_package_version(name: &str, flags: AppFlags, dir: &Path) -> AppInfo {
-        Self::new(name, utils::pkg_version(), flags, dir)
+    pub fn new_from_package_version(name: &str, flags: AppFlags, game_dir: PathBuf) -> AppInfo {
+        Self::new(name, utils::pkg_version(), flags, game_dir)
     }
 }
 
@@ -127,14 +131,14 @@ impl ApplicationHandler for GalaxyApp {
                 height,
                 self.game_temp.take().unwrap()
             ),
-            "Failed to create engine: {}\nExiting.",
+            "Failed to create engine: {}.\nExiting.",
             event_loop
         ));
         self.window = Some(window);
         self.last_frame_time = std::time::Instant::now();
 
         if let Some(engine) = self.engine.as_mut() {
-            unwrap_or_exit!(engine.startup(), "Failed to start engine: {}\nExiting.", event_loop);
+            unwrap_or_exit!(engine.startup(), "Failed to start engine: {}.\nExiting.", event_loop);
         }
     }
 

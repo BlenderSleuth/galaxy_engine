@@ -1,0 +1,6 @@
+Material(
+    pipeline: "engine/simple/unlit",
+    params: {
+        "base_colour": Texture("textures/spnza_bricks_a_diff"),
+    },
+)

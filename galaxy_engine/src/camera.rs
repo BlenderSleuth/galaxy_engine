@@ -101,7 +101,7 @@ impl ViewInfo {
     }
 
     pub fn mvp_from_matrix(&self, mat: Mat4) -> Mat4 {
-        mat * self.view_projection
+        self.view_projection * mat
     }
 
     pub fn mvp_from_similarity(&self, sim: &Similarity3) -> Mat4 {

@@ -6,7 +6,7 @@ use ash::vk;
 
 use crate::camera::ViewInfo;
 use crate::engine::GalaxyEngine;
-use crate::mesh::MeshBuffer;
+use crate::meshes::MeshBuffer;
 use crate::pipelines::{ComputePipeline, GraphicsPipeline, Pipeline};
 use crate::prelude::*;
 use crate::vertex_input::{binding_description_for_type, BindableVertex};

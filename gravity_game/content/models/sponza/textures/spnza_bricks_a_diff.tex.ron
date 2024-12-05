@@ -1,0 +1,7 @@
+Texture(
+    path: "spnza_bricks_a_diff.png",
+    mipmaps: true,
+    format: RGB8, 
+    colour_space: SRGB, 
+    compression: BC7, 
+)

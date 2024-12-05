@@ -3,5 +3,11 @@ name = "galaxy_engine_build"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+packaged = []
+
 [dependencies]
+galaxy_engine_utils = { path = "../galaxy_engine_utils" }
 glob.workspace = true
+serde = { workspace = true, features = ["derive"] }

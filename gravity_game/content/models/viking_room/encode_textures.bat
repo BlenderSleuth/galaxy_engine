@@ -1,1 +1,0 @@
-ktx create --format R8G8B8A8_SRGB --assign-oetf sRGB --assign-primaries sRGB --generate-mipmap viking_room.png viking_room.ktx2

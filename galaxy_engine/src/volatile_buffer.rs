@@ -96,9 +96,9 @@ impl<T: bytemuck::Pod, const N: usize> VolatileBuffer<T, N> {
     //    offset..(offset + self.size)
     //}
 
-    //pub fn copy_to_gpu(&mut self, current_frame: usize) -> MemResult<()> {
+    //pub fn copy_to_gpu(&mut self, frame_index: usize) -> MemResult<()> {
     //    self.buffer
-    //        .copy_into_buffer(&self.local, self.frame_offset(current_frame) as usize)
+    //        .copy_into_buffer(&self.local, self.frame_offset(frame_index) as usize)
     //}
 
     pub fn get_mut(&mut self, frame: usize) -> &mut T {

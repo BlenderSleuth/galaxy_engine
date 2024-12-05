@@ -8,15 +8,15 @@ use arrayvec::ArrayVec;
 use ash::vk;
 use itertools::izip;
 use serde::{Deserialize, Serialize};
-use shipyard::{Component, EntityId, IntoIter, Ref, RefMut, View, World};
+use shipyard::{Component, EntityId, IntoIter, Ref, RefMut, View, ViewMut, World};
 
 use crate::camera::{CamIsometry, Camera, FirstPersonCamera, ViewInfo};
 use crate::engine::GalaxyEngine;
 use crate::materials::{Material, MaterialData, MaterialError, MaterialResourceBinding};
-use crate::mesh::mesh_manager::MeshManager;
-use crate::mesh::{Mesh, MeshError};
+use crate::meshes::mesh_manager::MeshManager;
+use crate::meshes::{Mesh, MeshError};
 use crate::prelude::*;
-use crate::resources::ResourcePath;
+use crate::resource_paths::{resource_type, ResourcePath};
 use crate::textures::TextureManager;
 use crate::volatile_buffer::{VolatileBuffer, VolatileBufferType};
 use crate::vulkan::command_buffer::{RenderingCmdBuf, TransientPrimaryCommandPool};
@@ -73,9 +73,58 @@ impl ComponentConfig for LightConfig {
     }
 }
 
+fn update_transform_with<F: FnOnce(&mut Transform)>(entity_id: EntityId, level: &mut Level, f: F) {
+    level.world.run(|mut transforms: ViewMut<Transform>| {
+        if let Some(mut transform) = transforms.get_or_insert(entity_id, Transform::default()) {
+            f(&mut transform);
+        } else {
+            log::warn!("Failed to retrieve transform component for entity {entity_id:?}");
+        }
+    });
+}
+
 #[derive(Serialize, Deserialize, Component, Debug, Clone)]
 #[serde(transparent)]
 pub struct IsometryComponent(pub(crate) Isometry3);
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Scale(f32);
+
+impl ComponentConfig for Scale {
+    fn load(
+        &self,
+        entity_id: EntityId,
+        level: &mut Level,
+        _engine: &GalaxyEngine,
+        _cmd_pool: &mut TransientPrimaryCommandPool,
+    ) -> Result<(), LoadError> {
+        update_transform_with(entity_id, level, |transform| {
+            transform.scale = Vec3::broadcast(self.0);
+        });
+        Ok(())
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AnglePlaneRotor {
+    pub angle: f32, // Degrees
+    pub plane: Bivec3,
+}
+
+impl ComponentConfig for AnglePlaneRotor {
+    fn load(
+        &self,
+        entity_id: EntityId,
+        level: &mut Level,
+        _engine: &GalaxyEngine,
+        _cmd_pool: &mut TransientPrimaryCommandPool,
+    ) -> Result<(), LoadError> {
+        update_transform_with(entity_id, level, |transform| {
+            transform.rotation = Rotor3::from_angle_plane(self.angle.to_radians(), self.plane.normalized());
+        });
+        Ok(())
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ModelConfig {
@@ -98,18 +147,19 @@ impl ComponentConfig for ModelConfig {
         cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<(), LoadError> {
         // Load material. TODO: Share materials.
-        let material_path =
-            ResourcePath::new(&self.material).ok_or(LoadError::ResourcePathError(self.material.to_owned()))?;
+        let material_path = ResourcePath::new(&self.material, Some(&level.config_path))
+            .ok_or(LoadError::ResourcePathError(self.material.to_owned()))?;
         let material = Arc::new(Material::new(engine, &level.texture_manager, &material_path, cmd_pool)?);
 
         // Load mesh. TODO: Share meshes.
-        let mesh_path = ResourcePath::new(&self.mesh).ok_or(LoadError::ResourcePathError(self.mesh.to_owned()))?;
+        let mesh_path = ResourcePath::new(&self.mesh, Some(&level.config_path))
+            .ok_or(LoadError::ResourcePathError(self.mesh.to_owned()))?;
         let mesh = Arc::new(Mesh::new(
             Path::new(&self.mesh)
                 .file_stem()
                 .unwrap()
                 .to_str()
-                .unwrap_or("Unknown mesh"),
+                .unwrap_or("Unknown meshes"),
             engine,
             cmd_pool,
             &mesh_path,
@@ -132,6 +182,8 @@ macro_rules! register_components {
             Light(galaxy_engine::level::LightConfig),
             Transform(galaxy_engine::maths::Transform),
             Isometry(galaxy_engine::level::IsometryComponent),
+            Scale(galaxy_engine::level::Scale),
+            AnglePlaneRotor(galaxy_engine::level::AnglePlaneRotor),
             Model(galaxy_engine::level::ModelConfig),
             $($name($config)),*
         }
@@ -227,6 +279,7 @@ impl SceneBuffers {
 pub type SceneDescriptorPool = DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>;
 
 pub struct Level {
+    config_path: ResourcePath,
     pub world: World,
     pub camera_entity: EntityId,
     pub mesh_manager: MeshManager,
@@ -238,7 +291,7 @@ pub struct Level {
 
 impl Level {
     pub fn new<T: DeserializableComponentConfig>(
-        config_filepath: &Path,
+        config_path: ResourcePath,
         engine: &GalaxyEngine,
         cmd_pool: &mut TransientPrimaryCommandPool,
         _old_level: Option<Self>, // TODO: for reusing resources.
@@ -323,10 +376,11 @@ impl Level {
             scene_descriptor_pool,
             scene_uniform_buffer,
             scene_buffers,
+            config_path,
         };
 
         // Parse config.
-        let config_str = std::fs::read_to_string(config_filepath)?;
+        let config_str = std::fs::read_to_string(&level.config_path.full_path::<resource_type::Level>(engine))?;
         let config = crate::utils::load_config::<LevelConfig<T>>(&config_str)?;
 
         for entity_config in config.entities {
@@ -351,24 +405,21 @@ impl Level {
         (Ref::map(cam_transform, |t| &t.0), cam)
     }
 
-    pub fn get_camera_mut(&mut self) -> (RefMut<&mut Isometry3>, Ref<&Camera>) {
-        let (cam_transform, cam) = self
-            .world
-            .get::<(&mut IsometryComponent, &Camera)>(self.camera_entity)
-            .unwrap();
-        (RefMut::map(cam_transform, |t| &mut t.0), cam)
+    pub fn get_camera_transform_mut(&mut self) -> RefMut<&mut Isometry3> {
+        let cam_transform = self.world.get::<&mut IsometryComponent>(self.camera_entity).unwrap();
+        RefMut::map(cam_transform, |t| &mut t.0)
     }
 
     pub(crate) fn update(&mut self, engine: &GalaxyEngine, delta_time: f32, mouse_delta: Vec2) {
         // Update camera.
         {
-            let (mut cam_transform, _) = self.get_camera_mut();
+            let mut cam_transform = self.get_camera_transform_mut();
 
             // Update camera rotation.
             {
                 const ROTATE_SPEED: f32 = 0.1;
                 let first_person_mouse = -mouse_delta * ROTATE_SPEED;
-                cam_transform.apply_first_person_mouse(first_person_mouse);
+                cam_transform.as_mut().apply_first_person_mouse(first_person_mouse);
             }
 
             // Update camera position.
@@ -409,7 +460,7 @@ impl Level {
         }
     }
 
-    pub(crate) fn gpu_update(&mut self, delta_time: f32, game_time: std::time::Duration, current_frame: usize) {
+    pub(crate) fn gpu_update(&mut self, delta_time: f32, game_time: std::time::Duration, frame_index: usize) {
         let view_info = {
             let (cam_transform, cam) = self.get_camera();
             ViewInfo::new(&cam, &cam_transform)
@@ -418,7 +469,7 @@ impl Level {
         let time = game_time.as_secs_f64();
 
         // Update GPU buffers.
-        *self.scene_uniform_buffer.get_mut(current_frame) = SceneUniformData {
+        *self.scene_uniform_buffer.get_mut(frame_index) = SceneUniformData {
             view: view_info.view,
             proj: view_info.projection,
             sun_direction: Vec3::new(
@@ -429,11 +480,11 @@ impl Level {
             delta_time,
         };
 
-        // Update mesh data.
+        // Update meshes data.
         self.world.run(|v_models: View<Model>, v_transforms: View<Transform>| {
             (&v_models, &v_transforms)
                 .iter()
-                .zip(self.scene_buffers.iter_mut(current_frame))
+                .zip(self.scene_buffers.iter_mut(frame_index))
                 .for_each(|((model, transform), (transform_mat, material_data))| {
                     *transform_mat = view_info.mvp_from_transform(transform);
 
@@ -446,7 +497,7 @@ impl Level {
         });
     }
 
-    pub(crate) fn render(&self, rendering: &mut RenderingCmdBuf<PrimaryQueue>, current_frame: usize) {
+    pub(crate) fn render(&self, rendering: &mut RenderingCmdBuf<PrimaryQueue>, frame_index: usize) {
         self.world.run(|v_models: View<Model>| {
             for model in v_models.iter() {
                 model.material.bind(rendering);
@@ -454,7 +505,7 @@ impl Level {
                     vk::PipelineBindPoint::GRAPHICS,
                     model.material.pipeline_layout(),
                     0,
-                    slice::from_ref(&self.scene_descriptor_pool.get(current_frame)),
+                    slice::from_ref(&self.scene_descriptor_pool.get(frame_index)),
                     &[],
                 );
                 model.mesh.bind(rendering);

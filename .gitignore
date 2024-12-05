@@ -19,5 +19,5 @@ ref/*
 .vscode/*
 .idea/*
 
-# Generated files
-*.spv
+# Content build files
+*/build/*

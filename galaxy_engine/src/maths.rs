@@ -11,6 +11,16 @@ pub struct Transform {
     pub scale: Vec3,
 }
 
+impl Default for Transform {
+    fn default() -> Self {
+        Self {
+            translation: Vec3::zero(),
+            rotation: Rotor3::identity(),
+            scale: Vec3::one(),
+        }
+    }
+}
+
 impl Transform {
     pub fn to_matrix(&self) -> Mat4 {
         (self.rotation.into_matrix() * Mat3::from_nonuniform_scale(self.scale))

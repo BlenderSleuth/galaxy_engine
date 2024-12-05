@@ -2,14 +2,13 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::path::Path;
-
 use app::{AppFlags, AppInfo, GalaxyApp};
 use galaxy_engine::engine::GalaxyEngine;
 use galaxy_engine::game::Game;
 use galaxy_engine::level::{ComponentConfig, Level, LoadError};
+use galaxy_engine::resource_paths::ResourcePath;
 use galaxy_engine::vulkan::command_buffer::TransientPrimaryCommandPool;
-use galaxy_engine::{app, app_dir, register_components};
+use galaxy_engine::{app, game_dir, register_components};
 use serde::{Deserialize, Serialize};
 use shipyard::EntityId;
 use winit::error::EventLoopError;
@@ -53,7 +52,8 @@ impl Game for GravityGame {
         log::info!("Gravity Game started.");
 
         // Load level.
-        engine.load_scene::<ComponentConfigEnum>(Path::new("default.level.ron"))?;
+        let level_path = ResourcePath::new("/game/default", None).unwrap();
+        engine.load_level::<ComponentConfigEnum>(level_path)?;
 
         Ok(())
     }
@@ -83,7 +83,7 @@ fn main() -> Result<(), MainError> {
     let flags = AppFlags::empty();
 
     // Set up the game and run the application.
-    let app_info = AppInfo::new_from_package_version("Gravity Game", flags, app_dir!());
+    let app_info = AppInfo::new_from_package_version("Gravity Game", flags, game_dir!());
     let game = Box::new(GravityGame::new());
     let mut app = GalaxyApp::new(app_info, game);
     event_loop.run_app(&mut app)?;

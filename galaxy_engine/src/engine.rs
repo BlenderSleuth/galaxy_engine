@@ -20,10 +20,11 @@ use crate::engine::MainLoopError::VulkanError;
 use crate::game::Game;
 use crate::level::{DeserializableComponentConfig, Level, LoadError};
 use crate::materials::MaterialError;
-use crate::mesh::MeshError;
+use crate::meshes::MeshError;
 use crate::pipelines;
 use crate::pipelines::PipelineManager;
 use crate::prelude::*;
+use crate::resource_paths::{resource_type, ResourcePath};
 use crate::static_resources::{StaticResources, StaticResourcesGuard, StaticResourcesLock};
 use crate::vulkan::command_buffer::{
     CmdBufStateTransitionError, ResettablePrimaryCommandPool, TransientPrimaryCommandPool,
@@ -80,14 +81,14 @@ pub fn static_resources() -> MappedRwLockReadGuard<'static, StaticResources> {
 
 pub struct GalaxyEngine {
     game: RefCell<Box<dyn Game>>,
-    game_dir: PathBuf,
+    game_content_dir: PathBuf,
     level: Mutex<Option<Level>>,
     primary_cmd_pools: ArrayVec<ResettablePrimaryCommandPool<2>, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     transient_cmd_pool: Mutex<TransientPrimaryCommandPool>,
     image_available_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     render_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     _compute_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
-    current_frame: u32,
+    frame_index: u32,
     start_time: std::time::Instant,
     game_time: std::time::Duration,
     last_frame_time: std::time::Instant,
@@ -107,13 +108,14 @@ pub struct GalaxyEngine {
 impl GalaxyEngine {
     pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
     pub const NUM_MSAA_SAMPLES: vk::SampleCountFlags = vk::SampleCountFlags::TYPE_4;
-    pub const CONTENT_DIR: &'static str = if cfg!(feature = "packaged") {
-        "packaged/"
-    } else {
-        "content/"
-    };
-    pub const SHADER_PATH: &'static str = concatcp!(env!("CARGO_PKG_NAME"), "/", GalaxyEngine::CONTENT_DIR, "shaders/");
     pub const NUM_TEXTURES: usize = 2;
+
+    // Content directories.
+    pub const PKG_PATH: &'static str = concatcp!(env!("CARGO_PKG_NAME"), "/");
+    pub const BUILD_DIR: &'static str = "build/";
+    pub const CONTENT_DIR: &'static str = "content/";
+    pub const CONTENT_PATH: &'static str = concatcp!(GalaxyEngine::PKG_PATH, GalaxyEngine::CONTENT_DIR);
+    pub const BUILT_PATH: &'static str = concatcp!(GalaxyEngine::PKG_PATH, GalaxyEngine::BUILD_DIR);
 
     pub(crate) fn new(
         app_info: &AppInfo,
@@ -177,7 +179,7 @@ impl GalaxyEngine {
 
         Ok(Self {
             game: RefCell::new(game),
-            game_dir: app_info.dir.clone(),
+            game_content_dir: app_info.game_dir.clone(),
             level: Mutex::new(None),
             instance,
             surface,
@@ -190,7 +192,7 @@ impl GalaxyEngine {
             image_available_semaphores,
             render_finished_semaphores,
             _compute_finished_semaphores: compute_finished_semaphores,
-            current_frame: 0,
+            frame_index: 0,
             start_time: std::time::Instant::now(),
             game_time: std::time::Duration::default(),
             last_frame_time: std::time::Instant::now(),
@@ -202,7 +204,7 @@ impl GalaxyEngine {
     }
 
     pub fn game_dir(&self) -> &Path {
-        &self.game_dir
+        &self.game_content_dir
     }
 
     pub fn game_time(&self) -> std::time::Duration {
@@ -216,20 +218,22 @@ impl GalaxyEngine {
         Ok(())
     }
 
-    pub fn load_scene<T: DeserializableComponentConfig>(&self, scene_path: &Path) -> Result<(), LoadError> {
+    pub fn load_level<T: DeserializableComponentConfig>(&self, level_path: ResourcePath) -> Result<(), LoadError> {
         log::info!(
             "Loading level: {}",
-            self.game_dir.join(scene_path).canonicalize()?.display()
+            level_path
+                .full_path::<resource_type::Level>(self)
+                .canonicalize()?
+                .display()
         );
 
-        // Load level.
         {
             // Lock transient command pool.
             let mut transient_cmd_pool = self.transient_cmd_pool.lock().unwrap();
             // Lock level.
             let mut level_lock = self.level.lock().unwrap();
             *level_lock = Some(Level::new::<T>(
-                &self.game_dir.join(scene_path),
+                level_path,
                 self,
                 &mut transient_cmd_pool,
                 level_lock.take(),
@@ -252,7 +256,7 @@ impl GalaxyEngine {
         let delta_time = self.last_frame_time.elapsed().as_secs_f32().min(Self::MAX_FRAME_TIME);
         self.last_frame_time = std::time::Instant::now();
 
-        let current_frame = self.current_frame as usize;
+        let frame_index = self.frame_index as usize;
 
         // Accumulate mouse input.
         let mouse_delta = self.accumulated_mouse_delta;
@@ -270,20 +274,16 @@ impl GalaxyEngine {
         self.game.borrow_mut().update(delta_time);
 
         // Wait for fences of the buffered frame.
-        self.primary_cmd_pools[current_frame]
-            .get_cmd_buffer(0)
-            .wait_for_fence()?;
-        self.primary_cmd_pools[current_frame]
-            .get_cmd_buffer(1)
-            .wait_for_fence()?;
+        self.primary_cmd_pools[frame_index].get_cmd_buffer(0).wait_for_fence()?;
+        self.primary_cmd_pools[frame_index].get_cmd_buffer(1).wait_for_fence()?;
         // Reset command pool.
-        let primary_cmd_pool = &mut self.primary_cmd_pools[current_frame];
+        let primary_cmd_pool = &mut self.primary_cmd_pools[frame_index];
         primary_cmd_pool.reset()?;
 
         {
             let mut level_lock = self.level.lock().unwrap();
             if let Some(level) = level_lock.deref_mut() {
-                level.gpu_update(delta_time, self.game_time, current_frame);
+                level.gpu_update(delta_time, self.game_time, frame_index);
             };
         }
 
@@ -292,16 +292,16 @@ impl GalaxyEngine {
         //self.particle_system.record_compute(recording);
         //compute_cmd_buffer.end()?;
 
-        //let signal_semaphores = [self.compute_finished_semaphores[current_frame].handle()];
+        //let signal_semaphores = [self.compute_finished_semaphores[frame_index].handle()];
         //compute_cmd_buffer.submit(&[], &signal_semaphores)?;
 
         // Begin graphics command buffer recording.
 
         // Acquire image from swapchain.
-        let (image_idx, _is_suboptimal) = match self.swapchain.acquire_next_image(
-            self.image_available_semaphores[current_frame].handle(),
-            vk::Fence::null(),
-        ) {
+        let (image_idx, _is_suboptimal) = match self
+            .swapchain
+            .acquire_next_image(self.image_available_semaphores[frame_index].handle(), vk::Fence::null())
+        {
             Ok(x) => x,
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 self.recreate_swapchain()?;
@@ -389,7 +389,7 @@ impl GalaxyEngine {
         {
             let level_lock = self.level.lock().unwrap();
             if let Some(level) = level_lock.deref() {
-                level.render(rendering, current_frame);
+                level.render(rendering, frame_index);
             };
         }
         let recording = gfx_cmd_buffer.end_rendering(ext)?;
@@ -414,21 +414,21 @@ impl GalaxyEngine {
         // Submit command buffer.
         let wait_semaphores = [
             //WaitSemaphore {
-            //    handle: self.compute_finished_semaphores[current_frame].handle(),
+            //    handle: self.compute_finished_semaphores[frame_index].handle(),
             //    stage_mask: vk::PipelineStageFlags::VERTEX_INPUT,
             //},
             WaitSemaphore {
-                handle: self.image_available_semaphores[current_frame].handle(),
+                handle: self.image_available_semaphores[frame_index].handle(),
                 stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             },
         ];
-        let signal_semaphores = [self.render_finished_semaphores[current_frame].handle()];
+        let signal_semaphores = [self.render_finished_semaphores[frame_index].handle()];
         gfx_cmd_buffer.submit(&wait_semaphores, &signal_semaphores)?;
 
         match self.swapchain.queue_present(
             self.device.primary_queue_mut(),
             image_idx,
-            &[self.render_finished_semaphores[current_frame].handle()],
+            &[self.render_finished_semaphores[frame_index].handle()],
         ) {
             Ok(_) => {}
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
@@ -437,7 +437,7 @@ impl GalaxyEngine {
             Err(e) => return Err(VulkanError(e)),
         }
 
-        self.current_frame = (self.current_frame + 1) % Self::MAX_FRAMES_IN_FLIGHT as u32;
+        self.frame_index = (self.frame_index + 1) % Self::MAX_FRAMES_IN_FLIGHT as u32;
 
         Ok(())
     }

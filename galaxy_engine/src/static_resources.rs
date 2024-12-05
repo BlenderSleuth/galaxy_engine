@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use crate::mesh::MeshBuffer;
+use crate::meshes::MeshBuffer;
 use crate::prelude::*;
 use crate::vertex_input::PositionTexCoordVertex;
 use crate::vulkan::command_buffer::TransientPrimaryCommandPool;

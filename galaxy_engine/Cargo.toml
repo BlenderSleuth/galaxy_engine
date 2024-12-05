@@ -6,9 +6,10 @@ edition.workspace = true
 [features]
 default = []
 debug_info = ["ash/debug"]
-packaged = []
+packaged = ["galaxy_engine_build/packaged"]
 
 [dependencies]
+galaxy_engine_utils = { path = "../galaxy_engine_utils" }
 ash = { workspace = true, default-features = false, features = ["loaded"] }
 ash-window.workspace = true
 raw-window-handle.workspace = true
@@ -33,7 +34,7 @@ castaway = { version = "0.2.3", default-features = false }
 glob.workspace = true
 const_format = { version = "0.2.33", features = ["rust_1_64"] }
 indexmap = { version = "2.6.0", features = ["serde"] }
-ron = { version = "0.8.1", features = ["indexmap"] }
+ron = { workspace = true, features = ["indexmap"] }
 #static_assertions = "1.1.0"
 shipyard.workspace = true
 enum_delegate.workspace = true

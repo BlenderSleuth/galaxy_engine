@@ -9,7 +9,7 @@ use crate::engine::GalaxyEngine;
 use crate::level::DrawData;
 use crate::materials::config::{get_material_config, ResourceBinding};
 use crate::pipelines::{GraphicsPipeline, Pipeline, PipelineLayout};
-use crate::resources::MaterialResourcePath;
+use crate::resource_paths::{resource_type, ResourcePath};
 use crate::textures::{TextureError, TextureIndex, TextureManager};
 use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingState, TransientPrimaryCommandPool};
 use crate::vulkan::gpu_alloc::MemoryError;
@@ -25,10 +25,12 @@ pub enum MaterialError {
     VulkanError(#[from] vk::Result),
     #[error("Material memory error: {0}")]
     MemoryError(#[from] MemoryError),
-    #[error("Material pipeline not found")]
-    PipelineNotFound,
+    #[error("Material pipeline not found: {0}")]
+    PipelineNotFound(String),
     #[error("Texture error: {0}")]
     TextureError(#[from] TextureError),
+    #[error("Resource error: {0}")]
+    ResourceError(String),
 }
 
 pub enum MaterialResourceBinding {
@@ -51,27 +53,28 @@ impl Material {
     pub fn new(
         engine: &GalaxyEngine,
         texture_manager: &TextureManager,
-        resource_path: &MaterialResourcePath,
+        resource_path: &ResourcePath,
         cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<Self, MaterialError> {
         // Load config.
-        let config_path = resource_path.full_path(engine);
-        let config_str = std::fs::read_to_string(&config_path)?;
+        let config_str = std::fs::read_to_string(&resource_path.full_path::<resource_type::Material>(engine))?;
         let config = get_material_config(&config_str)?;
 
         let pipeline = engine
             .pipeline_manager
             .get_graphics_pipeline(config.pipeline)
-            .ok_or(MaterialError::PipelineNotFound)?;
+            .ok_or(MaterialError::PipelineNotFound(config.pipeline.to_owned()))?;
 
         // Construct resource bindings.
         let mut resource_bindings = HashMap::new();
         for (bind_point, binding) in config.params {
             match binding {
-                ResourceBinding::Texture(relative_path) => {
+                ResourceBinding::Texture(path) => {
                     // Load texture.
-                    let texture_path = resource_path.relative_resource(relative_path);
-                    let texture_index = texture_manager.load_texture(relative_path, &texture_path, engine, cmd_pool)?;
+                    //let texture_path = resource_path.relative_resource(path);
+                    let texture_path = ResourcePath::new(&path, Some(resource_path))
+                        .ok_or(MaterialError::ResourceError(path.to_owned()))?;
+                    let texture_index = texture_manager.load_texture(path, &texture_path, engine, cmd_pool)?;
                     // Add to resource bindings.
                     resource_bindings.insert(bind_point.to_owned(), MaterialResourceBinding::Texture(texture_index));
                 }

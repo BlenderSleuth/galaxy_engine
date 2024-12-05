@@ -1,0 +1,9 @@
+[package]
+name = "galaxy_engine_utils"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+ron.workspace = true

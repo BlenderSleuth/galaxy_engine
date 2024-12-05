@@ -1,6 +1,7 @@
 // Copyright (c) 2024 Ben Sutherland.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use ash::vk;
@@ -40,7 +41,10 @@ pub struct PipelineManager {
 }
 
 impl PipelineManager {
-    const PIPELINE_CONFIG_GLOB: &'static str = concatcp!(GalaxyEngine::SHADER_PATH, "**/*.pipeline.ron");
+    pub const SHADER_DIR: &'static str = "shaders/";
+    pub const SHADER_PATH: &'static str = concatcp!(GalaxyEngine::CONTENT_PATH, PipelineManager::SHADER_DIR);
+    pub const BUILT_SHADER_PATH: &'static str = concatcp!(GalaxyEngine::BUILT_PATH, PipelineManager::SHADER_DIR);
+    const PIPELINE_CONFIG_GLOB: &'static str = "**/*.pipeline.ron";
 
     fn scene_descriptor_set_layout_bindings() -> [vk::DescriptorSetLayoutBinding<'static>; 4] {
         [
@@ -79,39 +83,44 @@ impl PipelineManager {
         let scene_descriptor_set_layout =
             DescriptorSetLayout::new(&device, &Self::scene_descriptor_set_layout_bindings())?;
 
-        // Find and load pipeline configs.
-        let (graphics_configs, _compute_configs): (Vec<_>, Vec<_>) = glob(Self::PIPELINE_CONFIG_GLOB)
-            .expect("Failed to read pipeline glob pattern")
-            .filter_map(|path| {
-                let name = (match path.as_ref() {
-                    Ok(path) => path,
-                    Err(err) => err.path(),
-                })
-                .file_name()?
-                .to_owned();
-
-                // Nested function for error-handling.
-                fn load_config(path: glob::GlobResult) -> Result<PipelineConfig, PipelineManagerError> {
-                    let config_str = match path {
-                        Ok(path) => std::fs::read_to_string(&path),
-                        Err(err) => Err(err.into_error()),
-                    }?;
-                    let config = pipelines::config::load_config(&config_str)?;
-                    Ok(config)
-                }
-
-                match load_config(path) {
-                    Ok(config) => Some(config),
-                    Err(err) => {
-                        log::error!("Failed to load pipeline config for pipeline {name:?} ({err})");
-                        None
-                    }
-                }
+        // Find and load pipeline configs. TODO: Add support for game-specific pipeline configs.
+        let (graphics_configs, _compute_configs): (Vec<_>, Vec<_>) = glob(
+            Path::new(Self::SHADER_PATH)
+                .join(Self::PIPELINE_CONFIG_GLOB)
+                .to_str()
+                .unwrap(),
+        )
+        .expect("Failed to read pipeline glob pattern")
+        .filter_map(|path| {
+            let name = (match path.as_ref() {
+                Ok(path) => path,
+                Err(err) => err.path(),
             })
-            .partition_map(|config| match config {
-                PipelineConfig::Graphics(graphics) => Either::Left(graphics),
-                PipelineConfig::Compute(compute) => Either::Right(compute),
-            });
+            .file_name()?
+            .to_owned();
+
+            // Nested function for error-handling.
+            fn load_config(path: glob::GlobResult) -> Result<PipelineConfig, PipelineManagerError> {
+                let config_str = match path {
+                    Ok(path) => std::fs::read_to_string(&path),
+                    Err(err) => Err(err.into_error()),
+                }?;
+                let config = pipelines::config::load_config(&config_str)?;
+                Ok(config)
+            }
+
+            match load_config(path) {
+                Ok(config) => Some(config),
+                Err(err) => {
+                    log::error!("Failed to load pipeline config for pipeline {name:?} ({err})");
+                    None
+                }
+            }
+        })
+        .partition_map(|config| match config {
+            PipelineConfig::Graphics(graphics) => Either::Left(graphics),
+            PipelineConfig::Compute(compute) => Either::Right(compute),
+        });
 
         // Compile graphics pipelines. For lots of graphics pipelines, could use a graphics pipeline library for speedup:
         // https://www.khronos.org/blog/reducing-draw-time-hitching-with-vk-ext-graphics-pipeline-library.
@@ -143,6 +152,8 @@ impl PipelineManager {
                 .try_or_insert_with(|| ShaderModule::new(&device, &config.shaders.fragment.id))?;
         }
 
+        log::info!("Compiling graphics pipelines...");
+        let start = std::time::Instant::now();
         let graphics_pipelines = GraphicsPipeline::batch_new(
             &device,
             &pipeline_layouts,
@@ -150,11 +161,13 @@ impl PipelineManager {
             &fragment_shaders,
             &graphics_configs,
             msaa_samples,
-        )?
-        .into_iter()
-        .zip(&graphics_configs)
-        .map(|(pipeline, config)| (config.name.clone(), ArcFinalOwner::new(pipeline)))
-        .collect();
+        )?;
+        log::info!("Compiled graphics pipelines in {:?}", start.elapsed());
+        let graphics_pipelines = graphics_pipelines
+            .into_iter()
+            .zip(&graphics_configs)
+            .map(|(pipeline, config)| (config.name.clone(), ArcFinalOwner::new(pipeline)))
+            .collect();
 
         Ok(Self {
             loader: device.cloned_loader(),

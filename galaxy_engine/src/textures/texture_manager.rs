@@ -8,7 +8,7 @@ use ash::vk;
 
 use crate::engine::GalaxyEngine;
 use crate::level::SceneDescriptorPool;
-use crate::resources::TextureResourcePath;
+use crate::resource_paths::{resource_type, ResourcePath};
 use crate::textures::texture::TextureError;
 use crate::textures::Texture;
 use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
@@ -55,11 +55,16 @@ impl TextureManager {
     pub fn load_texture(
         &self,
         name: &str,
-        path: &TextureResourcePath,
+        path: &ResourcePath,
         engine: &GalaxyEngine,
         cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<TextureIndex, TextureError> {
-        let texture = Texture::new_from_ktx2_file(name, &path.full_path(engine), &engine.device, cmd_pool)?;
+        let texture = Texture::new_from_ktx2_file(
+            name,
+            &path.full_path::<resource_type::Texture>(engine),
+            &engine.device,
+            cmd_pool,
+        )?;
         let mut textures_lock = self.textures.lock().unwrap();
         let texture_index = textures_lock.len() as u32;
         textures_lock.push(texture);
