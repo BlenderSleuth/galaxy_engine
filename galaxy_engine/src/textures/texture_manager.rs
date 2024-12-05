@@ -1,23 +1,27 @@
 // Copyright (c) 2024 Ben Sutherland.
 
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::vk;
 
-use crate::engine::{GalaxyEngine, SceneDescriptorPool};
+use crate::engine::GalaxyEngine;
+use crate::level::SceneDescriptorPool;
+use crate::resources::TextureResourcePath;
 use crate::textures::texture::TextureError;
 use crate::textures::Texture;
 use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
-use crate::vulkan::device::{Device, SharedDeviceLoader};
+use crate::vulkan::device::Device;
 use crate::vulkan::image::Sampler;
 
+#[repr(transparent)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct TextureIndex(u32);
+
 pub struct TextureManager {
-    loader: SharedDeviceLoader,
     default_sampler: Sampler,
-    textures: Mutex<ArrayVec<Arc<Texture>, { TextureManager::NUM_TEXTURES }>>,
+    textures: Mutex<Vec<Texture>>,
 }
 
 impl TextureManager {
@@ -43,22 +47,23 @@ impl TextureManager {
             .max_lod(vk::LOD_CLAMP_NONE);
         let default_sampler = Sampler::new(&device, &sampler_info)?;
         Ok(Self {
-            loader: device.cloned_loader(),
             default_sampler,
-            textures: Mutex::new(ArrayVec::new()),
+            textures: Mutex::new(Vec::new()),
         })
     }
 
     pub fn load_texture(
         &self,
         name: &str,
-        path: &Path,
-        device: &Device,
+        path: &TextureResourcePath,
+        engine: &GalaxyEngine,
         cmd_pool: &mut TransientPrimaryCommandPool,
-    ) -> Result<Arc<Texture>, TextureError> {
-        let texture = Arc::new(Texture::new_from_ktx_file(name, path, device, cmd_pool)?);
-        self.textures.lock().unwrap().push(texture.clone());
-        Ok(texture)
+    ) -> Result<TextureIndex, TextureError> {
+        let texture = Texture::new_from_ktx2_file(name, &path.full_path(engine), &engine.device, cmd_pool)?;
+        let mut textures_lock = self.textures.lock().unwrap();
+        let texture_index = textures_lock.len() as u32;
+        textures_lock.push(texture);
+        Ok(TextureIndex(texture_index))
     }
 
     pub fn write_textures_to_descriptor_array(

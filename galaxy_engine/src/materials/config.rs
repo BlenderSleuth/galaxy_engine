@@ -7,16 +7,22 @@ use indexmap::IndexMap;
 //    Texture(ConfigID),
 //}
 
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+pub enum ResourceBinding<'a> {
+    Texture(&'a str),
+    Constant(&'a str),
+}
+
 #[derive(serde::Deserialize, Debug)]
 #[serde(rename = "Material")]
-pub(crate) struct MaterialConfig {
-    pub pipeline: String,
+pub(crate) struct MaterialConfig<'a> {
+    pub pipeline: &'a str,
     // TODO: based on the pipeline, use a struct serialiser.
-    pub params: IndexMap<String, String>,
+    pub params: IndexMap<&'a str, ResourceBinding<'a>>,
 }
 
 pub fn get_material_config(config_str: &str) -> ron::error::SpannedResult<MaterialConfig> {
-    ron::from_str::<MaterialConfig>(&config_str)
+    ron::from_str::<MaterialConfig>(config_str)
 }
 
 /*

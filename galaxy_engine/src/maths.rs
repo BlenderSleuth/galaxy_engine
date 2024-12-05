@@ -1,6 +1,23 @@
 // Copyright (c) 2024 Ben Sutherland.
 
+use serde::{Deserialize, Serialize};
+use shipyard::Component;
 pub use ultraviolet::{Bivec3, Isometry3, Mat3, Mat4, Rotor3, Similarity3, Vec2, Vec3, Vec4};
+
+#[derive(Serialize, Deserialize, Component, Debug, Clone)]
+pub struct Transform {
+    pub translation: Vec3,
+    pub rotation: Rotor3,
+    pub scale: Vec3,
+}
+
+impl Transform {
+    pub fn to_matrix(&self) -> Mat4 {
+        (self.rotation.into_matrix() * Mat3::from_nonuniform_scale(self.scale))
+            .into_homogeneous()
+            .translated(&self.translation)
+    }
+}
 
 // Euler angles in degrees.
 // Applied in the order yaw, pitch, roll.

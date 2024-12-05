@@ -1,10 +1,10 @@
 // Copyright (c) 2024 Ben Sutherland.
 
 use serde::{Deserialize, Serialize};
-use shipyard::{Component, EntityId, World};
+use shipyard::{Component, EntityId};
 
 use crate::engine::GalaxyEngine;
-use crate::level::{ComponentConfig, LevelLoadError};
+use crate::level::{ComponentConfig, Level, LoadError};
 use crate::prelude::*;
 use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 
@@ -18,11 +18,11 @@ impl ComponentConfig for CameraConfig {
     fn load(
         &self,
         entity_id: EntityId,
-        world: &mut World,
+        level: &mut Level,
         engine: &GalaxyEngine,
         _cmd_pool: &mut TransientPrimaryCommandPool,
-    ) -> Result<(), LevelLoadError> {
-        world.add_component(
+    ) -> Result<(), LoadError> {
+        level.world.add_component(
             entity_id,
             Camera {
                 aspect: engine.get_window_aspect(),
@@ -30,6 +30,7 @@ impl ComponentConfig for CameraConfig {
                 near: self.near,
             },
         );
+        level.camera_entity = entity_id;
         Ok(())
     }
 }
@@ -99,7 +100,15 @@ impl ViewInfo {
         }
     }
 
+    pub fn mvp_from_matrix(&self, mat: Mat4) -> Mat4 {
+        mat * self.view_projection
+    }
+
     pub fn mvp_from_similarity(&self, sim: &Similarity3) -> Mat4 {
-        sim.into_homogeneous_matrix() * self.view_projection
+        self.mvp_from_matrix(sim.into_homogeneous_matrix())
+    }
+
+    pub fn mvp_from_transform(&self, transform: &Transform) -> Mat4 {
+        self.mvp_from_matrix(transform.to_matrix())
     }
 }

@@ -3,4 +3,4 @@
 mod config;
 mod material;
 
-pub use material::{Material, MaterialError, MaterialData};
+pub use material::{Material, MaterialData, MaterialError, MaterialResourceBinding};

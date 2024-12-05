@@ -7,11 +7,11 @@ use std::path::Path;
 use app::{AppFlags, AppInfo, GalaxyApp};
 use galaxy_engine::engine::GalaxyEngine;
 use galaxy_engine::game::Game;
-use galaxy_engine::level::{ComponentConfig, LevelLoadError};
+use galaxy_engine::level::{ComponentConfig, Level, LoadError};
 use galaxy_engine::vulkan::command_buffer::TransientPrimaryCommandPool;
 use galaxy_engine::{app, app_dir, register_components};
 use serde::{Deserialize, Serialize};
-use shipyard::{EntityId, World};
+use shipyard::EntityId;
 use winit::error::EventLoopError;
 use winit::event_loop::{ControlFlow, EventLoop};
 
@@ -30,10 +30,10 @@ impl ComponentConfig for GravitySourceConfig {
     fn load(
         &self,
         _entity_id: EntityId,
-        _world: &mut World,
+        _level: &mut Level,
         _engine: &GalaxyEngine,
         _cmd_pool: &mut TransientPrimaryCommandPool,
-    ) -> Result<(), LevelLoadError> {
+    ) -> Result<(), LoadError> {
         Ok(())
     }
 }

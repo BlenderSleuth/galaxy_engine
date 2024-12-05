@@ -26,7 +26,7 @@ pub struct Texture {
 }
 
 impl Texture {
-    pub fn new_from_ktx_file(
+    pub fn new_from_ktx2_file(
         name: &str,
         path: &Path,
         device: &Device,

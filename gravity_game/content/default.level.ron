@@ -18,7 +18,7 @@ Level(
             components: [
                 Transform(
                     translation: Vec3(x: 0.0, y: 0.0, z: 0.0),
-                    rotation: Rotor3(s: 0.0, bv: Bivec3(xy: 0.0, xz: 0.0, yz: 1.0)),
+                    rotation: Rotor3(s: 1.0, bv: Bivec3(xy: 0.0, xz: 0.0, yz: 0.0)),
                     scale: Vec3(x: 1.0, y: 1.0, z: 1.0),
                 ),
                 Light(
@@ -32,12 +32,12 @@ Level(
             components: [
                 Transform(
                     translation: Vec3(x: 0.0, y: 0.0, z: 0.0),
-                    rotation: Rotor3(s: 0.0, bv: Bivec3(xy: 0.0, xz: 0.0, yz: 1.0)),
+                    rotation: Rotor3(s: 1.0, bv: Bivec3(xy: 0.0, xz: 0.0, yz: 0.0)),
                     scale: Vec3(x: 1.0, y: 1.0, z: 1.0),
                 ),
                 Model(
-                    mesh: "models/viking_room.obj",
-                    material: "models/viking_room"
+                    mesh: "/game/models/viking_room/viking_room",
+                    material: "/game/models/viking_room/viking_room"
                 ),
             ],
         ),
@@ -46,7 +46,7 @@ Level(
             components: [
                 Transform(
                     translation: Vec3(x: 0.0, y: 0.0, z: 0.0),
-                    rotation: Rotor3(s: 0.0, bv: Bivec3(xy: 0.0, xz: 0.0, yz: 1.0)),
+                    rotation: Rotor3(s: 1.0, bv: Bivec3(xy: 0.0, xz: 0.0, yz: 0.0)),
                     scale: Vec3(x: 1.0, y: 1.0, z: 1.0),
                 ),
                 GravitySource(

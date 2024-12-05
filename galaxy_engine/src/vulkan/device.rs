@@ -66,7 +66,7 @@ impl Device {
             khr::swapchain::NAME,
             khr::synchronization2::NAME,
             khr::dynamic_rendering::NAME,
-            ext::descriptor_buffer::NAME,
+            //ext::descriptor_buffer::NAME,
         ];
 
         // MacOS compatibility.

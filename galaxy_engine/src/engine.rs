@@ -7,32 +7,28 @@ use std::path::{Path, PathBuf};
 use std::slice;
 use std::sync::Mutex;
 
-use app::AppInfo;
 use arrayvec::ArrayVec;
 use ash::vk;
 use const_format::concatcp;
-use itertools::izip;
 use parking_lot::{MappedRwLockReadGuard, RwLockReadGuard};
 use raw_window_handle::{DisplayHandle, WindowHandle};
 use winit::event::{ElementState, KeyEvent, MouseButton};
 use winit::keyboard::{Key, SmolStr};
 
-use crate::camera::{CamIsometry, FirstPersonCamera, ViewInfo};
+use crate::app::AppInfo;
 use crate::engine::MainLoopError::VulkanError;
 use crate::game::Game;
-use crate::level::{DeserializableComponentConfig, Level, LevelLoadError};
-use crate::materials::{MaterialData, MaterialError};
+use crate::level::{DeserializableComponentConfig, Level, LoadError};
+use crate::materials::MaterialError;
 use crate::mesh::MeshError;
+use crate::pipelines;
 use crate::pipelines::PipelineManager;
 use crate::prelude::*;
 use crate::static_resources::{StaticResources, StaticResourcesGuard, StaticResourcesLock};
-use crate::textures::TextureManager;
-use crate::volatile_buffer::{VolatileBuffer, VolatileBufferType};
 use crate::vulkan::command_buffer::{
     CmdBufStateTransitionError, ResettablePrimaryCommandPool, TransientPrimaryCommandPool,
 };
 use crate::vulkan::debug::debug_only_name;
-use crate::vulkan::descriptors::DescriptorPool;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
 use crate::vulkan::instance::Instance;
@@ -40,7 +36,6 @@ use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain::Swapchain;
 use crate::vulkan::sync::{BinarySemaphore, Semaphore, WaitSemaphore};
 use crate::vulkan::{device, instance};
-use crate::{app, pipelines};
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
@@ -75,45 +70,6 @@ pub enum MainLoopError {
     PersistentCommandBufferError(#[from] CmdBufStateTransitionError),
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
-pub struct SceneUniformData {
-    view: Mat4,
-    proj: Mat4,
-    sun_direction: Vec3,
-    delta_time: f32,
-}
-pub type SceneUniformBuffer = VolatileBuffer<SceneUniformData>;
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
-pub struct DrawData {
-    pub transform_index: u32,
-    pub material_index: u32,
-}
-
-pub struct SceneBuffers {
-    transforms: VolatileBuffer<[Mat4; 1024]>,
-    materials: VolatileBuffer<[MaterialData; 1024]>,
-}
-
-impl SceneBuffers {
-    pub fn iter_mut(&mut self, frame: usize) -> impl Iterator<Item = (&mut Mat4, &mut MaterialData)> {
-        izip!(
-            self.transforms.get_mut(frame).iter_mut(),
-            self.materials.get_mut(frame).iter_mut()
-        )
-    }
-    pub fn buffer_infos<const N: usize>(&self) -> [[vk::DescriptorBufferInfo; 2]; N] {
-        core::array::from_fn(|frame| {
-            [
-                self.transforms.descriptor_buffer_info(frame),
-                self.materials.descriptor_buffer_info(frame),
-            ]
-        })
-    }
-}
-
 // Static resources. These are available while the engine instance is alive.
 static STATIC_RESOURCES: StaticResourcesLock = StaticResourcesLock::new(None);
 
@@ -122,22 +78,18 @@ pub fn static_resources() -> MappedRwLockReadGuard<'static, StaticResources> {
     RwLockReadGuard::map(STATIC_RESOURCES.read(), |r| r.as_ref().unwrap())
 }
 
-pub type SceneDescriptorPool = DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>;
-
 pub struct GalaxyEngine {
     game: RefCell<Box<dyn Game>>,
-    pub(crate) game_dir: PathBuf,
+    game_dir: PathBuf,
     level: Mutex<Option<Level>>,
     primary_cmd_pools: ArrayVec<ResettablePrimaryCommandPool<2>, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     transient_cmd_pool: Mutex<TransientPrimaryCommandPool>,
-    scene_descriptor_pool: SceneDescriptorPool,
-    scene_uniform_buffer: SceneUniformBuffer,
-    scene_buffers: SceneBuffers,
     image_available_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     render_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
-    compute_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
+    _compute_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     current_frame: u32,
     start_time: std::time::Instant,
+    game_time: std::time::Duration,
     last_frame_time: std::time::Instant,
     window_size: vk::Extent2D,
     window_resized: bool,
@@ -145,7 +97,6 @@ pub struct GalaxyEngine {
     key_input: HashMap<SmolStr, ElementState>,
     // These are at the bottom so they get dropped last.
     _static_resources_guard: StaticResourcesGuard,
-    pub(crate) texture_manager: TextureManager,
     pub(crate) pipeline_manager: PipelineManager,
     swapchain: Swapchain,
     pub(crate) device: Device,
@@ -201,76 +152,6 @@ impl GalaxyEngine {
         let swapchain = Swapchain::new(&instance, &device, &mut transient_cmd_pool, &surface, window_size, None)?;
 
         let pipeline_manager = PipelineManager::new(&device, swapchain.msaa_samples())?;
-        let texture_manager = TextureManager::new(&device)?;
-
-        // Create level uniform buffer.
-        let scene_uniform_buffer = VolatileBuffer::new("Scene uniform buffer", &device, VolatileBufferType::Uniform)?;
-
-        let scene_transforms_buffer = VolatileBuffer::new("Transforms buffer", &device, VolatileBufferType::Storage)?;
-        // TODO: don't use volatile buffer for material data buffer.
-        let scene_material_buffer = VolatileBuffer::new("Material buffer", &device, VolatileBufferType::Storage)?;
-        let scene_buffers = SceneBuffers {
-            transforms: scene_transforms_buffer,
-            materials: scene_material_buffer,
-        };
-
-        // Create level descriptor pool.
-        let scene_descriptor_pool_sizes = [
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32 * 3),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count((Self::MAX_FRAMES_IN_FLIGHT * Self::NUM_TEXTURES) as u32),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(Self::MAX_FRAMES_IN_FLIGHT as u32),
-        ];
-        let mut scene_descriptor_pool =
-            DescriptorPool::<{ Self::MAX_FRAMES_IN_FLIGHT }>::new(&device, &scene_descriptor_pool_sizes)?;
-
-        scene_descriptor_pool.allocate_descriptor_sets(
-            &device,
-            &[pipeline_manager.scene_descriptor_set_layout.handle(); Self::MAX_FRAMES_IN_FLIGHT],
-        )?;
-
-        let uniform_buffer_info: [_; Self::MAX_FRAMES_IN_FLIGHT] =
-            core::array::from_fn(|frame| scene_uniform_buffer.descriptor_buffer_info(frame));
-        let buffer_infos = scene_buffers.buffer_infos::<{ Self::MAX_FRAMES_IN_FLIGHT }>();
-
-        let descriptor_writes: ArrayVec<_, { Self::MAX_FRAMES_IN_FLIGHT * 8 }> = scene_descriptor_pool
-            .iter()
-            .enumerate()
-            .flat_map(|(frame, set)| {
-                [
-                    // Uniform buffer:
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(*set)
-                        .dst_binding(0)
-                        .dst_array_element(0)
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .buffer_info(slice::from_ref(&uniform_buffer_info[frame])),
-                    // Transforms buffer:
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(*set)
-                        .dst_binding(1)
-                        .dst_array_element(0)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(slice::from_ref(&buffer_infos[frame][0])),
-                    // Material data:
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(*set)
-                        .dst_binding(3)
-                        .dst_array_element(0)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(slice::from_ref(&buffer_infos[frame][1])),
-                ]
-            })
-            .collect();
-        unsafe { device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
 
         // Create per-frame objects.
         let mut primary_cmd_pools = ArrayVec::new();
@@ -303,24 +184,29 @@ impl GalaxyEngine {
             device,
             swapchain,
             pipeline_manager,
-            texture_manager,
             _static_resources_guard: static_resources_guard,
             primary_cmd_pools,
             transient_cmd_pool: Mutex::new(transient_cmd_pool),
-            scene_descriptor_pool,
-            scene_uniform_buffer,
-            scene_buffers,
             image_available_semaphores,
             render_finished_semaphores,
-            compute_finished_semaphores,
+            _compute_finished_semaphores: compute_finished_semaphores,
             current_frame: 0,
             start_time: std::time::Instant::now(),
+            game_time: std::time::Duration::default(),
             last_frame_time: std::time::Instant::now(),
             accumulated_mouse_delta: Vec2::zero(),
             window_size,
             key_input: HashMap::new(),
             window_resized: false,
         })
+    }
+
+    pub fn game_dir(&self) -> &Path {
+        &self.game_dir
+    }
+
+    pub fn game_time(&self) -> std::time::Duration {
+        self.game_time
     }
 
     pub(crate) fn startup(&mut self) -> anyhow::Result<()> {
@@ -330,36 +216,25 @@ impl GalaxyEngine {
         Ok(())
     }
 
-    pub fn load_scene<T: DeserializableComponentConfig>(&self, scene_path: &Path) -> Result<(), LevelLoadError> {
+    pub fn load_scene<T: DeserializableComponentConfig>(&self, scene_path: &Path) -> Result<(), LoadError> {
         log::info!(
             "Loading level: {}",
             self.game_dir.join(scene_path).canonicalize()?.display()
         );
 
-        // TODO: Unload previous level.
-
-        // Lock transient command pool.
-        let mut transient_cmd_pool = self.transient_cmd_pool.lock().unwrap();
-
-        // Load level config.
-        *self.level.lock().unwrap() = Some(Level::new::<T>(
-            &self.game_dir.join(scene_path),
-            self,
-            &mut transient_cmd_pool,
-        )?);
-
-        self.texture_manager
-            .write_textures_to_descriptor_array(self, &self.scene_descriptor_pool);
-
-        // Create particle system.
-        //const MAX_NUM_PARTICLES: u32 = 1024;
-        //let particle_system = GpuParticleSystem::new(
-        //    &device,
-        //    swapchain.samples(),
-        //    MAX_NUM_PARTICLES,
-        //    window_size,
-        //    &mut setup_cmd_buffer,
-        //)?;
+        // Load level.
+        {
+            // Lock transient command pool.
+            let mut transient_cmd_pool = self.transient_cmd_pool.lock().unwrap();
+            // Lock level.
+            let mut level_lock = self.level.lock().unwrap();
+            *level_lock = Some(Level::new::<T>(
+                &self.game_dir.join(scene_path),
+                self,
+                &mut transient_cmd_pool,
+                level_lock.take(),
+            )?);
+        }
 
         Ok(())
     }
@@ -373,7 +248,7 @@ impl GalaxyEngine {
         }
 
         // Frame time calculations.
-        let time = self.start_time.elapsed().as_secs_f32();
+        self.game_time = self.start_time.elapsed();
         let delta_time = self.last_frame_time.elapsed().as_secs_f32().min(Self::MAX_FRAME_TIME);
         self.last_frame_time = std::time::Instant::now();
 
@@ -383,60 +258,13 @@ impl GalaxyEngine {
         let mouse_delta = self.accumulated_mouse_delta;
         self.accumulated_mouse_delta = Vec2::zero();
 
-        let view_info = {
+        // Run level update.
+        {
             let mut level_lock = self.level.lock().unwrap();
-            let Some(level) = level_lock.deref_mut() else {
-                return Ok(());
+            if let Some(level) = level_lock.deref_mut() {
+                level.update(self, delta_time, mouse_delta);
             };
-
-            let (mut cam_transform, cam) = level.get_camera();
-
-            // Update camera rotation.
-            {
-                const ROTATE_SPEED: f32 = 0.1;
-                let first_person_mouse = -Vec2::new(mouse_delta.x, mouse_delta.y) * ROTATE_SPEED;
-                cam_transform.apply_first_person_mouse(first_person_mouse);
-            }
-
-            // Update camera position.
-            {
-                const MOVE_SPEED: f32 = 3.;
-
-                let mut camera_velocity = Vec3::zero();
-
-                if self.is_key_pressed("w") {
-                    camera_velocity += cam_transform.cam_forward();
-                }
-                if self.is_key_pressed("s") {
-                    camera_velocity -= cam_transform.cam_forward();
-                }
-
-                if self.is_key_pressed("a") {
-                    camera_velocity -= cam_transform.cam_right();
-                }
-
-                if self.is_key_pressed("d") {
-                    camera_velocity += cam_transform.cam_right();
-                }
-
-                if self.is_key_pressed("e") {
-                    camera_velocity += Vec3::unit_z();
-                }
-
-                if self.is_key_pressed("q") {
-                    camera_velocity -= Vec3::unit_z();
-                }
-
-                if camera_velocity.mag_sq() > 1e-6 {
-                    camera_velocity.normalize();
-                }
-
-                cam_transform.translation += camera_velocity * MOVE_SPEED * delta_time;
-            }
-
-            // Now that the camera has been updated, calculate the view info.
-            ViewInfo::new(&cam, &cam_transform)
-        };
+        }
 
         // Run game update.
         self.game.borrow_mut().update(delta_time);
@@ -452,40 +280,20 @@ impl GalaxyEngine {
         let primary_cmd_pool = &mut self.primary_cmd_pools[current_frame];
         primary_cmd_pool.reset()?;
 
-        // Update GPU buffers.
-        *self.scene_uniform_buffer.get_mut(current_frame) = SceneUniformData {
-            view: view_info.view,
-            proj: view_info.projection,
-            sun_direction: Vec3::new(time.sin().abs(), (time + 0.3).sin().abs(), (time + 0.6).sin().abs()),
-            delta_time,
-        };
-
-        // Update mesh data.
         {
             let mut level_lock = self.level.lock().unwrap();
-            let Some(level) = level_lock.deref_mut() else {
-                return Ok(());
+            if let Some(level) = level_lock.deref_mut() {
+                level.gpu_update(delta_time, self.game_time, current_frame);
             };
-
-            for (i, (mesh, (transform, material_data))) in level
-                .meshes
-                .iter()
-                .zip(self.scene_buffers.iter_mut(current_frame))
-                .enumerate()
-            {
-                let i = i as u32;
-                *transform = view_info.mvp_from_similarity(&mesh.transform);
-                material_data.texture_index = i;
-            }
         }
 
-        let compute_cmd_buffer = primary_cmd_pool.get_cmd_buffer(0);
-        let _recording = compute_cmd_buffer.begin()?;
+        //let compute_cmd_buffer = primary_cmd_pool.get_cmd_buffer(0);
+        //let _recording = compute_cmd_buffer.begin()?;
         //self.particle_system.record_compute(recording);
-        compute_cmd_buffer.end()?;
+        //compute_cmd_buffer.end()?;
 
-        let signal_semaphores = [self.compute_finished_semaphores[current_frame].handle()];
-        compute_cmd_buffer.submit(&[], &signal_semaphores)?;
+        //let signal_semaphores = [self.compute_finished_semaphores[current_frame].handle()];
+        //compute_cmd_buffer.submit(&[], &signal_semaphores)?;
 
         // Begin graphics command buffer recording.
 
@@ -534,18 +342,23 @@ impl GalaxyEngine {
         recording.pipeline_barrier2(ext, &dependency_info);
 
         let mut color_attachment_info = vk::RenderingAttachmentInfo::default()
-            .image_view(self.swapchain.get_colour_resolve_view(image_idx).handle())
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::DONT_CARE)
             .clear_value(vk::ClearValue {
                 color: vk::ClearColorValue {
                     float32: [0.0, 0.0, 0.0, 0.0],
                 },
-            })
-            .resolve_mode(vk::ResolveModeFlags::NONE);
-        if self.swapchain.msaa_samples() != vk::SampleCountFlags::TYPE_1 {
+            });
+        if self.swapchain.msaa_samples() == vk::SampleCountFlags::TYPE_1 {
+            // Render directly to swapchain image.
             color_attachment_info = color_attachment_info
+                .image_view(self.swapchain.get_image_views()[image_idx as usize].handle())
+                .store_op(vk::AttachmentStoreOp::STORE);
+        } else {
+            // Render to MSAA image and resolve to swapchain image.
+            color_attachment_info = color_attachment_info
+                .image_view(self.swapchain.get_colour_resolve_view(image_idx).handle())
+                .store_op(vk::AttachmentStoreOp::DONT_CARE)
                 .resolve_mode(vk::ResolveModeFlags::AVERAGE)
                 .resolve_image_view(self.swapchain.get_image_views()[image_idx as usize].handle())
                 .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
@@ -575,22 +388,13 @@ impl GalaxyEngine {
         rendering.set_scissor(scissor);
         {
             let level_lock = self.level.lock().unwrap();
-            let Some(level) = level_lock.deref() else {
-                return Ok(());
+            if let Some(level) = level_lock.deref() {
+                level.render(rendering, current_frame);
             };
-            level.material.bind(rendering);
-            rendering.bind_descriptor_sets(
-                vk::PipelineBindPoint::GRAPHICS,
-                level.material.pipeline_layout(),
-                0,
-                slice::from_ref(&self.scene_descriptor_pool.get(current_frame)),
-                &[],
-            );
-            level.meshes.iter().for_each(|m| m.record_graphics(rendering));
         }
-        //self.particle_system.record_graphics(rendering, &view_info, time, viewport, scissor);
         let recording = gfx_cmd_buffer.end_rendering(ext)?;
 
+        // Transition colour attachment to present layout.
         let color_optimal_to_present_src_transition = vk::ImageMemoryBarrier2::default()
             .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
             .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
@@ -609,10 +413,10 @@ impl GalaxyEngine {
 
         // Submit command buffer.
         let wait_semaphores = [
-            WaitSemaphore {
-                handle: self.compute_finished_semaphores[current_frame].handle(),
-                stage_mask: vk::PipelineStageFlags::VERTEX_INPUT,
-            },
+            //WaitSemaphore {
+            //    handle: self.compute_finished_semaphores[current_frame].handle(),
+            //    stage_mask: vk::PipelineStageFlags::VERTEX_INPUT,
+            //},
             WaitSemaphore {
                 handle: self.image_available_semaphores[current_frame].handle(),
                 stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
@@ -656,10 +460,11 @@ impl GalaxyEngine {
         self.window_size.width as f32 / self.window_size.height as f32
     }
 
-    fn get_key_state(&self, key: &str) -> ElementState {
+    pub fn get_key_state(&self, key: &str) -> ElementState {
         self.key_input.get(key).copied().unwrap_or(ElementState::Released)
     }
-    fn is_key_pressed(&self, key: &str) -> bool {
+
+    pub fn is_key_pressed(&self, key: &str) -> bool {
         self.get_key_state(key) == ElementState::Pressed
     }
 

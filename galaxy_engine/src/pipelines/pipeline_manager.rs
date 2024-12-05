@@ -39,8 +39,6 @@ pub struct PipelineManager {
     compute_pipelines: HashMap<String, ArcFinalOwner<ComputePipeline>>,
 }
 
-impl PipelineManager {}
-
 impl PipelineManager {
     const PIPELINE_CONFIG_GLOB: &'static str = concatcp!(GalaxyEngine::SHADER_PATH, "**/*.pipeline.ron");
 
@@ -166,7 +164,7 @@ impl PipelineManager {
         })
     }
 
-    pub fn get_graphics_pipeline(&self, name: &String) -> Option<Arc<GraphicsPipeline>> {
+    pub fn get_graphics_pipeline(&self, name: &str) -> Option<Arc<GraphicsPipeline>> {
         self.graphics_pipelines.get(name).as_deref().map(ArcFinalOwner::clone)
     }
 }

@@ -1,6 +1,6 @@
 Material(
-    pipeline: "unlit",
+    pipeline: "engine/simple/unlit",
     params: {
-        "base_colour": "viking_room.tex",
+        "base_colour": Texture("viking_room"),
     },
 )

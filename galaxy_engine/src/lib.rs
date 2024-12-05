@@ -12,6 +12,7 @@ pub mod particles;
 mod pipelines;
 mod pod;
 pub mod prelude;
+mod resources;
 pub mod static_resources;
 pub mod textures;
 mod utils;

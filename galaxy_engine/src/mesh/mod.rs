@@ -1,17 +1,17 @@
 // Copyright (c) 2024 Ben Sutherland.
 
+pub mod mesh_manager;
+
 use std::alloc::Layout;
 use std::fs::File;
 use std::io::BufReader;
-use std::path::Path;
-use std::sync::Arc;
 
 use ash::vk;
 use meshopt::VertexDataAdapter;
 
-use crate::engine::DrawData;
-use crate::materials::Material;
+use crate::engine::GalaxyEngine;
 use crate::prelude::*;
+use crate::resources::MeshResourcePath;
 use crate::vertex_input::PositionTexCoordVertex;
 use crate::vulkan::buffer::{Buffer, CpuToGpu, GpuOnly};
 use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingCmdBuf, RenderingState, TransientPrimaryCommandPool};
@@ -115,20 +115,18 @@ pub enum MeshError {
 
 pub struct Mesh {
     mesh_buffer: MeshBuffer,
-    material: Arc<Material>,
-    pub transform: Similarity3,
 }
 
 impl Mesh {
     pub fn new(
         name: &str,
-        device: &Device,
+        engine: &GalaxyEngine,
         cmd_pool: &mut TransientPrimaryCommandPool,
-        mesh_path: &Path,
-        material: Arc<Material>,
+        mesh_path: &MeshResourcePath,
     ) -> Result<Self, MeshError> {
         // Load model. The obj crate already does indexing for us.
-        let obj_model: obj::Obj<obj::TexturedVertex, u32> = obj::load_obj(BufReader::new(File::open(mesh_path)?))?;
+        let obj_model: obj::Obj<obj::TexturedVertex, u32> =
+            obj::load_obj(BufReader::new(File::open(mesh_path.full_path(engine))?))?;
 
         let vertices = obj_model
             .vertices
@@ -153,31 +151,18 @@ impl Mesh {
         meshopt::optimize_overdraw_in_place(&mut indices, &vertex_data_adapter, 1.05);
         meshopt::optimize_vertex_fetch_in_place(&mut indices, &mut vertices);
 
-        let mesh_buffer = MeshBuffer::new_from_vertices_and_indices(name, &vertices, &indices, device, cmd_pool)?;
+        let mesh_buffer =
+            MeshBuffer::new_from_vertices_and_indices(name, &vertices, &indices, &engine.device, cmd_pool)?;
 
-        Ok(Self {
-            mesh_buffer,
-            material,
-            transform: Similarity3::identity(),
-        })
+        Ok(Self { mesh_buffer })
     }
 
-    pub fn material(&self) -> &Material {
-        &self.material
+    pub fn bind(&self, cmd_buf: &mut RenderingCmdBuf<PrimaryQueue>) {
+        self.mesh_buffer.bind(cmd_buf);
     }
 
-    pub fn record_graphics(&self, cmd_buffer: &mut RenderingCmdBuf<PrimaryQueue>) {
-        self.mesh_buffer.bind(cmd_buffer);
-        cmd_buffer.push_constants(
-            self.material.pipeline_layout(),
-            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-            0,
-            bytemuck::bytes_of(&DrawData {
-                transform_index: 0,
-                material_index: 0,
-            }),
-        );
-        cmd_buffer.draw_indexed(self.mesh_buffer.num_indices(), 1, 0, 0, 0);
+    pub fn draw(&self, cmd_buf: &mut RenderingCmdBuf<PrimaryQueue>) {
+        cmd_buf.draw_indexed(self.mesh_buffer.num_indices(), 1, 0, 0, 0);
     }
 }
 
