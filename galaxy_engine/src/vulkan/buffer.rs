@@ -192,20 +192,21 @@ impl<L: MemLocation> Drop for Buffer<L> {
 }
 
 impl Buffer<GpuOnly> {
-    pub fn copy_via_staging_buffer<Q: QueueType>(
+    pub fn copy_via_staging_buffer_with<Q: QueueType, F: FnOnce(&mut Buffer<CpuToGpu>) -> MemResult<()>>(
         &mut self,
         device: &Device,
         cmd_buf: &mut RecordingCmdBuf<Q>,
-        src_data: &[u8],
+        size: Option<vk::DeviceSize>,
+        f: F,
     ) -> MemResult<Buffer<CpuToGpu>> {
-        let mut staging_buffer = Buffer::<CpuToGpu>::new_for_slice(
+        let mut staging_buffer = Buffer::<CpuToGpu>::new(
             "Staging buffer",
             &device,
-            src_data,
+            size.unwrap_or(self.size),
             vk::BufferUsageFlags::TRANSFER_SRC,
             None,
         )?;
-        staging_buffer.copy_slice_into_buffer(src_data, 0)?;
+        f(&mut staging_buffer)?;
         staging_buffer.copy_to_buffer(cmd_buf, self, staging_buffer.size());
         Ok(staging_buffer)
     }
@@ -227,7 +228,13 @@ impl Buffer<CpuToGpu> {
         let size = std::mem::size_of::<T>();
         let range = offset..(offset + size);
         let bytes = unsafe { self.allocation.assume_range_initialized_as_bytes_mut(range) };
-        bytemuck::from_bytes_mut(bytes)
+        // Currently panics if the alignment is wrong.
+        bytemuck::try_from_bytes_mut(bytes).unwrap()
+    }
+
+    pub fn zero_and_get_mut_bytes(&mut self) -> &mut [u8] {
+        self.zero_memory();
+        unsafe { self.allocation.assume_initialized_as_bytes_mut() }
     }
 
     pub fn copy_into_buffer<T: bytemuck::Pod>(&mut self, data: &T, offset: usize) -> MemResult<()> {

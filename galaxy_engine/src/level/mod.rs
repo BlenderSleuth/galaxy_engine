@@ -6,15 +6,15 @@ use std::sync::Arc;
 
 use arrayvec::ArrayVec;
 use ash::vk;
-use itertools::izip;
 use serde::{Deserialize, Serialize};
 use shipyard::{Component, EntityId, IntoIter, Ref, RefMut, View, ViewMut, World};
 
 use crate::camera::{CamIsometry, Camera, FirstPersonCamera, ViewInfo};
 use crate::engine::GalaxyEngine;
-use crate::materials::{Material, MaterialData, MaterialError, MaterialResourceBinding};
+use crate::materials::{LoadingMaterialManager, Material, MaterialError, MaterialManager};
 use crate::meshes::mesh_manager::MeshManager;
 use crate::meshes::{Mesh, MeshError};
+use crate::pipelines::{PipelineManager, PushConstantBinding};
 use crate::prelude::*;
 use crate::resource_paths::{resource_type, ResourcePath};
 use crate::textures::TextureManager;
@@ -29,7 +29,7 @@ pub trait ComponentConfig {
     fn load(
         &self, // use self: Box<Self>, if going the boxed route with a custom deserialiser.
         entity_id: EntityId,
-        level: &mut Level,
+        level: &mut LoadingLevel,
         engine: &GalaxyEngine,
         cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<(), LoadError>;
@@ -43,7 +43,7 @@ where
     fn load(
         &self,
         entity_id: EntityId,
-        level: &mut Level,
+        level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
         _cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<(), LoadError> {
@@ -65,7 +65,7 @@ impl ComponentConfig for LightConfig {
     fn load(
         &self,
         _entity_id: EntityId,
-        _level: &mut Level,
+        _level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
         _cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<(), LoadError> {
@@ -73,14 +73,74 @@ impl ComponentConfig for LightConfig {
     }
 }
 
-fn update_transform_with<F: FnOnce(&mut Transform)>(entity_id: EntityId, level: &mut Level, f: F) {
-    level.world.run(|mut transforms: ViewMut<Transform>| {
-        if let Some(mut transform) = transforms.get_or_insert(entity_id, Transform::default()) {
-            f(&mut transform);
+#[derive(Clone)]
+pub struct BufferIndex(u32);
+
+impl Default for BufferIndex {
+    fn default() -> Self {
+        Self::INVALID
+    }
+}
+
+impl BufferIndex {
+    const INVALID: Self = Self(u32::MAX);
+
+    pub fn is_valid(&self) -> bool {
+        self.0 != Self::INVALID.0
+    }
+
+    pub fn get(&self) -> Option<u32> {
+        if self.is_valid() {
+            Some(self.0)
         } else {
-            log::warn!("Failed to retrieve transform component for entity {entity_id:?}");
+            None
         }
-    });
+    }
+
+    pub fn set(&mut self, index: u32) {
+        self.0 = index;
+    }
+}
+
+#[derive(Component, Default)]
+pub struct TransformComponent {
+    transform: Transform,
+    index: BufferIndex,
+}
+
+impl ComponentConfig for Transform {
+    fn load(
+        &self,
+        entity_id: EntityId,
+        level: &mut LoadingLevel,
+        _engine: &GalaxyEngine,
+        _cmd_pool: &mut TransientPrimaryCommandPool,
+    ) -> Result<(), LoadError> {
+        level.world.add_component(
+            entity_id,
+            TransformComponent {
+                transform: self.clone(),
+                index: BufferIndex::default(),
+            },
+        );
+        Ok(())
+    }
+}
+
+pub trait WorldExt {
+    fn update_transform_with<F: FnOnce(&mut Transform)>(&self, entity_id: EntityId, f: F);
+}
+
+impl WorldExt for World {
+    fn update_transform_with<F: FnOnce(&mut Transform)>(&self, entity_id: EntityId, f: F) {
+        self.run(|mut transforms: ViewMut<TransformComponent>| {
+            if let Some(mut component) = transforms.get_or_insert(entity_id, TransformComponent::default()) {
+                f(&mut component.transform);
+            } else {
+                log::warn!("Failed to retrieve transform component for entity {entity_id:?}");
+            }
+        });
+    }
 }
 
 #[derive(Serialize, Deserialize, Component, Debug, Clone)]
@@ -94,11 +154,11 @@ impl ComponentConfig for Scale {
     fn load(
         &self,
         entity_id: EntityId,
-        level: &mut Level,
+        level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
         _cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<(), LoadError> {
-        update_transform_with(entity_id, level, |transform| {
+        level.world.update_transform_with(entity_id, |transform| {
             transform.scale = Vec3::broadcast(self.0);
         });
         Ok(())
@@ -115,11 +175,11 @@ impl ComponentConfig for AnglePlaneRotor {
     fn load(
         &self,
         entity_id: EntityId,
-        level: &mut Level,
+        level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
         _cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<(), LoadError> {
-        update_transform_with(entity_id, level, |transform| {
+        level.world.update_transform_with(entity_id, |transform| {
             transform.rotation = Rotor3::from_angle_plane(self.angle.to_radians(), self.plane.normalized());
         });
         Ok(())
@@ -142,28 +202,32 @@ impl ComponentConfig for ModelConfig {
     fn load(
         &self,
         entity_id: EntityId,
-        level: &mut Level,
+        level: &mut LoadingLevel,
         engine: &GalaxyEngine,
         cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<(), LoadError> {
-        // Load material. TODO: Share materials.
+        // Load material.
         let material_path = ResourcePath::new(&self.material, Some(&level.config_path))
-            .ok_or(LoadError::ResourcePathError(self.material.to_owned()))?;
-        let material = Arc::new(Material::new(engine, &level.texture_manager, &material_path, cmd_pool)?);
+            .ok_or(LoadError::ResourcePathError(self.material.clone()))?;
+        let material = level.material_manager.get_or_load_material(
+            engine,
+            &mut level.texture_manager,
+            cmd_pool,
+            &material_path,
+        )?;
 
         // Load mesh. TODO: Share meshes.
         let mesh_path = ResourcePath::new(&self.mesh, Some(&level.config_path))
-            .ok_or(LoadError::ResourcePathError(self.mesh.to_owned()))?;
-        let mesh = Arc::new(Mesh::new(
-            Path::new(&self.mesh)
-                .file_stem()
-                .unwrap()
-                .to_str()
-                .unwrap_or("Unknown meshes"),
-            engine,
-            cmd_pool,
-            &mesh_path,
-        )?);
+            .ok_or(LoadError::ResourcePathError(self.mesh.clone()))?;
+        let mesh_name = Path::new(&self.mesh)
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap_or("Unknown mesh");
+        let mesh = Arc::new(Mesh::new(mesh_name, engine, cmd_pool, &mesh_path)?);
+
+        // Ensure each model has a transform.
+        level.world.update_transform_with(entity_id, |_| {});
 
         level.world.add_component(entity_id, Model { mesh, material });
         Ok(())
@@ -245,51 +309,57 @@ pub struct SceneUniformData {
     sun_direction: Vec3,
     delta_time: f32,
 }
-pub type SceneUniformBuffer = VolatileBuffer<SceneUniformData>;
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
 pub struct DrawData {
     pub transform_index: u32,
+    pub pipeline_index: u32,
     pub material_index: u32,
 }
 
-pub struct SceneBuffers {
-    transforms: VolatileBuffer<[Mat4; 1024]>,
-    materials: VolatileBuffer<[MaterialData; 1024]>,
-}
-
-impl SceneBuffers {
-    pub fn iter_mut(&mut self, frame: usize) -> impl Iterator<Item = (&mut Mat4, &mut MaterialData)> {
-        izip!(
-            self.transforms.get_mut(frame).iter_mut(),
-            self.materials.get_mut(frame).iter_mut()
-        )
-    }
-    pub fn buffer_infos<const N: usize>(&self) -> [[vk::DescriptorBufferInfo; 2]; N] {
-        core::array::from_fn(|frame| {
-            [
-                self.transforms.descriptor_buffer_info(frame),
-                self.materials.descriptor_buffer_info(frame),
-            ]
-        })
-    }
-}
-
-pub type SceneDescriptorPool = DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>;
-
-pub struct Level {
+pub struct LoadingLevel {
     config_path: ResourcePath,
     pub world: World,
     pub camera_entity: EntityId,
     pub mesh_manager: MeshManager,
+    pub material_manager: LoadingMaterialManager,
     pub texture_manager: TextureManager,
-    scene_descriptor_pool: SceneDescriptorPool,
-    scene_uniform_buffer: SceneUniformBuffer,
-    scene_buffers: SceneBuffers,
+}
+
+//struct LevelDescriptorPool {
+//    descriptor_pool: DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
+//}
+//
+//impl LevelDescriptorPool {
+//    // Two for the scene descriptor sets and one for the material descriptor set.
+//    //const NUM_SETS: usize = GalaxyEngine::MAX_FRAMES_IN_FLIGHT + 1;
+//
+//    fn new(engine: &GalaxyEngine, level: &LoadingLevel) -> VkResult<Self> {
+//
+//        Ok(Self { descriptor_pool })
+//    }
+//
+//    fn get(&self, frame_index: usize) -> vk::DescriptorSet {
+//        self.descriptor_pool.get(frame_index)
+//    }
+//}
+
+pub struct Level {
+    _config_path: ResourcePath,
+    pub world: World,
+    pub camera_entity: EntityId,
+    pub mesh_manager: MeshManager,
+    material_manager: MaterialManager,
+    pub texture_manager: TextureManager,
+    descriptor_pool: DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
+    scene_uniform_buffer: VolatileBuffer<SceneUniformData>,
+    scene_transforms_buffer: VolatileBuffer<[Mat4; Level::MAX_TRANSFORMS]>,
 }
 
 impl Level {
+    const MAX_TRANSFORMS: usize = 1024;
+
     pub fn new<T: DeserializableComponentConfig>(
         config_path: ResourcePath,
         engine: &GalaxyEngine,
@@ -297,50 +367,76 @@ impl Level {
         _old_level: Option<Self>, // TODO: for reusing resources.
     ) -> Result<Self, LoadError> {
         // TODO: Unload previous level and resources.
-        let device = &engine.device;
 
-        // Create level uniform buffer.
-        let scene_uniform_buffer = VolatileBuffer::new("Scene uniform buffer", device, VolatileBufferType::Uniform)?;
-
-        let scene_transforms_buffer = VolatileBuffer::new("Transforms buffer", device, VolatileBufferType::Storage)?;
-        // TODO: don't use volatile buffer for material data buffer.
-        let scene_material_buffer = VolatileBuffer::new("Material buffer", device, VolatileBufferType::Storage)?;
-        let scene_buffers = SceneBuffers {
-            transforms: scene_transforms_buffer,
-            materials: scene_material_buffer,
+        let mut level = LoadingLevel {
+            config_path,
+            world: World::new(),
+            camera_entity: EntityId::dead(),
+            mesh_manager: MeshManager::new(),
+            material_manager: LoadingMaterialManager::new(),
+            texture_manager: TextureManager::new(&engine.device)?,
         };
 
-        // Create level descriptor pool.
-        let scene_descriptor_pool_sizes = [
+        // Parse level config.
+        let config_str = std::fs::read_to_string(level.config_path.full_path::<resource_type::Level>(engine))?;
+        let config = crate::utils::load_config::<LevelConfig<T>>(&config_str)?;
+
+        // Load level.
+        for entity_config in config.entities {
+            let id = level.world.add_entity(Name::new(entity_config.name));
+            for component_config in entity_config.components.into_iter() {
+                component_config.load(id, &mut level, engine, cmd_pool)?;
+            }
+        }
+
+        let device = &engine.device;
+
+        // Create descriptor pool.
+        let descriptor_pool_sizes = [
+            // Scene uniform buffer.
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32 * 3),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count((GalaxyEngine::MAX_FRAMES_IN_FLIGHT * GalaxyEngine::NUM_TEXTURES) as u32),
+            // Scene transforms buffer.
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32),
+            // Scene texture descriptor array.
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32 * level.texture_manager.num_textures()),
+            // Material data buffers. TODO: When we have more than one incompatible pipeline layout, allocate pipeline material data buffers per layout.
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32 * level.material_manager.num_pipelines()),
         ];
-        let mut scene_descriptor_pool =
-            DescriptorPool::<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>::new(device, &scene_descriptor_pool_sizes)?;
+        let mut descriptor_pool = DescriptorPool::new(&engine.device, &descriptor_pool_sizes)?;
 
-        scene_descriptor_pool.allocate_descriptor_sets(
-            device,
-            &[engine.pipeline_manager.scene_descriptor_set_layout.handle(); GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
+        descriptor_pool.allocate_descriptor_sets(
+            &engine.device,
+            &[engine.pipeline_manager.scene_set_layout; GalaxyEngine::MAX_FRAMES_IN_FLIGHT],
         )?;
 
+        // Create scene buffers.
+        let scene_uniform_buffer = VolatileBuffer::new("Scene uniform buffer", device, VolatileBufferType::Uniform)?;
+        let scene_transforms_buffer =
+            VolatileBuffer::new("Scene transforms buffer", device, VolatileBufferType::Storage)?;
+
+        let material_manager = MaterialManager::new(level.material_manager, engine, cmd_pool)?;
+
+        // Write to scene descriptor sets.
         let uniform_buffer_info: [_; GalaxyEngine::MAX_FRAMES_IN_FLIGHT] =
             core::array::from_fn(|frame| scene_uniform_buffer.descriptor_buffer_info(frame));
-        let buffer_infos = scene_buffers.buffer_infos::<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>();
+        let transform_buffer_info: [_; GalaxyEngine::MAX_FRAMES_IN_FLIGHT] =
+            core::array::from_fn(|frame| scene_transforms_buffer.descriptor_buffer_info(frame));
+        let texture_image_infos = level.texture_manager.get_image_infos();
+        let material_buffer_infos = material_manager.get_material_buffer_infos();
 
-        let descriptor_writes: ArrayVec<_, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT * 8 }> = scene_descriptor_pool
+        const NUM_WRITES: usize = 4;
+        let descriptor_writes: ArrayVec<_, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT * NUM_WRITES }> = descriptor_pool
             .iter()
             .enumerate()
-            .flat_map(|(frame, set)| {
+            .flat_map(|(frame, set)| -> [vk::WriteDescriptorSet; NUM_WRITES] {
                 [
                     // Uniform buffer:
                     vk::WriteDescriptorSet::default()
@@ -355,46 +451,37 @@ impl Level {
                         .dst_binding(1)
                         .dst_array_element(0)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(slice::from_ref(&buffer_infos[frame][0])),
-                    // Material data:
+                        .buffer_info(slice::from_ref(&transform_buffer_info[frame])),
+                    // Textures array.
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(*set)
+                        .dst_binding(2) // Texture buffer is index 2 the in scene descriptor set layout.
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(&texture_image_infos),
+                    // Material buffers.
                     vk::WriteDescriptorSet::default()
                         .dst_set(*set)
                         .dst_binding(3)
                         .dst_array_element(0)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(slice::from_ref(&buffer_infos[frame][1])),
+                        .buffer_info(&material_buffer_infos),
                 ]
             })
             .collect();
         unsafe { device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
 
-        let mut level = Self {
-            world: World::new(),
-            camera_entity: EntityId::dead(),
-            mesh_manager: MeshManager::new(),
-            texture_manager: TextureManager::new(&engine.device)?,
-            scene_descriptor_pool,
+        Ok(Self {
+            _config_path: level.config_path,
+            world: level.world,
+            camera_entity: level.camera_entity,
+            mesh_manager: level.mesh_manager,
+            material_manager,
+            texture_manager: level.texture_manager,
+            descriptor_pool,
             scene_uniform_buffer,
-            scene_buffers,
-            config_path,
-        };
-
-        // Parse config.
-        let config_str = std::fs::read_to_string(&level.config_path.full_path::<resource_type::Level>(engine))?;
-        let config = crate::utils::load_config::<LevelConfig<T>>(&config_str)?;
-
-        for entity_config in config.entities {
-            let id = level.world.add_entity(Name::new(entity_config.name));
-            for component_config in entity_config.components.into_iter() {
-                component_config.load(id, &mut level, engine, cmd_pool)?;
-            }
-        }
-
-        level
-            .texture_manager
-            .write_textures_to_descriptor_array(engine, &level.scene_descriptor_pool);
-
-        Ok(level)
+            scene_transforms_buffer,
+        })
     }
 
     pub fn get_camera(&self) -> (Ref<&Isometry3>, Ref<&Camera>) {
@@ -410,6 +497,7 @@ impl Level {
         RefMut::map(cam_transform, |t| &mut t.0)
     }
 
+    // Called before the gpu fence, for cpu-only updates this frame.
     pub(crate) fn update(&mut self, engine: &GalaxyEngine, delta_time: f32, mouse_delta: Vec2) {
         // Update camera.
         {
@@ -460,6 +548,7 @@ impl Level {
         }
     }
 
+    // Called after the gpu fence, so gpu buffers can be updated.
     pub(crate) fn gpu_update(&mut self, delta_time: f32, game_time: std::time::Duration, frame_index: usize) {
         let view_info = {
             let (cam_transform, cam) = self.get_camera();
@@ -480,39 +569,67 @@ impl Level {
             delta_time,
         };
 
-        // Update meshes data.
-        self.world.run(|v_models: View<Model>, v_transforms: View<Transform>| {
-            (&v_models, &v_transforms)
+        // Update transforms.
+        self.world.run(|mut vm_transforms: ViewMut<TransformComponent>| {
+            (&mut vm_transforms)
                 .iter()
-                .zip(self.scene_buffers.iter_mut(frame_index))
-                .for_each(|((model, transform), (transform_mat, material_data))| {
-                    *transform_mat = view_info.mvp_from_transform(transform);
-
-                    match model.material.resource_binding("base_colour").unwrap() {
-                        MaterialResourceBinding::Texture(texture_index) => {
-                            material_data.texture_index = *texture_index;
-                        }
-                    }
+                .zip(self.scene_transforms_buffer.get_mut(frame_index).iter_mut())
+                .enumerate()
+                .for_each(|(i, (transform_comp, transform_mat))| {
+                    *transform_mat = view_info.mvp_from_transform(&transform_comp.transform);
+                    transform_comp.index.set(i as u32);
                 });
         });
     }
 
-    pub(crate) fn render(&self, rendering: &mut RenderingCmdBuf<PrimaryQueue>, frame_index: usize) {
-        self.world.run(|v_models: View<Model>| {
-            for model in v_models.iter() {
-                model.material.bind(rendering);
-                rendering.bind_descriptor_sets(
-                    vk::PipelineBindPoint::GRAPHICS,
-                    model.material.pipeline_layout(),
-                    0,
-                    slice::from_ref(&self.scene_descriptor_pool.get(frame_index)),
-                    &[],
-                );
-                model.mesh.bind(rendering);
-                model.mesh.draw(rendering);
-            }
-        });
+    pub(crate) fn render(
+        &self,
+        pipeline_manager: &PipelineManager,
+        cmd_buf: &mut RenderingCmdBuf<PrimaryQueue>,
+        frame_index: usize,
+    ) {
+        // Get the drawing layout.
+        let Some(layout) = pipeline_manager.get_layout(Some(PushConstantBinding::DrawData)) else {
+            log::warn!("No pipelines to render with.");
+            return;
+        };
 
-        //self.particle_system.record_graphics(rendering, &view_info, time, viewport, scissor);
+        // Bind scene descriptor set at index 0.
+        cmd_buf.bind_descriptor_sets(
+            vk::PipelineBindPoint::GRAPHICS,
+            layout,
+            0,
+            &[self.descriptor_pool.get(frame_index)],
+            &[],
+        );
+
+        self.world
+            .run(|v_models: View<Model>, v_transforms: View<TransformComponent>| {
+                for (pipeline_index, pipeline) in pipeline_manager.iter_graphics_pipelines().enumerate() {
+                    // Bind pipeline.
+                    cmd_buf.bind_graphics_pipeline(pipeline);
+
+                    for indexed_material in self.material_manager.iter_materials_for_pipeline(pipeline) {
+                        // TODO: This is a stupid simple linear search to find models with the same material.
+                        for (model, transform) in (&v_models, &v_transforms)
+                            .iter()
+                            .filter(|(model, _)| Arc::ptr_eq(&model.material, &indexed_material.material))
+                        {
+                            cmd_buf.push_constants(
+                                layout,
+                                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                                0,
+                                bytemuck::bytes_of(&DrawData {
+                                    transform_index: transform.index.get().unwrap(),
+                                    pipeline_index: pipeline_index as u32,
+                                    material_index: indexed_material.buffer_index,
+                                }),
+                            );
+                            model.mesh.bind(cmd_buf);
+                            model.mesh.draw(cmd_buf);
+                        }
+                    }
+                }
+            });
     }
 }

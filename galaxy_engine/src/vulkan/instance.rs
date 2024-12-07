@@ -87,6 +87,8 @@ impl Instance {
             );
 
             // MacOS compatibility.
+            // TODO: Enable MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS to allow many more bound resources.
+            // TODO: Does custom-compiling the MoltenVK library make this more performant?
             if cfg!(any(target_os = "macos", target_os = "ios")) {
                 required_extensions.push(ash::khr::portability_enumeration::NAME);
             }

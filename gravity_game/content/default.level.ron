@@ -28,6 +28,15 @@ Level(
             ],
         ),
         Entity(
+            name: "viking_room",
+            components: [
+                Model(
+                    mesh: "/game/models/viking_room/viking_room",
+                    material: "/game/models/viking_room/viking_room",
+                ),
+            ],
+        ),
+        Entity(
             name: "sponza",
             components: [
                 AnglePlaneRotor(angle: 90.0, plane: Bivec3(xy: 0.0, xz: 0.0, yz: 1.0)),

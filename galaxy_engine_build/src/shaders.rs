@@ -27,11 +27,12 @@ impl ShaderStages {
     }
 
     fn compile(&self, input_file_path: &Path, debug: bool) {
+        // Rerun if any shader file is changed, even if it's just a module.
+        rerun_if_changed(input_file_path);
+
         if !self.any_stages() {
             return;
         }
-
-        rerun_if_changed(input_file_path);
 
         // Stage / output path pairs. If adding other stages, make a macro.
         let mut output_file_path = convert_content_to_build_dir(input_file_path).unwrap();

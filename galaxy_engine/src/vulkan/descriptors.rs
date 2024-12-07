@@ -7,7 +7,6 @@ use ash::prelude::VkResult;
 use ash::vk;
 
 use crate::vulkan::device::{Device, SharedDeviceLoader};
-use crate::vulkan::get_device_loader;
 
 pub struct DescriptorPool<const N: usize> {
     loader: SharedDeviceLoader,
@@ -40,10 +39,6 @@ impl<const N: usize> DescriptorPool<N> {
         self.sets[index]
     }
 
-    pub fn release_descriptor_sets(&mut self, sets: &[vk::DescriptorSet]) -> VkResult<()> {
-        unsafe { self.loader.free_descriptor_sets(self.handle, sets) }
-    }
-
     // Returns the range of indices of the allocated descriptor sets.
     pub fn allocate_descriptor_sets(
         &mut self,
@@ -66,28 +61,6 @@ impl<const N: usize> DescriptorPool<N> {
 
 impl<const N: usize> Drop for DescriptorPool<N> {
     fn drop(&mut self) {
-        unsafe { get_device_loader().destroy_descriptor_pool(self.handle, None) }
-    }
-}
-
-pub struct DescriptorSetLayout {
-    handle: vk::DescriptorSetLayout,
-}
-
-impl DescriptorSetLayout {
-    pub fn new(device: &Device, bindings: &[vk::DescriptorSetLayoutBinding]) -> VkResult<Self> {
-        let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
-        let handle = unsafe { device.loader().create_descriptor_set_layout(&info, None) }?;
-        Ok(Self { handle })
-    }
-
-    pub fn handle(&self) -> vk::DescriptorSetLayout {
-        self.handle
-    }
-}
-
-impl Drop for DescriptorSetLayout {
-    fn drop(&mut self) {
-        unsafe { get_device_loader().destroy_descriptor_set_layout(self.handle, None) }
+        unsafe { self.loader.destroy_descriptor_pool(self.handle, None) }
     }
 }

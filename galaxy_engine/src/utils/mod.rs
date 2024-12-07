@@ -1,22 +1,20 @@
 // Copyright (c) 2024 Ben Sutherland.
 
 mod arc_final_owner;
+
 pub use arc_final_owner::ArcFinalOwner;
 mod formats;
 pub use formats::*;
 mod array;
 mod config;
+pub(crate) use config::*;
 mod extensions;
-
+pub use extensions::*;
+mod layout;
 use std::ffi::{c_char, CStr};
 
 use ash::vk;
-pub(crate) use config::*;
-pub use extensions::*;
-
-//pub(crate) const fn align_up(value: u32, alignment: u32) -> u32 {
-//    (value + alignment - 1) & !(alignment - 1)
-//}
+pub(crate) use layout::*;
 
 pub(crate) fn cstr_to_ptrs(c_strs: &[&'static CStr]) -> Vec<*const c_char> {
     c_strs.iter().map(|cstr| cstr.as_ptr()).collect()

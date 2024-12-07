@@ -1,0 +1,7 @@
+{
+    "spnza_bricks_a_diff": Texture(
+        path: "spnza_bricks_a_diff.png",
+        type: Colour,
+        mipmaps: true,
+    )
+}

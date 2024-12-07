@@ -1,7 +1,7 @@
-Texture(
-    path: "viking_room.png",
-    mipmaps: true,
-    format: RGB8, 
-    colour_space: SRGB, 
-    compression: BC7, 
-)
+{
+    "viking_room": Texture(
+        path: "viking_room.png",
+        type: Colour,
+        mipmaps: true,
+    )
+}

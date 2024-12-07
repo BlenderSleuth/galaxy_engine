@@ -4,6 +4,7 @@ use std::mem::ManuallyDrop;
 use std::sync::Arc;
 
 // Used to allow sharing of objects, but also ensuring that it is destroyed at the appropriate time.
+#[repr(transparent)]
 pub struct ArcFinalOwner<T>(ManuallyDrop<Arc<T>>);
 
 #[derive(Debug)]
@@ -32,8 +33,15 @@ impl<T> ArcFinalOwner<T> {
         }
     }
 
+    // Don't want to clone into another ArcFinalOwner, instead clone the Arc.
     pub fn clone(&self) -> Arc<T> {
         Arc::clone(&self.0)
+    }
+}
+
+impl<T> AsRef<T> for ArcFinalOwner<T> {
+    fn as_ref(&self) -> &T {
+        &**self.0
     }
 }
 

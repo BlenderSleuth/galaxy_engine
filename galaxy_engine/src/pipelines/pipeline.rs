@@ -8,20 +8,20 @@ use ash::vk;
 use ash::vk::Handle;
 use itertools::izip;
 
-use crate::pipelines::config::{
-    FragmentShaderModuleCache, GraphicsPipelineConfig, PipelineLayoutCache, VertexShaderModuleCache,
-};
-use crate::pipelines::PipelineLayout;
+use crate::pipelines::config::{GraphicsPipelineConfig, GraphicsShaderStageFlags, PipelineBinding, PipelineBindingMap};
+use crate::pipelines::pipeline_manager::{FragmentShaderModuleCache, PipelineLayoutCache, VertexShaderModuleCache};
+use crate::pipelines::{PipelineBindingDataSize, PipelineLayout};
+use crate::utils::CStructLayout;
 use crate::vertex_input::{BindableVertex, PositionColourTexCoordVertex, PositionTexCoordVertex, VertexInputType};
 use crate::vulkan::device::Device;
 use crate::vulkan::shader::{ComputeShaderStage, ShaderModule};
 
-#[derive(serde::Deserialize, Debug)]
-#[serde(rename_all = "lowercase")]
-pub enum PipelineType {
-    Graphics,
-    Compute,
-}
+//#[derive(serde::Deserialize, Debug)]
+//#[serde(rename_all = "lowercase")]
+//pub enum PipelineType {
+//    Graphics,
+//    Compute,
+//}
 
 //impl PipelineType {
 //    pub fn bind_point(&self) -> vk::PipelineBindPoint {
@@ -34,7 +34,24 @@ pub enum PipelineType {
 
 pub trait Pipeline {
     fn handle(&self) -> vk::Pipeline;
-    fn layout(&self) -> &Arc<PipelineLayout>;
+    fn name(&self) -> &str;
+    fn cloned_name(&self) -> Arc<str>;
+    fn layout(&self) -> &PipelineLayout;
+    fn bindings(&self) -> &PipelineBindingMap;
+    fn bindings_layout(&self) -> CStructLayout {
+        // Flags binding goes on the end.
+        const FLAGS_BINDING: PipelineBinding = PipelineBinding {
+            ty: PipelineBindingDataSize::Float,
+            stages: GraphicsShaderStageFlags::all(),
+        };
+        CStructLayout::new(
+            self.bindings()
+                .values()
+                .chain(std::iter::once(&FLAGS_BINDING))
+                .map(|binding| binding.ty.layout()),
+        )
+        .unwrap()
+    }
 }
 
 // Vertex, /*Hull, Domain, Geometry,*/ Fragment.
@@ -53,16 +70,18 @@ pub trait Pipeline {
 
 pub struct GraphicsPipeline {
     handle: vk::Pipeline,
+    name: Arc<str>,
     layout: Arc<PipelineLayout>,
+    bindings: PipelineBindingMap,
 }
 
 impl GraphicsPipeline {
     pub(super) fn batch_new(
         device: &Device,
         pipeline_layouts: &PipelineLayoutCache,
-        vertex_shaders: &VertexShaderModuleCache,
-        fragment_shaders: &FragmentShaderModuleCache,
-        configs: &[GraphicsPipelineConfig],
+        vertex_shaders: VertexShaderModuleCache,
+        fragment_shaders: FragmentShaderModuleCache,
+        configs: Vec<GraphicsPipelineConfig>,
         msaa_samples: vk::SampleCountFlags,
     ) -> VkResult<Vec<Self>> {
         if configs.is_empty() {
@@ -138,9 +157,9 @@ impl GraphicsPipeline {
             })
             .collect();
 
-        let (pipeline_infos, pipeline_layouts): (Vec<_>, Vec<_>) = izip!(configs, &shader_stages, &mut create_infos)
+        let (pipeline_infos, pipeline_layouts): (Vec<_>, Vec<_>) = izip!(&configs, &shader_stages, &mut create_infos)
             .map(|(config, shader_stages, infos)| {
-                let pipeline_layout = &pipeline_layouts[&config.layout.bindings().push_constant];
+                let pipeline_layout = &pipeline_layouts[&config.layout.push_constant];
                 (
                     vk::GraphicsPipelineCreateInfo::default()
                         .stages(shader_stages)
@@ -177,12 +196,12 @@ impl GraphicsPipeline {
             }
         }?;
 
-        Ok(handles
-            .into_iter()
-            .zip(pipeline_layouts)
-            .map(|(handle, layout)| Self {
+        Ok(izip!(handles.into_iter(), pipeline_layouts, configs)
+            .map(|(handle, layout, config)| Self {
                 handle,
+                name: config.name,
                 layout: Arc::clone(layout),
+                bindings: config.layout.bindings,
             })
             .collect())
     }
@@ -192,19 +211,31 @@ impl Pipeline for GraphicsPipeline {
     fn handle(&self) -> vk::Pipeline {
         self.handle
     }
-    fn layout(&self) -> &Arc<PipelineLayout> {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn cloned_name(&self) -> Arc<str> {
+        Arc::clone(&self.name)
+    }
+    fn layout(&self) -> &PipelineLayout {
         &self.layout
+    }
+    fn bindings(&self) -> &PipelineBindingMap {
+        &self.bindings
     }
 }
 
 pub struct ComputePipelineParameters {
     pub layout: Arc<PipelineLayout>,
+    pub name: Arc<str>,
     pub compute_module: ShaderModule<ComputeShaderStage>,
 }
 
 pub struct ComputePipeline {
     handle: vk::Pipeline,
+    name: Arc<str>,
     layout: Arc<PipelineLayout>,
+    bindings: PipelineBindingMap,
 }
 
 impl ComputePipeline {
@@ -233,7 +264,9 @@ impl ComputePipeline {
         }
         Ok(Self {
             handle,
+            name: params.name,
             layout: params.layout,
+            bindings: PipelineBindingMap::new(),
         })
     }
 }
@@ -242,7 +275,16 @@ impl Pipeline for ComputePipeline {
     fn handle(&self) -> vk::Pipeline {
         self.handle
     }
-    fn layout(&self) -> &Arc<PipelineLayout> {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn cloned_name(&self) -> Arc<str> {
+        Arc::clone(&self.name)
+    }
+    fn layout(&self) -> &PipelineLayout {
         &self.layout
+    }
+    fn bindings(&self) -> &PipelineBindingMap {
+        &self.bindings
     }
 }

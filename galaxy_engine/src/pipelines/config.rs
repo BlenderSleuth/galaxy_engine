@@ -1,75 +1,37 @@
 // Copyright (c) 2024 Ben Sutherland.
 
-use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 
-use arrayvec::ArrayVec;
 use ash::vk;
 use indexmap::IndexMap;
 
 use crate::level::DrawData;
-use crate::pipelines::PipelineLayout;
 use crate::vertex_input::VertexInputType;
-use crate::vulkan::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
 
 #[derive(serde::Deserialize, Debug)]
-pub(super) struct VertexShaderConfig {
-    pub id: String,
+pub(super) struct VertexShaderConfig<'a> {
+    pub id: &'a str,
     pub input_type: VertexInputType,
 }
 
 #[derive(serde::Deserialize, Debug)]
-pub(super) struct FragmentShaderConfig {
-    pub id: String,
+pub(super) struct FragmentShaderConfig<'a> {
+    pub id: &'a str,
 }
 
 #[derive(serde::Deserialize, Debug)]
-pub(super) struct GraphicsShaderConfig {
-    pub vertex: VertexShaderConfig,
-    pub fragment: FragmentShaderConfig,
+pub(super) struct GraphicsShaderConfig<'a> {
+    #[serde(borrow)]
+    pub vertex: VertexShaderConfig<'a>,
+    #[serde(borrow)]
+    pub fragment: FragmentShaderConfig<'a>,
 }
 
 #[derive(serde::Deserialize, Debug)]
 pub(super) struct RasteriserConfig {
     pub multisample_enable: bool,
     pub depth_enable: bool,
-}
-
-#[derive(serde::Deserialize, Debug, Hash, Copy, Clone, PartialEq, Eq)]
-pub(super) enum PipelineLayoutDataType {
-    Float,
-    Float2,
-    Float3,
-    Float4,
-    Int,
-    UInt,
-    DrawData,
-}
-
-impl PipelineLayoutDataType {
-    pub fn size(&self) -> u32 {
-        (match self {
-            Self::Float => std::mem::size_of::<f32>(),
-            Self::Float2 => std::mem::size_of::<[f32; 2]>(),
-            Self::Float3 => std::mem::size_of::<[f32; 4]>(),
-            Self::Float4 => std::mem::size_of::<[f32; 4]>(),
-            Self::Int => std::mem::size_of::<i32>(),
-            Self::UInt => std::mem::size_of::<u32>(),
-            Self::DrawData => std::mem::size_of::<DrawData>(),
-        }) as u32
-    }
-    //pub fn align(&self) -> u32 {
-    //    (match self {
-    //        Self::Float => std::mem::align_of::<f32>(),
-    //        Self::Float2 => std::mem::align_of::<[f32; 2]>(),
-    //        Self::Float3 => std::mem::align_of::<[f32; 4]>(),
-    //        Self::Float4 => std::mem::align_of::<[f32; 4]>(),
-    //        Self::Int => std::mem::align_of::<i32>(),
-    //        Self::UInt => std::mem::align_of::<u32>(),
-    //        Self::DrawData => std::mem::align_of::<DrawData>(),
-    //    }) as u32
-    //}
 }
 
 bitflags::bitflags! {
@@ -94,73 +56,119 @@ impl GraphicsShaderStageFlags {
     }
 }
 
-#[derive(serde::Deserialize, Hash, Debug, Copy, Clone, PartialEq, Eq)]
-pub(super) struct PipelineLayoutBinding {
-    #[serde(rename = "type")]
-    pub ty: PipelineLayoutDataType,
-    pub stages: GraphicsShaderStageFlags,
+#[derive(serde::Deserialize, Debug, Copy, Clone)]
+pub enum PipelineBindingDataSize {
+    Float,
+    Float2,
+    Float3,
+    Float4,
 }
 
-impl PipelineLayoutBinding {
-    pub fn push_constant_range(&self) -> vk::PushConstantRange {
-        vk::PushConstantRange::default()
-            .stage_flags(self.stages.vk())
-            .offset(0)
-            .size(self.ty.size())
+impl PipelineBindingDataSize {
+    const FLOAT: usize = std::mem::size_of::<f32>();
+
+    pub const fn layout(&self) -> std::alloc::Layout {
+        match std::alloc::Layout::from_size_align(self.size(), self.align()) {
+            Ok(layout) => layout,
+            Err(_) => panic!("Alignment must be a power of 2."),
+        }
+    }
+
+    pub const fn size(&self) -> usize {
+        Self::FLOAT
+            * match self {
+                Self::Float => 1,
+                Self::Float2 => 2,
+                Self::Float3 => 3,
+                Self::Float4 => 4,
+            }
+    }
+
+    pub const fn align(&self) -> usize {
+        Self::FLOAT
+            * match self {
+                Self::Float => 1,
+                Self::Float2 => 2,
+                Self::Float3 => 4, // Float3 uses Float4 (16 byte) alignment.
+                Self::Float4 => 4,
+            }
     }
 }
 
-#[derive(serde::Deserialize, Debug, Default)]
-pub(crate) struct PipelineLayoutNamedBindings {
-    push_constant: Option<PipelineLayoutBinding>,
-    bindings: IndexMap<String, PipelineLayoutBinding>,
+#[derive(serde::Deserialize, Debug, Copy, Clone)]
+pub struct PipelineBinding {
+    #[serde(rename = "type")]
+    pub ty: PipelineBindingDataSize,
+    // TODO: These are not currently used.
+    pub stages: GraphicsShaderStageFlags,
 }
 
-impl PipelineLayoutNamedBindings {
-    pub fn bindings(&self) -> PipelineLayoutBindings {
-        let bindings = self.bindings.values().copied().collect();
-        PipelineLayoutBindings {
-            push_constant: self.push_constant,
-            bindings,
+pub type PipelineBindingMap = IndexMap<String, PipelineBinding>;
+
+#[derive(serde::Deserialize, Debug, Hash, Copy, Clone, PartialEq, Eq)]
+pub enum PushConstantBinding {
+    DrawData,
+}
+
+impl PushConstantBinding {
+    pub fn push_constant_range(&self) -> vk::PushConstantRange {
+        match self {
+            Self::DrawData => vk::PushConstantRange::default()
+                .stage_flags((GraphicsShaderStageFlags::Vertex | GraphicsShaderStageFlags::Fragment).vk())
+                .offset(0)
+                .size(std::mem::size_of::<DrawData>() as u32),
         }
     }
 }
 
-const NUM_DESCRIPTOR_BINDINGS: usize = 12;
-
-#[derive(Hash, Debug, PartialEq, Eq)]
-pub(crate) struct PipelineLayoutBindings {
-    pub push_constant: Option<PipelineLayoutBinding>,
-    pub bindings: ArrayVec<PipelineLayoutBinding, NUM_DESCRIPTOR_BINDINGS>,
+#[derive(serde::Deserialize, Debug)]
+pub(crate) struct PipelineLayoutNamedBindings {
+    pub push_constant: Option<PushConstantBinding>,
+    pub bindings: PipelineBindingMap,
 }
 
+//impl PipelineLayoutNamedBindings {
+//    pub fn bindings(&self) -> PipelineLayoutBindings {
+//        let bindings = self.bindings.values().copied().collect();
+//        PipelineLayoutBindings {
+//            push_constant: self.push_constant,
+//            bindings,
+//        }
+//    }
+//
+//    pub fn push_constant(&self) -> Option<PipelineLayoutBinding> {
+//        self.push_constant
+//    }
+//}
+
+//const NUM_DESCRIPTOR_BINDINGS: usize = 12;
+
+//#[derive(Hash, Debug, PartialEq, Eq)]
+//pub(crate) struct PipelineLayoutBindings {
+//    pub push_constant: Option<PipelineLayoutBinding>,
+//    pub bindings: ArrayVec<PipelineLayoutBinding, NUM_DESCRIPTOR_BINDINGS>,
+//}
+
 #[derive(serde::Deserialize, Debug)]
-pub(super) struct GraphicsPipelineConfig {
-    pub name: String,
-    pub shaders: GraphicsShaderConfig,
+pub(super) struct GraphicsPipelineConfig<'a> {
+    pub name: Arc<str>,
+    #[serde(borrow)]
+    pub shaders: GraphicsShaderConfig<'a>,
     pub rasteriser: RasteriserConfig,
-    #[serde(default)]
     pub layout: PipelineLayoutNamedBindings,
 }
 
 #[derive(serde::Deserialize, Debug)]
-pub(super) struct ComputePipelineConfig {
-    name: String,
-    shader: String,
+pub(super) struct ComputePipelineConfig<'a> {
+    name: &'a str,
+    shader: &'a str,
     layout: PipelineLayoutNamedBindings,
 }
 
 #[derive(serde::Deserialize, Debug)]
-pub(crate) enum PipelineConfig {
-    #[serde(rename = "GraphicsPipeline")]
-    Graphics(GraphicsPipelineConfig),
-    #[serde(rename = "ComputePipeline")]
-    Compute(ComputePipelineConfig),
+pub(crate) enum PipelineConfig<'a> {
+    #[serde(borrow, rename = "GraphicsPipeline")]
+    Graphics(GraphicsPipelineConfig<'a>),
+    #[serde(borrow, rename = "ComputePipeline")]
+    Compute(ComputePipelineConfig<'a>),
 }
-
-pub(super) fn load_config(config_str: &str) -> ron::error::SpannedResult<PipelineConfig> {
-    crate::utils::load_config(config_str)
-}
-pub type PipelineLayoutCache = HashMap<Option<PipelineLayoutBinding>, Arc<PipelineLayout>>;
-pub type VertexShaderModuleCache = HashMap<String, ShaderModule<VertexShaderStage>>;
-pub type FragmentShaderModuleCache = HashMap<String, ShaderModule<FragmentShaderStage>>;

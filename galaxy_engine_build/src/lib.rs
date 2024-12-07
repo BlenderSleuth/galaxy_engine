@@ -36,10 +36,10 @@ fn full_path(path: &Path) -> PathBuf {
     full_path
 }
 
-fn core_filename(path: &Path) -> Option<&str> {
-    // Can use Path::file_prefix() when it's stable.
-    path.file_stem()?.to_str()?.splitn(1, ".").next()
-}
+//fn core_filename(path: &Path) -> Option<&str> {
+//    // Can use Path::file_prefix() when it's stable.
+//    path.file_stem()?.to_str()?.split(".").next()
+//}
 
 fn create_required_folders(path: &Path) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -52,14 +52,14 @@ fn rerun_if_changed(path: &Path) {
 fn handle_command_result(cmd_result: std::io::Result<Output>, fail: &str, binary: &str) {
     match cmd_result {
         Ok(output) => {
-            if output.stderr.len() > 0 {
+            if !output.stderr.is_empty() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 for line in stderr.lines() {
                     print_warning!("{line}");
                 }
                 panic!("{fail}.");
             }
-            if output.stdout.len() > 0 {
+            if !output.stdout.is_empty() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
                     print_warning!("{line}");

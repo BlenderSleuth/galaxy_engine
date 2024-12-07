@@ -3,10 +3,10 @@ import draw_data;
 import vertex_input_types;
 import vertex_output_types;
 
-struct MaterialData {};
+struct M {}
 
-[[vk::binding(0, 0)]] 
-ParameterBlock<SceneData<MaterialData>> scene_data;
+[[vk::binding(0, 0)]]
+ParameterBlock<SceneData<M>> scene_data;
 
 typedef PositionTexCoordVStoFS VSToFS;
 

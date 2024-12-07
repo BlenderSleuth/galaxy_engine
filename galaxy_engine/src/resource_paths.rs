@@ -34,7 +34,7 @@ pub mod resource_type {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Hash, PartialEq, Eq, Copy, Clone)]
 pub enum ResourcePathBase {
     Game,
     Engine,
@@ -56,6 +56,7 @@ pub trait ResourcePathTrait {
     fn full_path(&self, engine: &GalaxyEngine) -> PathBuf;
 }
 
+#[derive(Hash, PartialEq, Eq, Clone)]
 pub struct ResourcePath {
     base: ResourcePathBase,
     path: PathBuf,
@@ -68,13 +69,11 @@ impl ResourcePath {
                 base,
                 path: path.to_path_buf(),
             })
-        } else if let Some(relative_to) = relative_to {
-            Some(Self {
+        } else {
+            relative_to.map(|relative_to| Self {
                 base: relative_to.base,
                 path: relative_to.path.parent().unwrap_or(&relative_to.path).join(path),
             })
-        } else {
-            None
         }
     }
 

@@ -1,10 +1,9 @@
 // Copyright (c) 2024 Ben Sutherland.
 
 use serde::{Deserialize, Serialize};
-use shipyard::Component;
 pub use ultraviolet::{Bivec3, Isometry3, Mat3, Mat4, Rotor3, Similarity3, Vec2, Vec3, Vec4};
 
-#[derive(Serialize, Deserialize, Component, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Transform {
     pub translation: Vec3,
     pub rotation: Rotor3,

@@ -1,24 +1,20 @@
 // Copyright (c) 2024 Ben Sutherland.
 
-use indexmap::IndexMap;
+use std::collections::HashMap;
 
-//pub enum MaterialLayoutBinding {
-//    Constant(ConfigID),
-//    Texture(ConfigID),
-//}
+use crate::materials::material::ResourceConstant;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
-pub enum ResourceBinding<'a> {
+pub enum ResourceBindingConfig<'a> {
     Texture(&'a str),
-    Constant(&'a str),
+    Constant(ResourceConstant),
 }
 
 #[derive(serde::Deserialize, Debug)]
 #[serde(rename = "Material")]
 pub(crate) struct MaterialConfig<'a> {
     pub pipeline: &'a str,
-    // TODO: based on the pipeline, use a struct serialiser.
-    pub params: IndexMap<&'a str, ResourceBinding<'a>>,
+    pub params: HashMap<&'a str, ResourceBindingConfig<'a>>,
 }
 
 pub fn get_material_config(config_str: &str) -> ron::error::SpannedResult<MaterialConfig> {

@@ -108,7 +108,6 @@ pub struct GalaxyEngine {
 impl GalaxyEngine {
     pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
     pub const NUM_MSAA_SAMPLES: vk::SampleCountFlags = vk::SampleCountFlags::TYPE_4;
-    pub const NUM_TEXTURES: usize = 2;
 
     // Content directories.
     pub const PKG_PATH: &'static str = concatcp!(env!("CARGO_PKG_NAME"), "/");
@@ -387,9 +386,10 @@ impl GalaxyEngine {
         rendering.set_viewport(viewport);
         rendering.set_scissor(scissor);
         {
+            let pipeline_manager = &self.pipeline_manager;
             let level_lock = self.level.lock().unwrap();
             if let Some(level) = level_lock.deref() {
-                level.render(rendering, frame_index);
+                level.render(pipeline_manager, rendering, frame_index);
             };
         }
         let recording = gfx_cmd_buffer.end_rendering(ext)?;

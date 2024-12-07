@@ -18,6 +18,9 @@ pub mod queue_type {
     // presentation without a graphics and present queue. Thus, this primary queue is also used for presentation.
     // https://stackoverflow.com/questions/61434615/in-vulkan-is-it-beneficial-for-the-graphics-queue-family-to-be-separate-from-th
 
+    // For MoltenVK, we may want to enable the MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES option so the
+    // specialised queues get created (would need to be profiled).
+
     pub trait QueueType: 'static {}
     pub trait ComputeQueueType: QueueType {}
     // This is the primary, mandatory queue, with support for graphics, compute, transfer and present operations.

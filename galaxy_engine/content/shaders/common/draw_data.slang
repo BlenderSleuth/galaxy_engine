@@ -2,6 +2,7 @@ module draw_data;
 
 public struct DrawData {
     public uint transform_index;
+    public uint pipeline_index;
     public uint material_index;
 };
 

@@ -242,7 +242,7 @@ impl GpuParticleSystem {
         cmd_buffer.bind_compute_pipeline(&self.compute_pipeline);
         cmd_buffer.bind_descriptor_sets(
             vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipeline.layout().as_ref(),
+            self.compute_pipeline.layout(),
             0,
             &[self.compute_descriptor_set],
             &[],
@@ -259,7 +259,7 @@ impl GpuParticleSystem {
         scissor: vk::Rect2D,
     ) {
         let mvp = view_info.mvp_from_similarity(&spin_transform(time.sin() * 0.5, 20.0));
-        let pipeline_layout = self.graphics_pipeline.layout().as_ref();
+        let pipeline_layout = self.graphics_pipeline.layout();
         command_buffer.bind_graphics_pipeline(&self.graphics_pipeline);
         command_buffer.bind_descriptor_sets(
             vk::PipelineBindPoint::GRAPHICS,
