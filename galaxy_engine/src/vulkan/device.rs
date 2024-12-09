@@ -175,7 +175,7 @@ impl Device {
         })?;
 
         // Load extensions.
-        let extensions = DeviceExtensions::new(&instance, &device, &[ext::debug_utils::NAME]);
+        let extensions = DeviceExtensions::new(instance, &device, &[ext::debug_utils::NAME]);
 
         // Debug name queues.
         debug::set_object_name_with_ext(&extensions, primary_queue.handle(), "Primary Queue")?;

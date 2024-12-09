@@ -62,10 +62,11 @@ pub enum PipelineBindingDataSize {
     Float2,
     Float3,
     Float4,
+    Normal,
 }
 
 impl PipelineBindingDataSize {
-    const FLOAT: usize = std::mem::size_of::<f32>();
+    const FLOAT_SIZE: usize = std::mem::size_of::<f32>();
 
     pub const fn layout(&self) -> std::alloc::Layout {
         match std::alloc::Layout::from_size_align(self.size(), self.align()) {
@@ -75,21 +76,21 @@ impl PipelineBindingDataSize {
     }
 
     pub const fn size(&self) -> usize {
-        Self::FLOAT
+        Self::FLOAT_SIZE
             * match self {
                 Self::Float => 1,
                 Self::Float2 => 2,
-                Self::Float3 => 3,
+                Self::Float3 | Self::Normal => 3,
                 Self::Float4 => 4,
             }
     }
 
     pub const fn align(&self) -> usize {
-        Self::FLOAT
+        Self::FLOAT_SIZE
             * match self {
                 Self::Float => 1,
                 Self::Float2 => 2,
-                Self::Float3 => 4, // Float3 uses Float4 (16 byte) alignment.
+                Self::Float3 | Self::Normal => 4, // Float3 uses Float4 (16 byte) alignment.
                 Self::Float4 => 4,
             }
     }

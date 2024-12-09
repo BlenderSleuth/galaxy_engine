@@ -266,6 +266,9 @@ impl PhysicalDevice {
         // Require buffer_device_address support.
         check_and_enable_feature!(features12.buffer_device_address);
 
+        // Require scalar block layout support. TODO: Temporary solution until https://github.com/shader-slang/slang/issues/5806 gets resolved.
+        check_and_enable_feature!(features12.scalar_block_layout);
+
         // Require descriptor indexing support.
         //check_and_enable_feature!(features12.descriptor_indexing);
         // Require draw indirect count.

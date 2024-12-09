@@ -2,15 +2,16 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::fmt::Formatter;
 use std::sync::Arc;
 
 use ash::vk;
 use indexmap::IndexMap;
-use ultraviolet::{Vec3, Vec4};
+use ultraviolet::{Vec2, Vec3, Vec4};
 
 use crate::engine::GalaxyEngine;
 use crate::materials::{Material, MaterialError, ResourceBinding};
-use crate::pipelines::{GraphicsPipeline, Pipeline};
+use crate::pipelines::{GraphicsPipeline, Pipeline, PipelineBindingDataSize};
 use crate::resource_paths::ResourcePath;
 use crate::textures::TextureManager;
 use crate::utils::LayoutExt;
@@ -77,41 +78,46 @@ impl LoadingMaterialManager {
     }
 }
 
-#[derive(Copy, Clone, bytemuck::Zeroable)]
-#[repr(C)]
-union MaterialBinding<T: bytemuck::Pod> {
-    texture_index: u32,
+// Material binding trait and implementations.
+trait MaterialBindingTrait<T: bytemuck::Pod> {
+    const UNBOUND: T;
+    fn get_texture_index(&self) -> u32;
+    fn set_texture_index(&mut self, index: u32);
+}
+
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
+#[repr(transparent)]
+struct MaterialBinding<T> {
     constant: T,
 }
 
-trait UnboundMaterialBinding<T: bytemuck::Pod> {
-    const UNBOUND: MaterialBinding<T>;
-}
+macro_rules! impl_material_binding {
+    ($ty:ty, $unbound:expr $(, $index:tt)?) => {
+        impl MaterialBindingTrait<$ty> for MaterialBinding<$ty> {
+            const UNBOUND: $ty = $unbound;
+            fn get_texture_index(&self) -> u32 {
+                self.constant$($index)?.to_bits()
+            }
+            fn set_texture_index(&mut self, index: u32) {
+                self.constant$($index)? = f32::from_bits(index);
+            }
+        }
 
-impl UnboundMaterialBinding<Vec4> for MaterialBinding<Vec4> {
-    const UNBOUND: Self = Self {
-        constant: Vec4::new(1., 0., 1., 1.),
+        impl fmt::Debug for MaterialBinding<$ty> {
+            fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+                f.debug_struct("MaterialBinding")
+                    .field("texture_index", &self.get_texture_index())
+                    .field("constant", &self.constant)
+                    .finish()
+            }
+        }
     };
 }
 
-impl UnboundMaterialBinding<Vec3> for MaterialBinding<Vec3> {
-    const UNBOUND: Self = Self {
-        constant: Vec3::new(1., 0., 1.),
-    };
-}
-
-impl<T: bytemuck::Pod + fmt::Debug> fmt::Debug for MaterialBinding<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // These are safe because both T and u32 are Pod and initialised.
-        f.debug_struct("MaterialBinding")
-            .field("texture_index", unsafe { &self.texture_index })
-            .field("constant", unsafe { &self.constant })
-            .finish()
-    }
-}
-
-// Because both T and u32 are Pod, there are no padding bytes and all bit patterns are valid.
-unsafe impl<T: bytemuck::Pod> bytemuck::Pod for MaterialBinding<T> {}
+impl_material_binding!(f32, 0.5);
+impl_material_binding!(Vec2, Vec2::new(1., 0.), [0]);
+impl_material_binding!(Vec3, Vec3::new(1., 0., 1.), [0]);
+impl_material_binding!(Vec4, Vec4::new(1., 0., 1., 1.), [0]);
 
 struct PipelineData {
     materials: Vec<ResourcePath>,
@@ -168,31 +174,59 @@ impl MaterialManager {
                             // A flags u32 is the final field, with a bit for each resource that says whether it's a constant (1) or a texture (0).
                             // Then union the first f32 of the constant as the texture index.
                             let mut flags = 0u32;
-                            for (i, ((bind_point, _binding), field_range)) in pipeline
+                            for (i, ((bind_point, binding), field_range)) in pipeline
                                 .bindings()
                                 .iter()
                                 .zip(bindings_layout.ranges.iter().cloned())
                                 .enumerate()
                             {
-                                // TODO: Material binding size from pipeline binding size.
-                                assert_eq!(_binding.ty.size(), size_of::<MaterialBinding<Vec4>>());
-                                let material_binding: &mut MaterialBinding<Vec4> =
-                                    bytemuck::from_bytes_mut(&mut buffer_memory[field_range]);
-
-                                if let Some(resource_binding) = resource_bindings.get(bind_point) {
-                                    match resource_binding {
-                                        ResourceBinding::Constant(value) => {
-                                            material_binding.constant = value.as_vec4();
+                                match binding.ty {
+                                    PipelineBindingDataSize::Float => {
+                                        let mat_binding = bytemuck::from_bytes_mut::<MaterialBinding<f32>>(
+                                            &mut buffer_memory[field_range],
+                                        );
+                                        if let Some(resource_binding) = resource_bindings.get(bind_point) {
+                                            match resource_binding {
+                                                ResourceBinding::Constant(value) => {
+                                                    mat_binding.constant = value.as_f32();
+                                                    flags |= 1 << i;
+                                                }
+                                                ResourceBinding::Texture(index) => {
+                                                    mat_binding.set_texture_index(*index);
+                                                }
+                                            }
+                                        } else {
+                                            // TODO: In debug builds, put a constant sentinel value in the buffer to catch errors.
                                             flags |= 1 << i;
                                         }
-                                        ResourceBinding::Texture(index) => {
-                                            material_binding.texture_index = *index;
+                                    }
+                                    PipelineBindingDataSize::Float2 => {
+                                        unimplemented!()
+                                    }
+                                    PipelineBindingDataSize::Float3 => {
+                                        let mat_binding = bytemuck::from_bytes_mut::<MaterialBinding<Vec3>>(
+                                            &mut buffer_memory[field_range],
+                                        );
+                                        if let Some(resource_binding) = resource_bindings.get(bind_point) {
+                                            match resource_binding {
+                                                ResourceBinding::Constant(value) => {
+                                                    mat_binding.constant = value.as_vec3();
+                                                    flags |= 1 << i;
+                                                }
+                                                ResourceBinding::Texture(index) => {
+                                                    mat_binding.set_texture_index(*index);
+                                                }
+                                            }
+                                        } else {
+                                            flags |= 1 << i;
                                         }
                                     }
-                                } else {
-                                    // TODO: In debug builds, put a constant sentinel value in the buffer to catch errors.
-                                    *material_binding = MaterialBinding::<Vec4>::UNBOUND;
-                                    flags |= 1 << i;
+                                    PipelineBindingDataSize::Float4 => {
+                                        unimplemented!()
+                                    }
+                                    PipelineBindingDataSize::Normal => {
+                                        unimplemented!()
+                                    }
                                 }
                             }
                             let flags_range = bindings_layout.ranges.last().unwrap().clone();
@@ -202,7 +236,9 @@ impl MaterialManager {
                             //#[repr(C)]
                             //#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable, Debug)]
                             //struct UnlitMaterialData {
-                            //    base_colour: MaterialBinding<Vec4>,
+                            //    base_colour: MaterialBinding<Vec3>,
+                            //    roughness: MaterialBinding<f32>,
+                            //    normal: MaterialBinding<Vec3>,
                             //    flags: u32,
                             //}
 

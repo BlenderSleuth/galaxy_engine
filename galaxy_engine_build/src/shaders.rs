@@ -78,7 +78,10 @@ impl ShaderStages {
             .args(["-o", output_file_path.to_str().unwrap()]);
 
         if debug {
-            command.arg("-g2").arg("-O0");
+            command
+                .arg("-g2")
+                .arg("-O0")
+                .args(["-capability", "SPV_KHR_non_semantic_info"]);
         } else {
             command.arg("-g0").arg("-O2");
         }

@@ -8,8 +8,8 @@ public struct SceneUniforms {
 };
 
 public struct SceneData<M> {
-    public ConstantBuffer<SceneUniforms> scene;
+    public ConstantBuffer<SceneUniforms, Std430DataLayout> scene;
     public StructuredBuffer<float4x4> transforms;
     public Sampler2D<float4> textures[512];
-    public StructuredBuffer<M> materials[512];
+    public StructuredBuffer<M, ScalarDataLayout> materials[512];
 }

@@ -17,7 +17,15 @@ GraphicsPipeline(
         push_constant: DrawData, 
         bindings: {
             "base_colour": (
-                type: Float4, 
+                type: Float3, 
+                stages: "Fragment",
+            ),
+            "roughness": (
+                type: Float, 
+                stages: "Fragment",
+            ),
+            "normal": (
+                type: Float3, 
                 stages: "Fragment",
             ),
         }

@@ -404,7 +404,9 @@ impl Level {
             // Scene texture descriptor array.
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32 * level.texture_manager.num_textures()),
+                .descriptor_count(
+                    (GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32 * level.texture_manager.num_textures()).max(1),
+                ),
             // Material data buffers. TODO: When we have more than one incompatible pipeline layout, allocate pipeline material data buffers per layout.
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
@@ -433,10 +435,10 @@ impl Level {
         let material_buffer_infos = material_manager.get_material_buffer_infos();
 
         const NUM_WRITES: usize = 4;
-        let descriptor_writes: ArrayVec<_, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT * NUM_WRITES }> = descriptor_pool
+        let mut descriptor_writes: ArrayVec<_, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT * NUM_WRITES }> = descriptor_pool
             .iter()
             .enumerate()
-            .flat_map(|(frame, set)| -> [vk::WriteDescriptorSet; NUM_WRITES] {
+            .flat_map(|(frame, set)| -> [vk::WriteDescriptorSet; NUM_WRITES - 1] {
                 [
                     // Uniform buffer:
                     vk::WriteDescriptorSet::default()
@@ -452,13 +454,6 @@ impl Level {
                         .dst_array_element(0)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .buffer_info(slice::from_ref(&transform_buffer_info[frame])),
-                    // Textures array.
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(*set)
-                        .dst_binding(2) // Texture buffer is index 2 the in scene descriptor set layout.
-                        .dst_array_element(0)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(&texture_image_infos),
                     // Material buffers.
                     vk::WriteDescriptorSet::default()
                         .dst_set(*set)
@@ -469,6 +464,19 @@ impl Level {
                 ]
             })
             .collect();
+
+        if !texture_image_infos.is_empty() {
+            descriptor_writes.extend(descriptor_pool.iter().map(|set| {
+                // Textures array.
+                vk::WriteDescriptorSet::default()
+                    .dst_set(*set)
+                    .dst_binding(2) // Texture buffer is index 2 the in scene descriptor set layout.
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&texture_image_infos)
+            }));
+        }
+
         unsafe { device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
 
         Ok(Self {

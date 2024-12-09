@@ -38,6 +38,11 @@ pub enum ResourceConstant {
 }
 
 impl ResourceConstant {
+    pub fn as_f32(&self) -> f32 {
+        match *self {
+            ResourceConstant::RGB(r, g, b) => (r as f32 + g as f32 + b as f32) / 3.0 / 255.0,
+        }
+    }
     pub fn as_vec3(&self) -> Vec3 {
         match *self {
             ResourceConstant::RGB(r, g, b) => Vec3::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0),

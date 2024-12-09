@@ -17,7 +17,7 @@ pub struct DescriptorPool<const N: usize> {
 impl<const N: usize> DescriptorPool<N> {
     pub fn new(device: &Device, pool_sizes: &[vk::DescriptorPoolSize]) -> VkResult<Self> {
         let info = vk::DescriptorPoolCreateInfo::default()
-            .pool_sizes(&pool_sizes)
+            .pool_sizes(pool_sizes)
             .max_sets(N as u32);
         let handle = unsafe { device.loader().create_descriptor_pool(&info, None) }?;
         Ok(Self {
