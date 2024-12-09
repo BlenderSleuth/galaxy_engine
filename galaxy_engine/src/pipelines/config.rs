@@ -104,7 +104,7 @@ pub struct PipelineBinding {
     pub stages: GraphicsShaderStageFlags,
 }
 
-pub type PipelineBindingMap = IndexMap<String, PipelineBinding>;
+pub type PipelineBindingMap<S = Arc<str>> = IndexMap<S, PipelineBinding>;
 
 #[derive(serde::Deserialize, Debug, Hash, Copy, Clone, PartialEq, Eq)]
 pub enum PushConstantBinding {
@@ -123,9 +123,10 @@ impl PushConstantBinding {
 }
 
 #[derive(serde::Deserialize, Debug)]
-pub(crate) struct PipelineLayoutNamedBindings {
+pub(crate) struct PipelineLayoutNamedBindings<'a> {
     pub push_constant: Option<PushConstantBinding>,
-    pub bindings: PipelineBindingMap,
+    #[serde(borrow)]
+    pub bindings: PipelineBindingMap<&'a str>,
 }
 
 //impl PipelineLayoutNamedBindings {
@@ -156,14 +157,16 @@ pub(super) struct GraphicsPipelineConfig<'a> {
     #[serde(borrow)]
     pub shaders: GraphicsShaderConfig<'a>,
     pub rasteriser: RasteriserConfig,
-    pub layout: PipelineLayoutNamedBindings,
+    #[serde(borrow)]
+    pub layout: PipelineLayoutNamedBindings<'a>,
 }
 
 #[derive(serde::Deserialize, Debug)]
 pub(super) struct ComputePipelineConfig<'a> {
     name: &'a str,
     shader: &'a str,
-    layout: PipelineLayoutNamedBindings,
+    #[serde(borrow)]
+    layout: PipelineLayoutNamedBindings<'a>,
 }
 
 #[derive(serde::Deserialize, Debug)]

@@ -1,5 +1,6 @@
 // Copyright (c) 2024 Ben Sutherland.
 
+use std::collections::HashSet;
 use std::slice;
 use std::sync::Arc;
 
@@ -83,6 +84,7 @@ impl GraphicsPipeline {
         fragment_shaders: FragmentShaderModuleCache,
         configs: Vec<GraphicsPipelineConfig>,
         msaa_samples: vk::SampleCountFlags,
+        bind_point_id_cache: &mut HashSet<Arc<str>>,
     ) -> VkResult<Vec<Self>> {
         if configs.is_empty() {
             return Ok(Vec::new());
@@ -201,7 +203,24 @@ impl GraphicsPipeline {
                 handle,
                 name: config.name,
                 layout: Arc::clone(layout),
-                bindings: config.layout.bindings,
+                bindings: config
+                    .layout
+                    .bindings
+                    .into_iter()
+                    .map(|(k, v)| {
+                        (
+                            // Until HashSet::get_or_insert is stabilized, we use an if-let.
+                            if let Some(id) = bind_point_id_cache.get(k) {
+                                Arc::clone(id)
+                            } else {
+                                let id = Arc::from(k);
+                                bind_point_id_cache.insert(Arc::clone(&id));
+                                id
+                            },
+                            v,
+                        )
+                    })
+                    .collect(),
             })
             .collect())
     }

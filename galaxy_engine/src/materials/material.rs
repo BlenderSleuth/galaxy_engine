@@ -75,7 +75,7 @@ pub enum ResourceBinding {
     Constant(ResourceConstant),
 }
 
-pub type ResourceBindingMap = HashMap<String, ResourceBinding>;
+pub type ResourceBindingMap = HashMap<Arc<str>, ResourceBinding>;
 
 pub struct Material {
     pipeline: Arc<GraphicsPipeline>,
@@ -101,6 +101,12 @@ impl Material {
         // Construct resource bindings.
         let mut resource_bindings = HashMap::new();
         for (bind_point, binding) in config.params {
+            let id = Arc::clone(
+                engine
+                    .pipeline_manager
+                    .get_bind_point_id(bind_point)
+                    .expect("Unknown pipeline bind point."),
+            );
             match binding {
                 ResourceBindingConfig::Texture(path) => {
                     // Load texture.
@@ -108,10 +114,10 @@ impl Material {
                         .ok_or(MaterialError::ResourceError(path.to_owned()))?;
                     let texture_index = texture_manager.load_texture(path, &texture_path, engine, cmd_pool)?;
                     // Add to resource bindings.
-                    resource_bindings.insert(bind_point.to_owned(), ResourceBinding::Texture(texture_index));
+                    resource_bindings.insert(id, ResourceBinding::Texture(texture_index));
                 }
                 ResourceBindingConfig::Constant(constant) => {
-                    resource_bindings.insert(bind_point.to_owned(), ResourceBinding::Constant(constant));
+                    resource_bindings.insert(id, ResourceBinding::Constant(constant));
                 }
             }
         }

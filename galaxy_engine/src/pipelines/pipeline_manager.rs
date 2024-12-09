@@ -1,6 +1,6 @@
 // Copyright (c) 2024 Ben Sutherland.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -41,6 +41,7 @@ pub struct PipelineManager {
     pipeline_layouts: PipelineLayoutCache,
     graphics_pipelines: HashMap<Arc<str>, ArcFinalOwner<GraphicsPipeline>>,
     compute_pipelines: HashMap<Arc<str>, ArcFinalOwner<ComputePipeline>>,
+    bind_point_id_cache: HashSet<Arc<str>>,
 }
 
 impl PipelineManager {
@@ -104,8 +105,6 @@ impl PipelineManager {
         // Create level descriptor set layout.
         let scene_set_layout =
             Self::create_descriptor_set_layout(device, &Self::scene_descriptor_set_layout_bindings())?;
-        //let material_set_layout =
-        //    Self::create_descriptor_set_layout(device, &Self::material_data_descriptor_set_layout_bindings())?;
 
         // Find and load pipeline configs. TODO: Add support for game-specific pipeline configs.
         let config_strings = glob(
@@ -183,6 +182,7 @@ impl PipelineManager {
                 .try_or_insert_with(|| ShaderModule::new(device, config.shaders.fragment.id))?;
         }
 
+        let mut bind_point_id_cache = HashSet::new();
         log::info!("Compiling graphics pipelines...");
         let compilation_start = std::time::Instant::now();
         let graphics_pipelines = GraphicsPipeline::batch_new(
@@ -192,6 +192,7 @@ impl PipelineManager {
             fragment_shaders,
             graphics_configs,
             msaa_samples,
+            &mut bind_point_id_cache,
         )?;
         log::info!("Compiled graphics pipelines in {:?}", compilation_start.elapsed());
 
@@ -207,7 +208,12 @@ impl PipelineManager {
             pipeline_layouts,
             graphics_pipelines,
             compute_pipelines: HashMap::new(),
+            bind_point_id_cache,
         })
+    }
+
+    pub fn get_bind_point_id(&self, id: &str) -> Option<&Arc<str>> {
+        self.bind_point_id_cache.get(id)
     }
 
     pub fn get_graphics_pipeline(&self, name: &str) -> Option<&GraphicsPipeline> {
