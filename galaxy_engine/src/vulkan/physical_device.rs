@@ -225,6 +225,33 @@ impl PhysicalDevice {
         .rfind(|&sample_count| supported_msaa_samples.contains(sample_count))
         .unwrap_or(vk::SampleCountFlags::TYPE_1);
 
+        // Check image format support. TODO: Because we're transcoding textures, we can easily have optional BC7 support.
+        const REQUIRED_IMAGE_FORMATS: &[vk::Format] = &[vk::Format::R8G8B8A8_SRGB, vk::Format::BC7_SRGB_BLOCK];
+        for image_format in REQUIRED_IMAGE_FORMATS {
+            let image_format_properties = vk::PhysicalDeviceImageFormatInfo2::default()
+                .format(*image_format)
+                .ty(vk::ImageType::TYPE_2D)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED);
+            let mut physical_device_image_format_properties = vk::ImageFormatProperties2::default();
+            match unsafe {
+                instance.get_physical_device_image_format_properties2(
+                    handle,
+                    &image_format_properties,
+                    &mut physical_device_image_format_properties,
+                )
+            } {
+                Ok(_) => {}
+                Err(vk::Result::ERROR_FORMAT_NOT_SUPPORTED) => {
+                    return Err(PhysicalDeviceIncompatibility::FeatureNotSupported("Image format"));
+                }
+                Err(vk::Result::ERROR_IMAGE_USAGE_NOT_SUPPORTED_KHR) => {
+                    return Err(PhysicalDeviceIncompatibility::FeatureNotSupported("Image format usage"));
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+
         let mut features11 = vk::PhysicalDeviceVulkan11Features::default();
         let mut features12 = vk::PhysicalDeviceVulkan12Features::default();
         let mut physical_device_features = vk::PhysicalDeviceFeatures2::default()
@@ -266,8 +293,9 @@ impl PhysicalDevice {
         // Require buffer_device_address support.
         check_and_enable_feature!(features12.buffer_device_address);
 
-        // Require scalar block layout support. TODO: Temporary solution until https://github.com/shader-slang/slang/issues/5806 gets resolved.
+        // Require scalar block layout support.
         check_and_enable_feature!(features12.scalar_block_layout);
+        check_and_enable_feature!(features12.uniform_buffer_standard_layout);
 
         // Require descriptor indexing support.
         //check_and_enable_feature!(features12.descriptor_indexing);

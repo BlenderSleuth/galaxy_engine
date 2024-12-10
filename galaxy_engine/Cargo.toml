@@ -28,7 +28,7 @@ gpu-allocator = { version = "0.27.0", default-features = false, features = ["vul
 presser = "0.3.1"
 obj-rs = "0.7.4"
 meshopt = "0.4.0"
-ktx2 = "0.3.0"
+ktx2.workspace = true
 parking_lot = { version = "0.12.3", default-features = false }
 castaway = { version = "0.2.3", default-features = false }
 glob.workspace = true
@@ -38,6 +38,8 @@ ron = { workspace = true, features = ["indexmap"] }
 #static_assertions = "1.1.0"
 shipyard.workspace = true
 enum_delegate.workspace = true
+zstd.workspace = true
+basis-universal = { path = "../crates/basis-universal-rs/basis-universal" }
 
 [build-dependencies]
 galaxy_engine_build = { path = "../galaxy_engine_build" }

@@ -10,10 +10,21 @@ use serde::Deserialize;
 
 use crate::{current_dir, rerun_if_changed, CONTENT_DIR};
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Copy, Clone)]
+enum TextureComponents {
+    R,
+    #[serde(rename = "RG")]
+    Rg,
+    #[serde(rename = "RGB")]
+    Rgb,
+    #[serde(rename = "RGBA")]
+    Rgba,
+}
+
+#[derive(Deserialize, Debug, Copy, Clone)]
 enum TextureType {
-    Colour,
-    Linear,
+    Colour(TextureComponents),
+    Linear(TextureComponents),
     Normal,
 }
 
@@ -31,19 +42,49 @@ struct Texture<'a> {
 }
 
 impl<'a> Texture<'a> {
-    fn build(&self, config_path: &Path, filename: &str, _debug: bool) {
-        // Run ktx create.
+    fn build(&self, config_path: &Path, filename: &str, debug: bool) {
+        // Run ktx create. https://github.khronos.org/KTX-Software/ktxtools/ktx_create.html.
         let mut command = Command::new("ktx");
         command.arg("create").current_dir(current_dir());
 
+        // Set up UASTC compression.
+        command.args(["--encode", "uastc", "--uastc-rdo"]);
+
+        if debug {
+            command.args(["--uastc-quality", "2"]).args(["--zstd", "10"]);
+        } else {
+            command.args(["--uastc-quality", "5"]).args(["--zstd", "22"]);
+        }
+
         match self.ty {
-            TextureType::Colour => {
+            TextureType::Colour(dimensions) => {
                 command
-                    .args(["--format", "R8G8B8A8_SRGB"])
                     .args(["--assign-oetf", "sRGB"])
-                    .args(["--assign-primaries", "sRGB"]);
+                    .args(["--assign-primaries", "sRGB"])
+                    .args([
+                        "--format",
+                        match dimensions {
+                            TextureComponents::R => "R8_SRGB",
+                            TextureComponents::Rg => "R8G8_SRGB",
+                            TextureComponents::Rgb => "R8G8B8_SRGB",
+                            TextureComponents::Rgba => "R8G8B8A8_SRGB",
+                        },
+                    ]);
             }
-            _ => unimplemented!("{:?} texture type not implemented.", self.ty),
+            TextureType::Linear(dimensions) => {
+                command.args([
+                    "--format",
+                    match dimensions {
+                        TextureComponents::R => "R8_UNORM",
+                        TextureComponents::Rg => "R8G8_UNORM",
+                        TextureComponents::Rgb => "R8G8B8_UNORM",
+                        TextureComponents::Rgba => "R8G8B8A8_UNORM",
+                    },
+                ]);
+            }
+            TextureType::Normal => {
+                command.args(["--normal-mode", "--normalize"]);
+            }
         };
 
         if self.mipmap {

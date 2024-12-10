@@ -21,11 +21,3 @@ pub fn get_aspect_for_format(format: vk::Format) -> vk::ImageAspectFlags {
         _ => vk::ImageAspectFlags::COLOR,
     }
 }
-
-pub(crate) fn ktx_to_vulkan_format(format: ktx2::Format) -> vk::Format {
-    use ktx2::Format;
-    match format {
-        Format::R8G8B8A8_SRGB => vk::Format::R8G8B8A8_SRGB,
-        _ => unimplemented!(),
-    }
-}
