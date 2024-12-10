@@ -62,6 +62,7 @@ impl Texture {
 
         let mut found_dfd = false;
         let mut has_alpha = false;
+        let mut is_normal_map = false;
         for dfd in image.data_format_descriptors() {
             if dfd.header == DataFormatDescriptorHeader::BASIC {
                 let basic = BasicDataFormatDescriptor::parse(dfd.data)?;
@@ -72,8 +73,8 @@ impl Texture {
                     )));
                 }
                 if let Some(sample) = basic.sample_information().next() {
-                    has_alpha = sample.channel_type == ktx2::DF_CHANNEL_UASTC_RGBA
-                        || sample.channel_type == ktx2::DF_CHANNEL_UASTC_RRRG;
+                    has_alpha = sample.channel_type == ktx2::DF_CHANNEL_UASTC_RGBA;
+                    is_normal_map = sample.channel_type == ktx2::DF_CHANNEL_UASTC_RRRG;
                 } else {
                     return Err(TextureError::UnsupportedTextureFormat(format!(
                         "No sample information found for texture: {name}"
@@ -87,6 +88,7 @@ impl Texture {
                 "No basic data format descriptor found for texture: {name}"
             )));
         }
+        log::info!("Loaded texture: {name}.");
 
         // Uncompress mip levels.
         let mut mip_ranges = Vec::with_capacity(image.levels().len());
@@ -100,7 +102,6 @@ impl Texture {
             mip_ranges.push(range);
         }
         debug_assert_eq!(decoded_data.capacity(), old_capacity);
-        log::info!("Correct texture format.");
 
         let transcoder = basis_universal::LowLevelUastcTranscoder::new();
         let mip_level_data = mip_ranges
@@ -126,7 +127,11 @@ impl Texture {
                     &decoded_data[range],
                     params,
                     DecodeFlags::HIGH_QUALITY,
-                    TranscoderBlockFormat::BC7,
+                    if is_normal_map {
+                        TranscoderBlockFormat::BC5
+                    } else {
+                        TranscoderBlockFormat::BC7
+                    },
                 )
             })
             .collect::<Result<Vec<_>, TranscodeError>>()
@@ -144,7 +149,11 @@ impl Texture {
             cmd_pool,
             &mip_levels,
             ImageDimensions::Type2D(extent),
-            vk::Format::BC7_SRGB_BLOCK,
+            if is_normal_map {
+                vk::Format::BC5_UNORM_BLOCK
+            } else {
+                vk::Format::BC7_SRGB_BLOCK
+            },
         )?;
 
         Ok(Self { image: texture_image })

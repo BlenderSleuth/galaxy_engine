@@ -11,3 +11,6 @@ packaged = []
 galaxy_engine_utils = { path = "../galaxy_engine_utils" }
 glob.workspace = true
 serde = { workspace = true, features = ["derive"] }
+image = "0.23.5"
+normal-heights = "0.1.2"
+sha3 = "0.10.8"

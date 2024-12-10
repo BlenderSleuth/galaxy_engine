@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ash::vk;
-use ultraviolet::{Vec3, Vec4};
+use ultraviolet::{Vec2, Vec3, Vec4};
 
 use crate::engine::GalaxyEngine;
 use crate::materials::config::{get_material_config, ResourceBindingConfig};
@@ -41,6 +41,11 @@ impl ResourceConstant {
     pub fn as_f32(&self) -> f32 {
         match *self {
             ResourceConstant::RGB(r, g, b) => (r as f32 + g as f32 + b as f32) / 3.0 / 255.0,
+        }
+    }
+    pub fn as_vec2(&self) -> Vec2 {
+        match *self {
+            ResourceConstant::RGB(r, g, b) => Vec2::new(r as f32 / 255.0, g as f32 / 255.0),
         }
     }
     pub fn as_vec3(&self) -> Vec3 {

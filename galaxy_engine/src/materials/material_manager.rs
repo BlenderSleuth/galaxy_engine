@@ -115,7 +115,7 @@ macro_rules! impl_material_binding {
 }
 
 impl_material_binding!(f32, 0.5);
-impl_material_binding!(Vec2, Vec2::new(1., 0.), [0]);
+impl_material_binding!(Vec2, Vec2::new(0., 0.), [0]); // TODO: Have normal type have different unbound value.
 impl_material_binding!(Vec3, Vec3::new(1., 0., 1.), [0]);
 impl_material_binding!(Vec4, Vec4::new(1., 0., 1., 1.), [0]);
 
@@ -180,6 +180,7 @@ impl MaterialManager {
                                 .zip(bindings_layout.ranges.iter().cloned())
                                 .enumerate()
                             {
+                                // TODO: Remove code repetition here.
                                 match binding.ty {
                                     PipelineBindingDataSize::Float => {
                                         let mat_binding = bytemuck::from_bytes_mut::<MaterialBinding<f32>>(
@@ -197,11 +198,28 @@ impl MaterialManager {
                                             }
                                         } else {
                                             // TODO: In debug builds, put a constant sentinel value in the buffer to catch errors.
+                                            mat_binding.constant = MaterialBinding::<f32>::UNBOUND;
                                             flags |= 1 << i;
                                         }
                                     }
                                     PipelineBindingDataSize::Float2 => {
-                                        unimplemented!()
+                                        let mat_binding = bytemuck::from_bytes_mut::<MaterialBinding<Vec2>>(
+                                            &mut buffer_memory[field_range],
+                                        );
+                                        if let Some(resource_binding) = resource_bindings.get(bind_point) {
+                                            match resource_binding {
+                                                ResourceBinding::Constant(value) => {
+                                                    mat_binding.constant = value.as_vec2();
+                                                    flags |= 1 << i;
+                                                }
+                                                ResourceBinding::Texture(index) => {
+                                                    mat_binding.set_texture_index(*index);
+                                                }
+                                            }
+                                        } else {
+                                            mat_binding.constant = MaterialBinding::<Vec2>::UNBOUND;
+                                            flags |= 1 << i;
+                                        }
                                     }
                                     PipelineBindingDataSize::Float3 => {
                                         let mat_binding = bytemuck::from_bytes_mut::<MaterialBinding<Vec3>>(
@@ -218,6 +236,7 @@ impl MaterialManager {
                                                 }
                                             }
                                         } else {
+                                            mat_binding.constant = MaterialBinding::<Vec3>::UNBOUND;
                                             flags |= 1 << i;
                                         }
                                     }

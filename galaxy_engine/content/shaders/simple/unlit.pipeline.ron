@@ -25,7 +25,7 @@ GraphicsPipeline(
                 stages: "Fragment",
             ),
             "normal": (
-                type: Float3, 
+                type: Float2, 
                 stages: "Fragment",
             ),
         }

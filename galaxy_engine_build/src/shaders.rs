@@ -5,7 +5,7 @@ use std::process::Command;
 
 use glob::glob;
 
-use crate::{convert_content_to_build_dir, current_dir, rerun_if_changed, CONTENT_DIR};
+use crate::{convert_content_to_output_dir, current_dir, rerun_if_changed, OutputDir, CONTENT_DIR};
 
 struct ShaderStages {
     vertex: bool,
@@ -35,7 +35,7 @@ impl ShaderStages {
         }
 
         // Stage / output path pairs. If adding other stages, make a macro.
-        let mut output_file_path = convert_content_to_build_dir(input_file_path).unwrap();
+        let mut output_file_path = convert_content_to_output_dir(input_file_path, OutputDir::Build).unwrap();
         output_file_path.set_extension("spv");
 
         crate::create_required_folders(&output_file_path);

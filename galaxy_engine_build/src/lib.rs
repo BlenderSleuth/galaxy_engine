@@ -13,12 +13,35 @@ const CONTENT_DIR: &str = "content/";
 fn content_dir() -> &'static Path {
     Path::new(CONTENT_DIR)
 }
+const CACHE_DIR: &str = "cache/";
+fn cache_dir() -> &'static Path {
+    Path::new(CACHE_DIR)
+}
 const BUILD_DIR: &str = "build/";
 fn build_dir() -> &'static Path {
     Path::new(BUILD_DIR)
 }
-fn convert_content_to_build_dir(content_path: &Path) -> Option<PathBuf> {
-    Some(build_dir().join(content_path.strip_prefix(content_dir()).ok()?))
+
+enum OutputDir {
+    Cache,
+    Build,
+}
+
+impl OutputDir {
+    fn to_path(&self) -> &'static Path {
+        match self {
+            OutputDir::Cache => cache_dir(),
+            OutputDir::Build => build_dir(),
+        }
+    }
+}
+
+fn convert_content_to_output_dir(content_path: &Path, output_dir: OutputDir) -> Option<PathBuf> {
+    Some(
+        output_dir
+            .to_path()
+            .join(content_path.strip_prefix(content_dir()).ok()?),
+    )
 }
 
 fn current_dir() -> String {

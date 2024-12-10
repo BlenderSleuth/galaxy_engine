@@ -3,5 +3,15 @@
         path: "spnza_bricks_a_diff.png",
         type: Colour(RGB),
         mipmaps: true,
-    )
+    ),
+    "spnza_bricks_a_spec": Texture(
+        path: "spnza_bricks_a_spec.png",
+        type: Linear(Greyscale),
+        mipmaps: true,
+    ),
+    "spnza_bricks_a_normal": Texture(
+        path: "spnza_bricks_a_bump.png",
+        type: NormalFromBump,
+        mipmaps: true,
+    ),
 }
