@@ -14,7 +14,7 @@ typedef PositionTexCoordVStoFS VSToFS;
 VSToFS mainVS(uniform DrawData draw, PositionTexCoord input) {
     VSToFS output;
     float4x4 transform = scene_data.transforms[draw.transform_index];
-    output.position = mul(transform, float4(input.position, 1.));
+    output.position = mul(float4(input.position, 1.), transform);
     output.tex_coord = input.tex_coord;
     return output;
 }

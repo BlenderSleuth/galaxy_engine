@@ -73,6 +73,7 @@ impl ShaderStages {
             .args(["-target", "spirv"])
             .args(["-profile", shader_model])
             .arg("-fvk-use-entrypoint-name")
+            .arg("-matrix-layout-row-major")
             .args(file_stage_args)
             .args(["-I", "content/shaders"])
             .args(["-o", output_file_path.to_str().unwrap()]);
