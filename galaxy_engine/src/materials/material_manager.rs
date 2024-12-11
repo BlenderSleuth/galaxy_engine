@@ -134,8 +134,7 @@ impl_material_binding!(Vec4, Vec4::new(1., 0., 1., 1.), [0]);
 
 struct PipelineData {
     materials: Vec<SubresourcePath>,
-    _material_buffer: Buffer<GpuOnly>,
-    material_buffer_addr: vk::DeviceAddress,
+    material_buffer: Buffer<GpuOnly>,
 }
 
 pub(crate) struct MaterialManager {
@@ -312,8 +311,7 @@ impl MaterialManager {
                             name,
                             PipelineData {
                                 materials: resource_paths,
-                                material_buffer_addr: material_buffer.device_address(),
-                                _material_buffer: material_buffer,
+                                material_buffer,
                             },
                         ),
                     ))
@@ -334,7 +332,7 @@ impl MaterialManager {
         for frame in 0..GalaxyEngine::MAX_FRAMES_IN_FLIGHT {
             let addresses = material_buffer_addresses.get_mut_slice(frame);
             for (i, data) in pipeline_data.values().enumerate() {
-                addresses[i] = data.material_buffer_addr;
+                addresses[i] = data.material_buffer.device_address();
             }
         }
 

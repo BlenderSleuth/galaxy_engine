@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::vk::Handle;
-use ash::{ext, khr, vk, RawPtr};
+use ash::{ext, khr, nv, vk, RawPtr};
 use castaway::match_type;
 use gpu_allocator::vulkan::{AllocationCreateDesc, Allocator, AllocatorCreateDesc};
 use gpu_allocator::AllocatorDebugSettings;
@@ -68,8 +68,9 @@ impl Device {
             khr::swapchain::NAME,
             khr::synchronization2::NAME,
             khr::dynamic_rendering::NAME,
-            //ext::descriptor_buffer::NAME,
         ];
+
+        let mut optional_device_extensions = vec![];
 
         // MacOS compatibility.
         if cfg!(any(target_os = "macos", target_os = "ios")) {
@@ -79,10 +80,17 @@ impl Device {
         // When compiling with debug info, we need debug extensions.
         if cfg!(feature = "debug_info") {
             required_device_extensions.push(khr::shader_non_semantic_info::NAME);
+            optional_device_extensions.push(nv::shader_sm_builtins::NAME);
         }
 
         let physical_devices = physical_devices.into_iter().map(|physical_device| {
-            PhysicalDevice::new(instance, surface, physical_device, &required_device_extensions)
+            PhysicalDevice::new(
+                instance,
+                surface,
+                physical_device,
+                &required_device_extensions,
+                &optional_device_extensions,
+            )
         });
 
         let (compatible_devices, incompatible_devices): (Vec<_>, Vec<_>) =
@@ -118,6 +126,8 @@ impl Device {
             features,
             mut features11,
             mut features12,
+            #[cfg(feature = "debug_info")]
+            mut shader_sm_builtins_features_nv,
         } = physical_device.enabled_features;
 
         // Enable dynamic rendering.
@@ -128,8 +138,8 @@ impl Device {
         let mut synchronization2_features =
             vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
 
-        let device_extensions = utils::cstr_to_ptrs(&required_device_extensions);
-        let device_info = vk::DeviceCreateInfo::default()
+        let device_extensions = utils::cstr_to_ptrs(&physical_device.enabled_extensions);
+        let mut device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_infos)
             .enabled_extension_names(&device_extensions)
             .enabled_features(&features)
@@ -137,6 +147,10 @@ impl Device {
             .push_next(&mut features12)
             .push_next(&mut dynamic_rendering_features)
             .push_next(&mut synchronization2_features);
+
+        if cfg!(feature = "debug_info") {
+            device_info = device_info.push_next(&mut shader_sm_builtins_features_nv);
+        }
 
         let device = unsafe { instance.create_device(physical_device.handle, &device_info, None) }?;
 

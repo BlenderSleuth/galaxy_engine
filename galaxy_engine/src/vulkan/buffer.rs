@@ -17,32 +17,46 @@ use crate::vulkan::{debug, gpu_alloc};
 
 // Type-state trait encoding of gpu_allocator::MemoryLocation for use in generic parameters.
 pub trait MemLocation {
+    fn new(loader: &ash::Device, handle: vk::Buffer) -> Self;
     fn location() -> MemoryLocation;
-}
-
-pub enum Unknown {}
-impl MemLocation for Unknown {
-    fn location() -> MemoryLocation {
-        MemoryLocation::Unknown
+    fn extra_usage_flags() -> vk::BufferUsageFlags {
+        vk::BufferUsageFlags::empty()
     }
 }
 
-pub enum GpuOnly {}
+pub struct GpuOnly {
+    device_addr: vk::DeviceAddress,
+}
 impl MemLocation for GpuOnly {
+    fn new(loader: &ash::Device, handle: vk::Buffer) -> Self {
+        let info = vk::BufferDeviceAddressInfo::default().buffer(handle);
+        Self {
+            device_addr: unsafe { loader.get_buffer_device_address(&info) },
+        }
+    }
     fn location() -> MemoryLocation {
         MemoryLocation::GpuOnly
     }
+    fn extra_usage_flags() -> vk::BufferUsageFlags {
+        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+    }
 }
 
-pub enum CpuToGpu {}
+pub struct CpuToGpu;
 impl MemLocation for CpuToGpu {
+    fn new(_loader: &ash::Device, _handle: vk::Buffer) -> Self {
+        Self
+    }
     fn location() -> MemoryLocation {
         MemoryLocation::CpuToGpu
     }
 }
 
-pub enum GpuToCpu {}
+pub struct GpuToCpu;
 impl MemLocation for GpuToCpu {
+    fn new(_loader: &ash::Device, _handle: vk::Buffer) -> Self {
+        Self
+    }
     fn location() -> MemoryLocation {
         MemoryLocation::GpuToCpu
     }
@@ -54,7 +68,7 @@ pub struct Buffer<L: MemLocation> {
     handle: vk::Buffer,
     allocation: ManuallyFreeAllocation,
     size: vk::DeviceSize,
-    _mem_location: std::marker::PhantomData<L>,
+    mem_location: L,
 }
 
 impl<L: MemLocation> Buffer<L> {
@@ -99,7 +113,7 @@ impl<L: MemLocation> Buffer<L> {
     ) -> MemResult<Self> {
         let buffer_info = vk::BufferCreateInfo::default()
             .size(size)
-            .usage(usage)
+            .usage(usage | L::extra_usage_flags())
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
         let handle = unsafe { device.loader().create_buffer(&buffer_info, None) }?;
 
@@ -149,7 +163,7 @@ impl<L: MemLocation> Buffer<L> {
             handle,
             allocation,
             size,
-            _mem_location: std::marker::PhantomData,
+            mem_location: L::new(device.loader(), handle),
         })
     }
 
@@ -201,7 +215,7 @@ impl Buffer<GpuOnly> {
     ) -> MemResult<Buffer<CpuToGpu>> {
         let mut staging_buffer = Buffer::<CpuToGpu>::new(
             "Staging buffer",
-            &device,
+            device,
             size.unwrap_or(self.size),
             vk::BufferUsageFlags::TRANSFER_SRC,
             None,
@@ -212,8 +226,7 @@ impl Buffer<GpuOnly> {
     }
 
     pub fn device_address(&self) -> vk::DeviceAddress {
-        let info = vk::BufferDeviceAddressInfo::default().buffer(self.handle());
-        unsafe { self.loader.get_buffer_device_address(&info) }
+        self.mem_location.device_addr
     }
 }
 

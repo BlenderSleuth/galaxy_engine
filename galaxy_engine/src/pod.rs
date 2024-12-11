@@ -1,17 +1,18 @@
 // Copyright (c) 2024 Ben Sutherland.
 
-// New-type wrappers to mark external crate types as Pod.
+// Copies of vk structs to mark them as Pod.
 
 pub(crate) mod vk {
-    //use bytemuck::{Pod, Zeroable};
-    //use ash::vk;
+    use bytemuck::{Pod, Zeroable};
 
-    //use super::*;
-
-    //#[repr(transparent)]
-    //#[derive(Clone, Copy)]
-    //pub struct DrawIndexedIndirectCommand(vk::DrawIndexedIndirectCommand);
-
-    //unsafe impl Zeroable for DrawIndexedIndirectCommand {}
-    //unsafe impl Pod for DrawIndexedIndirectCommand {}
+    // Copied from vk::DrawIndexedIndirectCommand.
+    #[repr(C)]
+    #[derive(Clone, Copy, Pod, Zeroable)]
+    pub struct DrawIndexedIndirectCommand {
+        pub index_count: u32,
+        pub instance_count: u32,
+        pub first_index: u32,
+        pub vertex_offset: i32,
+        pub first_instance: u32,
+    }
 }

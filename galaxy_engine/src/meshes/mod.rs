@@ -100,6 +100,14 @@ impl MeshBuffer {
         self.num_indices
     }
 
+    pub fn indices_addr(&self) -> vk::DeviceAddress {
+        self.buffer.device_address()
+    }
+
+    pub fn vertices_addr(&self) -> vk::DeviceAddress {
+        self.buffer.device_address() + self.vertices_offset
+    }
+
     pub fn bind(&self, cmd_buffer: &mut RecordingCmdBuf<PrimaryQueue, impl RenderingState>) {
         cmd_buffer.bind_index_buffer(&self.buffer, 0, self.index_type);
         cmd_buffer.bind_vertex_buffer(&self.buffer, self.vertices_offset);

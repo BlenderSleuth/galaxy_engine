@@ -62,6 +62,8 @@ pub struct PhysicalDeviceFeatures {
     pub features: vk::PhysicalDeviceFeatures,
     pub features11: vk::PhysicalDeviceVulkan11Features<'static>,
     pub features12: vk::PhysicalDeviceVulkan12Features<'static>,
+    #[cfg(feature = "debug_info")]
+    pub shader_sm_builtins_features_nv: vk::PhysicalDeviceShaderSMBuiltinsFeaturesNV<'static>,
 }
 
 pub struct PhysicalDevice {
@@ -78,6 +80,7 @@ pub struct PhysicalDevice {
     pub max_msaa_samples: vk::SampleCountFlags,
     pub volatile_memory_type: VolatileMemoryType,
     pub mem_properties: vk::PhysicalDeviceMemoryProperties,
+    pub enabled_extensions: Vec<&'static CStr>,
     pub properties: PhysicalDeviceProperties,
     pub enabled_features: PhysicalDeviceFeatures,
 }
@@ -91,14 +94,15 @@ impl PhysicalDevice {
         instance: &ash::Instance,
         surface: &Surface,
         handle: vk::PhysicalDevice,
-        required_device_extensions: &[&'static CStr],
+        required_extensions: &[&'static CStr],
+        optional_extensions: &[&'static CStr],
     ) -> Result<PhysicalDevice, PhysicalDeviceIncompatibility> {
         // Check vulkan extensions.
         let available_extensions = unsafe { instance.enumerate_device_extension_properties(handle) }?;
 
-        let mut not_implemented_extensions = required_device_extensions.to_vec();
+        let mut not_implemented_extensions = required_extensions.to_vec();
         not_implemented_extensions.retain(|&required_extension| {
-            // Retain all that are not available.
+            // Retain all that _are not_ available.
             !available_extensions
                 .iter()
                 .any(|&available_extension| available_extension.extension_name_as_c_str() == Ok(required_extension))
@@ -109,6 +113,17 @@ impl PhysicalDevice {
                 not_implemented_extensions,
             ));
         }
+        let mut implemented_optional_extensions = optional_extensions.to_vec();
+        implemented_optional_extensions.retain(|&optional_extension| {
+            // Retain all that _are_ available.
+            available_extensions
+                .iter()
+                .any(|&available_extension| available_extension.extension_name_as_c_str() == Ok(optional_extension))
+        });
+
+        // Build complete list of enabled extensions.
+        let mut enabled_extensions = implemented_optional_extensions;
+        enabled_extensions.extend_from_slice(required_extensions);
 
         // Select queue families.
         let mut primary_queue_family_idx = None;
@@ -254,9 +269,13 @@ impl PhysicalDevice {
 
         let mut features11 = vk::PhysicalDeviceVulkan11Features::default();
         let mut features12 = vk::PhysicalDeviceVulkan12Features::default();
+        let mut shader_sm_builtins_features_nv = vk::PhysicalDeviceShaderSMBuiltinsFeaturesNV::default();
         let mut physical_device_features = vk::PhysicalDeviceFeatures2::default()
             .push_next(&mut features11)
             .push_next(&mut features12);
+        if cfg!(feature = "debug_info") {
+            physical_device_features = physical_device_features.push_next(&mut shader_sm_builtins_features_nv);
+        }
         unsafe { instance.get_physical_device_features2(handle, &mut physical_device_features) };
         let features = physical_device_features.features;
 
@@ -271,6 +290,10 @@ impl PhysicalDevice {
                 }
                 enabled_features.$group.$feature = vk::TRUE;
             };
+        }
+
+        if cfg!(feature = "debug_info") {
+            check_and_enable_feature!(shader_sm_builtins_features_nv.shader_sm_builtins);
         }
 
         // Require anisotropic filtering support.
@@ -355,6 +378,7 @@ impl PhysicalDevice {
             max_msaa_samples,
             volatile_memory_type,
             mem_properties,
+            enabled_extensions,
             properties: physical_device_properties,
             enabled_features,
         })
