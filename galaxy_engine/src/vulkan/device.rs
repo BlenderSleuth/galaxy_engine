@@ -26,7 +26,9 @@ use crate::vulkan::surface::Surface;
 // Initialised by the engine.
 static DEVICE_LOADER: OnceLock<ash::Device> = OnceLock::new();
 
-// Can be called once the vulkan is initialised by the engine. Device will be destroyed when the engine is dropped.
+/// # Safety
+///
+/// Can be called once the vulkan is initialised by the engine. Device will be destroyed when the engine is dropped.
 pub unsafe fn get_device_loader() -> &'static ash::Device {
     DEVICE_LOADER.get().unwrap()
 }
