@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use shipyard::{Component, EntityId};
 
 use crate::engine::GalaxyEngine;
-use crate::level::{ComponentConfig, LoadError, LoadingLevel};
+use crate::level::{ComponentConfig, LoadResult, LoadingLevel};
 use crate::prelude::*;
 use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 
@@ -21,7 +21,7 @@ impl ComponentConfig for CameraConfig {
         level: &mut LoadingLevel,
         engine: &GalaxyEngine,
         _cmd_pool: &mut TransientPrimaryCommandPool,
-    ) -> Result<(), LoadError> {
+    ) -> LoadResult<()> {
         level.world.add_component(
             entity_id,
             Camera {

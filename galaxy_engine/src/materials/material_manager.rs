@@ -9,10 +9,11 @@ use ash::vk;
 use indexmap::IndexMap;
 use ultraviolet::{Vec2, Vec3, Vec4};
 
+use super::config::MaterialConfigsCache;
 use crate::engine::GalaxyEngine;
 use crate::materials::{Material, MaterialError, ResourceBinding};
 use crate::pipelines::{GraphicsPipeline, Pipeline, PipelineBindingDataSize};
-use crate::resource_paths::ResourcePath;
+use crate::resource_paths::SubresourcePath;
 use crate::textures::TextureManager;
 use crate::utils::LayoutExt;
 use crate::volatile_buffer::{VolatileBuffer, VolatileBufferType};
@@ -36,8 +37,9 @@ impl IndexedMaterial {
 }
 
 pub struct LoadingMaterialManager {
-    materials: HashMap<ResourcePath, IndexedMaterial>,
-    pipelines: IndexMap<Arc<str>, Vec<ResourcePath>>,
+    materials: HashMap<SubresourcePath, IndexedMaterial>,
+    pipelines: IndexMap<Arc<str>, Vec<SubresourcePath>>,
+    configs: MaterialConfigsCache,
 }
 
 impl LoadingMaterialManager {
@@ -45,6 +47,7 @@ impl LoadingMaterialManager {
         Self {
             materials: HashMap::new(),
             pipelines: IndexMap::new(),
+            configs: MaterialConfigsCache::new(),
         }
     }
 
@@ -53,21 +56,30 @@ impl LoadingMaterialManager {
         engine: &GalaxyEngine,
         texture_manager: &mut TextureManager,
         cmd_pool: &mut TransientPrimaryCommandPool,
-        resource_path: &ResourcePath,
+        subresource_path: &SubresourcePath,
     ) -> Result<Arc<Material>, MaterialError> {
-        if let Some(IndexedMaterial {
-            buffer_index: _,
-            material,
-        }) = self.materials.get(resource_path)
-        {
-            Ok(Arc::clone(material))
+        log::info!("Loading material: {:?}", subresource_path);
+        if let Some(indexed_mat) = self.materials.get(subresource_path) {
+            Ok(Arc::clone(&indexed_mat.material))
         } else {
-            let material = Arc::new(Material::new(engine, texture_manager, resource_path, cmd_pool)?);
-            let resource_paths = self.pipelines.entry(material.pipeline().cloned_name()).or_default();
+            let config = self.configs.get_or_load_material_config(engine, subresource_path)?;
+
+            let material = Arc::new(Material::new(
+                engine,
+                texture_manager,
+                config,
+                subresource_path.resource(),
+                cmd_pool,
+            )?);
+            let resource_paths = if self.pipelines.contains_key(material.pipeline().name()) {
+                &mut self.pipelines[material.pipeline().name()]
+            } else {
+                self.pipelines.entry(material.pipeline().cloned_name()).or_default()
+            };
             let material_index = resource_paths.len() as u32;
-            resource_paths.push(resource_path.clone());
+            resource_paths.push(subresource_path.clone());
             self.materials.insert(
-                resource_path.clone(),
+                subresource_path.clone(),
                 IndexedMaterial::new(Arc::clone(&material), material_index),
             );
             Ok(material)
@@ -116,19 +128,19 @@ macro_rules! impl_material_binding {
 }
 
 impl_material_binding!(f32, 0.5);
-impl_material_binding!(Vec2, Vec2::new(0., 0.), [0]); // TODO: Have normal type have different unbound value.
+impl_material_binding!(Vec2, Vec2::new(0., 0.), [0]); // TODO: Make separate normal type with different unbound value.
 impl_material_binding!(Vec3, Vec3::new(1., 0., 1.), [0]);
 impl_material_binding!(Vec4, Vec4::new(1., 0., 1., 1.), [0]);
 
 struct PipelineData {
-    materials: Vec<ResourcePath>,
-    material_buffer: Buffer<GpuOnly>,
+    materials: Vec<SubresourcePath>,
+    _material_buffer: Buffer<GpuOnly>,
     material_buffer_addr: vk::DeviceAddress,
 }
 
 pub(crate) struct MaterialManager {
     pipeline_data: IndexMap<Arc<str>, PipelineData>,
-    materials: HashMap<ResourcePath, IndexedMaterial>,
+    materials: HashMap<SubresourcePath, IndexedMaterial>,
     material_buffer_addresses: VolatileBuffer<vk::DeviceAddress>,
 }
 
@@ -301,7 +313,7 @@ impl MaterialManager {
                             PipelineData {
                                 materials: resource_paths,
                                 material_buffer_addr: material_buffer.device_address(),
-                                material_buffer,
+                                _material_buffer: material_buffer,
                             },
                         ),
                     ))

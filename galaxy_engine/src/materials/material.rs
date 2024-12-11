@@ -7,19 +7,17 @@ use ash::vk;
 use ultraviolet::{Vec2, Vec3, Vec4};
 
 use crate::engine::GalaxyEngine;
-use crate::materials::config::{get_material_config, ResourceBindingConfig};
+use crate::materials::config::{MaterialConfig, MaterialConfigError, ResourceBindingConfig};
 use crate::pipelines::{GraphicsPipeline, Pipeline};
-use crate::resource_paths::{resource_type, ResourcePath};
+use crate::resource_paths::ResourcePath;
 use crate::textures::{TextureError, TextureManager};
 use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::gpu_alloc::MemoryError;
 
 #[derive(thiserror::Error, Debug)]
 pub enum MaterialError {
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
-    #[error("RON parse error at {0}")]
-    RonError(#[from] ron::de::SpannedError),
+    #[error("Config error: {0}")]
+    ConfigError(#[from] MaterialConfigError),
     #[error("Material vulkan error: {0}")]
     VulkanError(#[from] vk::Result),
     #[error("Material memory error: {0}")]
@@ -58,21 +56,6 @@ impl ResourceConstant {
             ResourceConstant::RGB(_, _, _) => self.as_vec3().into_homogeneous_point(),
         }
     }
-
-    //pub fn write_binding(&self, data_type: PipelineBindingDataSize, buf: &mut [u8]) -> usize {
-    //    let buf = &mut buf[..data_type.size() as usize];
-    //    match data_type {
-    //        PipelineBindingDataSize::Float4 => {
-    //            buf.copy_from_slice(self.as_vec4().as_byte_slice());
-    //            0
-    //        }
-    //        PipelineBindingDataSize::Float3 => {
-    //            buf.copy_from_slice(self.as_vec3().as_byte_slice());
-    //            0
-    //        }
-    //        _ => unimplemented!("ResourceConstant::write_binding for {data_type:?}"),
-    //    }
-    //}
 }
 
 pub enum ResourceBinding {
@@ -88,16 +71,13 @@ pub struct Material {
 }
 
 impl Material {
-    pub fn new(
+    pub(crate) fn new(
         engine: &GalaxyEngine,
         texture_manager: &mut TextureManager,
+        config: &MaterialConfig,
         resource_path: &ResourcePath,
         cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<Self, MaterialError> {
-        // Load config.
-        let config_str = std::fs::read_to_string(resource_path.full_path::<resource_type::Material>(engine))?;
-        let config = get_material_config(&config_str)?;
-
         let pipeline = engine
             .pipeline_manager
             .get_cloned_graphics_pipeline(config.pipeline)
@@ -105,7 +85,7 @@ impl Material {
 
         // Construct resource bindings.
         let mut resource_bindings = HashMap::new();
-        for (bind_point, binding) in config.params {
+        for (&bind_point, &binding) in config.params.iter() {
             let id = Arc::clone(
                 engine
                     .pipeline_manager

@@ -106,7 +106,13 @@ impl MeshBuffer {
     }
 }
 
-fn load_obj(obj_path: &Path) -> Result<(Vec<PositionTexCoordVertex>, Vec<u32>), obj::ObjError> {
+struct LoadedObj {
+    vertices: Vec<PositionTexCoordVertex>,
+    indices: Vec<u32>,
+    num_elements: u32,
+}
+
+fn load_obj(obj_path: &Path) -> Result<LoadedObj, obj::ObjError> {
     let mtl_path = obj_path.with_extension("mtl");
 
     // Load model.
@@ -127,6 +133,8 @@ fn load_obj(obj_path: &Path) -> Result<(Vec<PositionTexCoordVertex>, Vec<u32>), 
             }
         }
     }
+    // Require at least one element.
+    let num_elements = element_index.max(1);
 
     // Index vertices.
     let polygons = &raw_obj.polygons;
@@ -139,12 +147,13 @@ fn load_obj(obj_path: &Path) -> Result<(Vec<PositionTexCoordVertex>, Vec<u32>), 
     // Indexing code from obj crate.
     let mut cache = HashMap::new();
     let mut can_use_16_bit = true;
-    let mut map = |pi: usize, ti: usize, element_index: u32| -> Result<(), TryFromIntError> {
+    let mut map = |pi: usize, ni: usize, ti: usize, element_index: u32| -> Result<(), TryFromIntError> {
         // Look up cache
         let index = match cache.entry((pi, element_index, ti)) {
             // Cache miss -> make new, store it on cache
             Entry::Vacant(entry) => {
                 let p = positions[pi];
+                let _n = normals[ni];
                 let t = tex_coords[ti];
                 let vertex = PositionTexCoordVertex {
                     position: Vec3::new(p.0, p.1, p.2),
@@ -178,8 +187,8 @@ fn load_obj(obj_path: &Path) -> Result<(Vec<PositionTexCoordVertex>, Vec<u32>), 
                     Polygon::PT(_) => panic!("Tried to extract normal data which are not contained in the model"),
                     Polygon::PN(_) => panic!("Tried to extract texture data which are not contained in the model"),
                     Polygon::PTN(ref vec) if vec.len() == 3 => {
-                        for &(pi, ti, _ni) in vec {
-                            map(pi, ti, element_index).unwrap()
+                        for &(pi, ti, ni) in vec {
+                            map(pi, ni, ti, element_index).unwrap()
                         }
                     }
                     _ => panic!("Model should be triangulated first to be loaded properly"),
@@ -204,7 +213,11 @@ fn load_obj(obj_path: &Path) -> Result<(Vec<PositionTexCoordVertex>, Vec<u32>), 
     meshopt::optimize_vertex_fetch_in_place(&mut indices, &mut vertices);
     log::info!("Optimized mesh in {:?}", start.elapsed());
 
-    Ok((vertices, indices))
+    Ok(LoadedObj {
+        vertices,
+        indices,
+        num_elements,
+    })
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -219,6 +232,7 @@ pub enum MeshError {
 
 pub struct Mesh {
     mesh_buffer: MeshBuffer,
+    num_elements: u32,
 }
 
 impl Mesh {
@@ -229,10 +243,22 @@ impl Mesh {
         mesh_path: &ResourcePath,
     ) -> Result<Self, MeshError> {
         let obj_path = mesh_path.full_path::<resource_type::Mesh>(engine);
-        let (vertices, indices) = load_obj(&obj_path)?;
-        let mesh_buffer =
-            MeshBuffer::new_from_vertices_and_indices(name, &vertices, &indices, &engine.device, cmd_pool)?;
-        Ok(Self { mesh_buffer })
+        let loaded_obj = load_obj(&obj_path)?;
+        let mesh_buffer = MeshBuffer::new_from_vertices_and_indices(
+            name,
+            &loaded_obj.vertices,
+            &loaded_obj.indices,
+            &engine.device,
+            cmd_pool,
+        )?;
+        Ok(Self {
+            mesh_buffer,
+            num_elements: loaded_obj.num_elements,
+        })
+    }
+
+    pub fn num_elements(&self) -> usize {
+        self.num_elements as usize
     }
 
     pub fn bind(&self, cmd_buf: &mut RenderingCmdBuf<PrimaryQueue>) {

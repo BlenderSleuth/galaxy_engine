@@ -14,4 +14,14 @@
         type: NormalFromBump,
         mipmaps: true,
     ),
+    "sponza_ceiling_a_diff": Texture(
+        path: "sponza_ceiling_a_diff.png",
+        type: Colour(RGB),
+        mipmaps: true,
+    ),   
+    "sponza_ceiling_a_spec": Texture(
+        path: "sponza_ceiling_a_spec.png",
+        type: Linear(RGB),
+        mipmaps: true,
+    ),   
 }

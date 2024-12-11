@@ -18,7 +18,7 @@ use winit::keyboard::{Key, SmolStr};
 use crate::app::AppInfo;
 use crate::engine::MainLoopError::VulkanError;
 use crate::game::Game;
-use crate::level::{DeserializableComponentConfig, Level, LoadError};
+use crate::level::{DeserializableComponentConfig, Level, LoadResult};
 use crate::materials::MaterialError;
 use crate::meshes::MeshError;
 use crate::pipelines;
@@ -217,7 +217,7 @@ impl GalaxyEngine {
         Ok(())
     }
 
-    pub fn load_level<T: DeserializableComponentConfig>(&self, level_path: ResourcePath) -> Result<(), LoadError> {
+    pub fn load_level<T: DeserializableComponentConfig>(&self, level_path: ResourcePath) -> LoadResult<()> {
         log::info!(
             "Loading level: {}",
             level_path

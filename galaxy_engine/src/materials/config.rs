@@ -2,9 +2,13 @@
 
 use std::collections::HashMap;
 
-use crate::materials::material::ResourceConstant;
+use self_cell::self_cell;
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+use crate::engine::GalaxyEngine;
+use crate::materials::material::ResourceConstant;
+use crate::resource_paths::{resource_type, ResourcePath, SubresourcePath};
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug)]
 pub enum ResourceBindingConfig<'a> {
     Texture(&'a str),
     Constant(ResourceConstant),
@@ -12,13 +16,98 @@ pub enum ResourceBindingConfig<'a> {
 
 #[derive(serde::Deserialize, Debug)]
 #[serde(rename = "Material")]
-pub(crate) struct MaterialConfig<'a> {
+pub struct MaterialConfig<'a> {
     pub pipeline: &'a str,
     pub params: HashMap<&'a str, ResourceBindingConfig<'a>>,
 }
 
-pub fn get_material_config(config_str: &str) -> ron::error::SpannedResult<MaterialConfig> {
-    ron::from_str::<MaterialConfig>(config_str)
+#[derive(thiserror::Error, Debug)]
+pub enum MaterialConfigError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Failed to load material config (map: {:?}, single: {:?})", .0.0, 0.1)]
+    Parse(Box<(ron::de::SpannedError, ron::de::SpannedError)>),
+    #[error("Subresource not found: {0}")]
+    Resource(String),
+}
+
+// Config self-referring structs.
+self_cell!(
+    struct MaterialConfigYoke {
+        owner: String,
+        #[covariant]
+        dependent: MaterialConfig,
+    }
+);
+
+pub type MaterialConfigMap<'a> = HashMap<&'a str, MaterialConfig<'a>>;
+
+self_cell!(
+    struct MaterialConfigMapYoke {
+        owner: String,
+        #[covariant]
+        dependent: MaterialConfigMap,
+    }
+);
+
+pub struct MaterialConfigsCache {
+    config_maps: HashMap<ResourcePath, MaterialConfigMapYoke>,
+    config_singles: HashMap<ResourcePath, MaterialConfigYoke>,
+}
+
+impl MaterialConfigsCache {
+    pub fn new() -> Self {
+        Self {
+            config_maps: HashMap::new(),
+            config_singles: HashMap::new(),
+        }
+    }
+
+    pub fn get_or_load_material_config(
+        &mut self,
+        engine: &GalaxyEngine,
+        subresource: &SubresourcePath,
+    ) -> Result<&MaterialConfig, MaterialConfigError> {
+        let resource = subresource.resource();
+        let mut in_map_cache = self.config_maps.contains_key(resource);
+        let mut in_single_cache = self.config_singles.contains_key(resource);
+        if !in_map_cache && !in_single_cache {
+            // Load config string.
+            let full_path = resource.full_path::<resource_type::Material>(engine);
+            let config_str = std::fs::read_to_string(full_path)?;
+
+            match MaterialConfigMapYoke::try_new_or_recover(config_str, |config_str| ron::from_str(config_str)) {
+                Ok(yoke) => {
+                    self.config_maps.insert(resource.clone(), yoke);
+                    in_map_cache = true;
+                }
+                Err((config_str, err_map)) => {
+                    match MaterialConfigYoke::try_new(config_str, |config_str| ron::from_str(config_str)) {
+                        Ok(yoke) => {
+                            self.config_singles.insert(resource.clone(), yoke);
+                            in_single_cache = true;
+                        }
+                        Err(err_single) => {
+                            return Err(MaterialConfigError::Parse(Box::new((err_map, err_single))));
+                        }
+                    }
+                }
+            }
+        }
+        // Check the config is only loaded into one cache.
+        debug_assert!(in_map_cache ^ in_single_cache);
+
+        if in_single_cache {
+            Ok(self.config_singles[resource].borrow_dependent())
+        } else {
+            self.config_maps[resource]
+                .borrow_dependent()
+                .get(subresource.subresource())
+                .ok_or(MaterialConfigError::Resource(format!(
+                    "Subresource not found {subresource:?}"
+                )))
+        }
+    }
 }
 
 /*

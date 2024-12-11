@@ -1,6 +1,5 @@
 // Copyright (c) 2024 Ben Sutherland.
 
-use std::path::Path;
 use std::slice;
 use std::sync::Arc;
 
@@ -16,7 +15,7 @@ use crate::meshes::mesh_manager::MeshManager;
 use crate::meshes::{Mesh, MeshError};
 use crate::pipelines::{PipelineManager, PushConstantBinding};
 use crate::prelude::*;
-use crate::resource_paths::{resource_type, ResourcePath};
+use crate::resource_paths::{resource_type, ResourcePath, SubresourcePath};
 use crate::textures::TextureManager;
 use crate::volatile_buffer::{VolatileBuffer, VolatileBufferType};
 use crate::vulkan::command_buffer::{RenderingCmdBuf, TransientPrimaryCommandPool};
@@ -32,7 +31,7 @@ pub trait ComponentConfig {
         level: &mut LoadingLevel,
         engine: &GalaxyEngine,
         cmd_pool: &mut TransientPrimaryCommandPool,
-    ) -> Result<(), LoadError>;
+    ) -> LoadResult<()>;
 }
 
 // Allow adding configs that are components themselves directly to the world.
@@ -46,7 +45,7 @@ where
         level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
         _cmd_pool: &mut TransientPrimaryCommandPool,
-    ) -> Result<(), LoadError> {
+    ) -> LoadResult<()> {
         level.world.add_component(entity_id, self.clone());
         Ok(())
     }
@@ -68,7 +67,7 @@ impl ComponentConfig for LightConfig {
         _level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
         _cmd_pool: &mut TransientPrimaryCommandPool,
-    ) -> Result<(), LoadError> {
+    ) -> LoadResult<()> {
         Ok(())
     }
 }
@@ -115,7 +114,7 @@ impl ComponentConfig for Transform {
         level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
         _cmd_pool: &mut TransientPrimaryCommandPool,
-    ) -> Result<(), LoadError> {
+    ) -> LoadResult<()> {
         level.world.add_component(
             entity_id,
             TransformComponent {
@@ -157,7 +156,7 @@ impl ComponentConfig for Scale {
         level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
         _cmd_pool: &mut TransientPrimaryCommandPool,
-    ) -> Result<(), LoadError> {
+    ) -> LoadResult<()> {
         level.world.update_transform_with(entity_id, |transform| {
             transform.scale = Vec3::broadcast(self.0);
         });
@@ -178,7 +177,7 @@ impl ComponentConfig for AnglePlaneRotor {
         level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
         _cmd_pool: &mut TransientPrimaryCommandPool,
-    ) -> Result<(), LoadError> {
+    ) -> LoadResult<()> {
         level.world.update_transform_with(entity_id, |transform| {
             transform.rotation = Rotor3::from_angle_plane(self.angle.to_radians(), self.plane.normalized());
         });
@@ -189,13 +188,13 @@ impl ComponentConfig for AnglePlaneRotor {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ModelConfig {
     pub mesh: String,
-    pub material: String,
+    pub materials: Vec<String>,
 }
 
 #[derive(Component)]
 pub struct Model {
     pub mesh: Arc<Mesh>,
-    pub material: Arc<Material>,
+    pub materials: Vec<Arc<Material>>,
 }
 
 impl ComponentConfig for ModelConfig {
@@ -205,31 +204,52 @@ impl ComponentConfig for ModelConfig {
         level: &mut LoadingLevel,
         engine: &GalaxyEngine,
         cmd_pool: &mut TransientPrimaryCommandPool,
-    ) -> Result<(), LoadError> {
-        // Load material.
-        let material_path = ResourcePath::new(&self.material, Some(&level.config_path))
-            .ok_or(LoadError::ResourcePathError(self.material.clone()))?;
-        let material = level.material_manager.get_or_load_material(
-            engine,
-            &mut level.texture_manager,
-            cmd_pool,
-            &material_path,
-        )?;
+    ) -> LoadResult<()> {
+        if self.materials.is_empty() {
+            return Ok(()); // No materials, nothing to do.
+        }
 
-        // Load mesh. TODO: Share meshes.
+        // Load mesh.
         let mesh_path = ResourcePath::new(&self.mesh, Some(&level.config_path))
             .ok_or(LoadError::ResourcePathError(self.mesh.clone()))?;
-        let mesh_name = Path::new(&self.mesh)
-            .file_stem()
-            .unwrap()
-            .to_str()
-            .unwrap_or("Unknown mesh");
-        let mesh = Arc::new(Mesh::new(mesh_name, engine, cmd_pool, &mesh_path)?);
+        let mesh = level.mesh_manager.get_or_load_mesh(engine, cmd_pool, &mesh_path)?;
+
+        // Load materials.
+        let mut materials = self
+            .materials
+            .iter()
+            .map(|material| {
+                let material_path = SubresourcePath::new(material, Some(&level.config_path))
+                    .ok_or(LoadError::ResourcePathError(material.clone()))?;
+                Ok(level.material_manager.get_or_load_material(
+                    engine,
+                    &mut level.texture_manager,
+                    cmd_pool,
+                    &material_path,
+                )?)
+            })
+            .collect::<LoadResult<Vec<_>>>()?;
+
+        let num_elements = mesh.num_elements();
+        match materials.len().cmp(&num_elements) {
+            std::cmp::Ordering::Less => {
+                log::warn!("Too few materials for mesh, duplicating last material.");
+                let last_material = Arc::clone(materials.last().unwrap());
+                materials.resize(num_elements, last_material);
+            }
+            std::cmp::Ordering::Equal => {}
+            std::cmp::Ordering::Greater => {
+                log::warn!("Too many materials for mesh, truncating to {num_elements}.");
+                materials.truncate(num_elements);
+            }
+        }
+
+        debug_assert_eq!(materials.len(), mesh.num_elements());
 
         // Ensure each model has a transform.
         level.world.update_transform_with(entity_id, |_| {});
 
-        level.world.add_component(entity_id, Model { mesh, material });
+        level.world.add_component(entity_id, Model { mesh, materials });
         Ok(())
     }
 }
@@ -300,6 +320,8 @@ pub enum LoadError {
     #[error("No camera component found")]
     NoCameraComponent,
 }
+
+pub type LoadResult<T> = Result<T, LoadError>;
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
@@ -623,10 +645,12 @@ impl Level {
 
                     for indexed_material in self.material_manager.iter_materials_for_pipeline(pipeline) {
                         // TODO: This is a stupid simple linear search to find models with the same material.
-                        for (model, transform) in (&v_models, &v_transforms)
-                            .iter()
-                            .filter(|(model, _)| Arc::ptr_eq(&model.material, &indexed_material.material))
-                        {
+                        for (model, transform) in (&v_models, &v_transforms).iter().filter(|(model, _)| {
+                            model
+                                .materials
+                                .iter()
+                                .any(|mat| Arc::ptr_eq(mat, &indexed_material.material))
+                        }) {
                             cmd_buf.push_constants(
                                 layout,
                                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,

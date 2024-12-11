@@ -34,7 +34,7 @@ pub mod resource_type {
     }
 }
 
-#[derive(Hash, PartialEq, Eq, Copy, Clone)]
+#[derive(Hash, PartialEq, Eq, Debug, Copy, Clone)]
 pub enum ResourcePathBase {
     Game,
     Engine,
@@ -52,11 +52,7 @@ impl ResourcePathBase {
     }
 }
 
-pub trait ResourcePathTrait {
-    fn full_path(&self, engine: &GalaxyEngine) -> PathBuf;
-}
-
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Debug, Clone)]
 pub struct ResourcePath {
     base: ResourcePathBase,
     path: PathBuf,
@@ -75,6 +71,10 @@ impl ResourcePath {
                 path: relative_to.path.parent().unwrap_or(&relative_to.path).join(path),
             })
         }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     pub fn full_path<R: ResourceType>(&self, engine: &GalaxyEngine) -> PathBuf {
@@ -96,5 +96,39 @@ impl ResourcePath {
         };
         base.set_extension(R::EXTENSION);
         base
+    }
+}
+
+// Sub-resources are constructed from identifies like "/game/models/sponza/sponza:bricks".
+#[derive(Hash, PartialEq, Eq, Debug, Clone)]
+pub struct SubresourcePath {
+    resource: ResourcePath,
+    subresource: String,
+}
+
+impl SubresourcePath {
+    pub fn new<P: AsRef<Path>>(path: P, relative_to: Option<&ResourcePath>) -> Option<Self> {
+        let (path, subresource) = Self::subresource_from_path(path.as_ref());
+        let resource = ResourcePath::new(path, relative_to)?;
+        Some(Self {
+            resource,
+            subresource: subresource.unwrap_or(String::new()),
+        })
+    }
+
+    fn subresource_from_path(path: &Path) -> (&Path, Option<String>) {
+        path.to_str()
+            .unwrap() // We want to know if to_str() fails.
+            .rsplit_once(':')
+            .map(|(path, subresource)| (Path::new(path), Some(subresource.to_owned())))
+            .unwrap_or((path, None))
+    }
+
+    pub fn resource(&self) -> &ResourcePath {
+        &self.resource
+    }
+
+    pub fn subresource(&self) -> &str {
+        &self.subresource
     }
 }

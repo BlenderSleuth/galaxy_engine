@@ -5,7 +5,7 @@
 use app::{AppFlags, AppInfo, GalaxyApp};
 use galaxy_engine::engine::GalaxyEngine;
 use galaxy_engine::game::Game;
-use galaxy_engine::level::{ComponentConfig, LoadError, LoadingLevel};
+use galaxy_engine::level::{ComponentConfig, LoadResult, LoadingLevel};
 use galaxy_engine::resource_paths::ResourcePath;
 use galaxy_engine::vulkan::command_buffer::TransientPrimaryCommandPool;
 use galaxy_engine::{app, game_dir, register_components};
@@ -32,7 +32,7 @@ impl ComponentConfig for GravitySourceConfig {
         _level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
         _cmd_pool: &mut TransientPrimaryCommandPool,
-    ) -> Result<(), LoadError> {
+    ) -> LoadResult<()> {
         Ok(())
     }
 }

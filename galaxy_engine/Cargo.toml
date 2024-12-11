@@ -40,6 +40,7 @@ shipyard.workspace = true
 enum_delegate.workspace = true
 zstd.workspace = true
 basis-universal = { path = "../crates/basis-universal-rs/basis-universal" }
+self_cell = "1.1.0"
 
 [build-dependencies]
 galaxy_engine_build = { path = "../galaxy_engine_build" }

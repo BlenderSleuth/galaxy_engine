@@ -32,7 +32,7 @@ Level(
             components: [
                 Model(
                     mesh: "/game/models/viking_room/viking_room",
-                    material: "/game/models/viking_room/viking_room",
+                    materials: ["/game/models/viking_room/viking_room"],
                 ),
             ],
         ),
@@ -43,7 +43,9 @@ Level(
                 Scale(.005),
                 Model(
                     mesh: "/game/models/sponza/sponza_triangulated",
-                    material: "/game/models/sponza/sponza",
+                    materials: [
+                        "/game/models/sponza/sponza:bricks",
+                    ],
                 ),
             ],
         ),

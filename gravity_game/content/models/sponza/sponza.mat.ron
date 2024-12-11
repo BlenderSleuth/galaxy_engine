@@ -1,7 +1,15 @@
-Material(
-    pipeline: "engine/simple/unlit",
-    params: {
-        "base_colour": Texture("textures/spnza_bricks_a_diff"),
-        "normal": Texture("textures/spnza_bricks_a_normal"),
-    },
-)
+{
+    "bricks": Material(
+        pipeline: "engine/simple/unlit",
+        params: {
+            "base_colour": Texture("textures/spnza_bricks_a_diff"),
+            "normal": Texture("textures/spnza_bricks_a_normal"),
+        },
+    ),
+    "ceiling": Material(
+        pipeline: "engine/simple/unlit",
+        params: {
+            "base_colour": Texture("textures/sponza_ceiling_a_diff"),
+        },
+    ),
+}
