@@ -7,9 +7,9 @@ public struct SceneUniforms {
     public float delta_time;
 };
 
-public struct SceneData<M> {
+public struct SceneData<M = void> {
     public ConstantBuffer<SceneUniforms, Std430DataLayout> scene;
     public StructuredBuffer<float4x4> transforms;
-    public Sampler2D<float4> textures[512];
-    public StructuredBuffer<M, ScalarDataLayout> materials[512];
+    public StructuredBuffer<Ptr<M>> materials;
+    public Sampler2D<float4> textures[];
 }

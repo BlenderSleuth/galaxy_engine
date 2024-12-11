@@ -210,6 +210,11 @@ impl Buffer<GpuOnly> {
         staging_buffer.copy_to_buffer(cmd_buf, self, staging_buffer.size());
         Ok(staging_buffer)
     }
+
+    pub fn device_address(&self) -> vk::DeviceAddress {
+        let info = vk::BufferDeviceAddressInfo::default().buffer(self.handle());
+        unsafe { self.loader.get_buffer_device_address(&info) }
+    }
 }
 
 impl Buffer<CpuToGpu> {
@@ -222,14 +227,32 @@ impl Buffer<CpuToGpu> {
         self.allocation.as_maybe_uninit_bytes_mut().fill(MaybeUninit::zeroed());
     }
 
-    // Casts the buffer memory to a mutable reference of type T.
-    // Safety: buffer memory must be initialised.
+    /// # Safety
+    ///
+    /// Buffer memory must be initialised.
+    pub unsafe fn get_mut_bytes(&mut self, size: usize, offset: usize) -> &mut [u8] {
+        let range = offset..(offset + size);
+        unsafe { self.allocation.assume_range_initialized_as_bytes_mut(range) }
+    }
+
+    /// Casts the buffer memory to a mutable reference of type T.
+    /// # Safety
+    ///
+    /// Buffer memory must be initialised.
     pub unsafe fn get_mut<T: bytemuck::Pod>(&mut self, offset: usize) -> &mut T {
         let size = std::mem::size_of::<T>();
-        let range = offset..(offset + size);
-        let bytes = unsafe { self.allocation.assume_range_initialized_as_bytes_mut(range) };
-        // Currently panics if the alignment is wrong.
-        bytemuck::try_from_bytes_mut(bytes).unwrap()
+        // Panics if the alignment is wrong.
+        bytemuck::try_from_bytes_mut(self.get_mut_bytes(size, offset)).unwrap()
+    }
+
+    /// Casts the buffer memory to a mutable slice of type T.
+    /// # Safety
+    ///
+    /// Buffer memory must be initialised.
+    pub unsafe fn get_mut_slice<T: bytemuck::Pod>(&mut self, len: usize, offset: usize) -> &mut [T] {
+        let size = std::mem::size_of::<T>() * len;
+        // Panics if the alignment is wrong.
+        bytemuck::try_cast_slice_mut(self.get_mut_bytes(size, offset)).unwrap()
     }
 
     pub fn zero_and_get_mut_bytes(&mut self) -> &mut [u8] {

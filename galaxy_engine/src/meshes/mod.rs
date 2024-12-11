@@ -139,13 +139,12 @@ fn load_obj(obj_path: &Path) -> Result<(Vec<PositionTexCoordVertex>, Vec<u32>), 
     // Indexing code from obj crate.
     let mut cache = HashMap::new();
     let mut can_use_16_bit = true;
-    let mut map = |pi: usize, ni: usize, ti: usize, element_index: u32| -> Result<(), TryFromIntError> {
+    let mut map = |pi: usize, ti: usize, element_index: u32| -> Result<(), TryFromIntError> {
         // Look up cache
-        let index = match cache.entry((pi, ni, ti)) {
+        let index = match cache.entry((pi, element_index, ti)) {
             // Cache miss -> make new, store it on cache
             Entry::Vacant(entry) => {
                 let p = positions[pi];
-                let n = normals[ni];
                 let t = tex_coords[ti];
                 let vertex = PositionTexCoordVertex {
                     position: Vec3::new(p.0, p.1, p.2),
@@ -179,8 +178,8 @@ fn load_obj(obj_path: &Path) -> Result<(Vec<PositionTexCoordVertex>, Vec<u32>), 
                     Polygon::PT(_) => panic!("Tried to extract normal data which are not contained in the model"),
                     Polygon::PN(_) => panic!("Tried to extract texture data which are not contained in the model"),
                     Polygon::PTN(ref vec) if vec.len() == 3 => {
-                        for &(pi, ti, ni) in vec {
-                            map(pi, ni, ti, element_index).unwrap()
+                        for &(pi, ti, _ni) in vec {
+                            map(pi, ti, element_index).unwrap()
                         }
                     }
                     _ => panic!("Model should be triangulated first to be loaded properly"),

@@ -11,7 +11,7 @@ use itertools::izip;
 
 use crate::pipelines::config::{GraphicsPipelineConfig, GraphicsShaderStageFlags, PipelineBinding, PipelineBindingMap};
 use crate::pipelines::pipeline_manager::{FragmentShaderModuleCache, PipelineLayoutCache, VertexShaderModuleCache};
-use crate::pipelines::{PipelineBindingDataSize, PipelineLayout};
+use crate::pipelines::PipelineBindingDataSize;
 use crate::utils::CStructLayout;
 use crate::vertex_input::{BindableVertex, PositionColourTexCoordVertex, PositionTexCoordVertex, VertexInputType};
 use crate::vulkan::device::Device;
@@ -37,7 +37,7 @@ pub trait Pipeline {
     fn handle(&self) -> vk::Pipeline;
     fn name(&self) -> &str;
     fn cloned_name(&self) -> Arc<str>;
-    fn layout(&self) -> &PipelineLayout;
+    fn layout(&self) -> vk::PipelineLayout;
     fn bindings(&self) -> &PipelineBindingMap;
     fn bindings_layout(&self) -> CStructLayout {
         // Flags binding goes on the end.
@@ -72,7 +72,7 @@ pub trait Pipeline {
 pub struct GraphicsPipeline {
     handle: vk::Pipeline,
     name: Arc<str>,
-    layout: Arc<PipelineLayout>,
+    layout: vk::PipelineLayout,
     bindings: PipelineBindingMap,
 }
 
@@ -161,7 +161,7 @@ impl GraphicsPipeline {
 
         let (pipeline_infos, pipeline_layouts): (Vec<_>, Vec<_>) = izip!(&configs, &shader_stages, &mut create_infos)
             .map(|(config, shader_stages, infos)| {
-                let pipeline_layout = &pipeline_layouts[&config.layout.push_constant];
+                let pipeline_layout = pipeline_layouts[&config.layout.push_constant];
                 (
                     vk::GraphicsPipelineCreateInfo::default()
                         .stages(shader_stages)
@@ -173,7 +173,7 @@ impl GraphicsPipeline {
                         .color_blend_state(&color_blend_state)
                         .depth_stencil_state(&infos.2)
                         .dynamic_state(&pipeline_dynamic_state)
-                        .layout(pipeline_layout.handle())
+                        .layout(pipeline_layout)
                         .push_next(&mut infos.3),
                     pipeline_layout,
                 )
@@ -202,7 +202,7 @@ impl GraphicsPipeline {
             .map(|(handle, layout, config)| Self {
                 handle,
                 name: config.name,
-                layout: Arc::clone(layout),
+                layout,
                 bindings: config
                     .layout
                     .bindings
@@ -236,16 +236,17 @@ impl Pipeline for GraphicsPipeline {
     fn cloned_name(&self) -> Arc<str> {
         Arc::clone(&self.name)
     }
-    fn layout(&self) -> &PipelineLayout {
-        &self.layout
+    fn layout(&self) -> vk::PipelineLayout {
+        self.layout
     }
     fn bindings(&self) -> &PipelineBindingMap {
         &self.bindings
     }
 }
 
+#[allow(unused)]
 pub struct ComputePipelineParameters {
-    pub layout: Arc<PipelineLayout>,
+    pub layout: vk::PipelineLayout,
     pub name: Arc<str>,
     pub compute_module: ShaderModule<ComputeShaderStage>,
 }
@@ -253,7 +254,7 @@ pub struct ComputePipelineParameters {
 pub struct ComputePipeline {
     handle: vk::Pipeline,
     name: Arc<str>,
-    layout: Arc<PipelineLayout>,
+    layout: vk::PipelineLayout,
     bindings: PipelineBindingMap,
 }
 
@@ -264,7 +265,7 @@ impl ComputePipeline {
         let compute_stage = params.compute_module.stage_info();
         let pipeline_info = vk::ComputePipelineCreateInfo::default()
             .stage(compute_stage)
-            .layout(params.layout.handle());
+            .layout(params.layout);
 
         // Non allocating version of create_compute_pipelines.
         let mut handle = vk::Pipeline::null();
@@ -300,8 +301,8 @@ impl Pipeline for ComputePipeline {
     fn cloned_name(&self) -> Arc<str> {
         Arc::clone(&self.name)
     }
-    fn layout(&self) -> &PipelineLayout {
-        &self.layout
+    fn layout(&self) -> vk::PipelineLayout {
+        self.layout
     }
     fn bindings(&self) -> &PipelineBindingMap {
         &self.bindings

@@ -427,12 +427,10 @@ impl Level {
         let material_manager = MaterialManager::new(level.material_manager, engine, cmd_pool)?;
 
         // Write to scene descriptor sets.
-        let uniform_buffer_info: [_; GalaxyEngine::MAX_FRAMES_IN_FLIGHT] =
-            core::array::from_fn(|frame| scene_uniform_buffer.descriptor_buffer_info(frame));
-        let transform_buffer_info: [_; GalaxyEngine::MAX_FRAMES_IN_FLIGHT] =
-            core::array::from_fn(|frame| scene_transforms_buffer.descriptor_buffer_info(frame));
+        let uniform_buffer_info = scene_uniform_buffer.descriptor_buffer_infos();
+        let transform_buffer_info = scene_transforms_buffer.descriptor_buffer_infos();
         let texture_image_infos = level.texture_manager.get_image_infos();
-        let material_buffer_infos = material_manager.get_material_buffer_infos();
+        let material_buffer_infos = material_manager.get_material_buffer_addresses_infos();
 
         const NUM_WRITES: usize = 4;
         let mut descriptor_writes: ArrayVec<_, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT * NUM_WRITES }> = descriptor_pool
@@ -457,10 +455,10 @@ impl Level {
                     // Material buffers.
                     vk::WriteDescriptorSet::default()
                         .dst_set(*set)
-                        .dst_binding(3)
+                        .dst_binding(2)
                         .dst_array_element(0)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(&material_buffer_infos),
+                        .buffer_info(slice::from_ref(&material_buffer_infos[frame])),
                 ]
             })
             .collect();
@@ -470,7 +468,7 @@ impl Level {
                 // Textures array.
                 vk::WriteDescriptorSet::default()
                     .dst_set(*set)
-                    .dst_binding(2) // Texture buffer is index 2 the in scene descriptor set layout.
+                    .dst_binding(3) // Texture buffer is index 3 the in scene descriptor set layout.
                     .dst_array_element(0)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .image_info(&texture_image_infos)

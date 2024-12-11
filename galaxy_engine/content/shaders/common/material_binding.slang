@@ -1,7 +1,5 @@
 module MaterialBinding;
 
-import scene_uniforms;
-
 /*
 #define MAT_PROPERTY(type, name, swizzle) \
     type name; \
@@ -24,11 +22,11 @@ public struct MaterialProperty<let N: uint, let I: uint> {
         return bit_cast<uint>(value[0]);
     }
 
-    public vector<float, N> get<M>(SceneData<M> scene_data, uint flags, float2 tex_coord) {
+    public vector<float, N> get(Sampler2D[] textures, uint flags, float2 tex_coord) {
         if (is_flag_set(flags, I)) {
             return value;
         }
-        return __vectorReshape<N, float, 4>(scene_data.textures[get_texture_index()].Sample(tex_coord));
+        return __vectorReshape<N, float, 4>(textures[get_texture_index()].Sample(tex_coord));
     }
 }
 

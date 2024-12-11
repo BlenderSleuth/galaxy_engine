@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::slice;
 use std::sync::Arc;
 
 use ash::prelude::VkResult;
@@ -13,11 +14,27 @@ use itertools::{Either, Itertools};
 use crate::engine::GalaxyEngine;
 use crate::pipelines::config::{PipelineConfig, PushConstantBinding};
 use crate::pipelines::pipeline::{ComputePipeline, GraphicsPipeline, Pipeline};
-use crate::pipelines::PipelineLayout;
 use crate::textures::TextureManager;
 use crate::utils::{ArcFinalOwner, EntryExt};
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
+
+pub fn create_pipeline_layout(
+    device: &Device,
+    descriptor_set_layout: Option<&[vk::DescriptorSetLayout]>,
+    push_constant_range: Option<&vk::PushConstantRange>,
+) -> VkResult<vk::PipelineLayout> {
+    let mut pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
+    if let Some(descriptor_set_layout) = descriptor_set_layout {
+        pipeline_layout_info = pipeline_layout_info.set_layouts(descriptor_set_layout);
+    }
+    if let Some(push_constant_range) = push_constant_range {
+        pipeline_layout_info = pipeline_layout_info.push_constant_ranges(slice::from_ref(&push_constant_range));
+    }
+    let handle = unsafe { device.loader().create_pipeline_layout(&pipeline_layout_info, None) }?;
+
+    Ok(handle)
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum PipelineManagerError {
@@ -29,7 +46,7 @@ pub enum PipelineManagerError {
     RonError(#[from] ron::de::SpannedError),
 }
 
-pub type PipelineLayoutCache = HashMap<Option<PushConstantBinding>, Arc<PipelineLayout>>;
+pub type PipelineLayoutCache = HashMap<Option<PushConstantBinding>, vk::PipelineLayout>;
 pub type VertexShaderModuleCache<'a> = HashMap<&'a str, ShaderModule<VertexShaderStage>>;
 pub type FragmentShaderModuleCache<'a> = HashMap<&'a str, ShaderModule<FragmentShaderStage>>;
 
@@ -49,7 +66,7 @@ impl PipelineManager {
     pub const SHADER_PATH: &'static str = concatcp!(GalaxyEngine::CONTENT_PATH, PipelineManager::SHADER_DIR);
     pub const BUILT_SHADER_PATH: &'static str = concatcp!(GalaxyEngine::BUILT_PATH, PipelineManager::SHADER_DIR);
     const PIPELINE_CONFIG_GLOB: &'static str = "**/*.pipeline.ron";
-    pub const MAX_PIPELINES_PER_LAYOUT: usize = 512;
+    //pub const MAX_PIPELINES_PER_LAYOUT: usize = 512;
 
     pub fn create_descriptor_set_layout(
         device: &Device,
@@ -75,34 +92,23 @@ impl PipelineManager {
                 .descriptor_count(1)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .stage_flags(vk::ShaderStageFlags::VERTEX),
-            // Array of textures:
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_count(TextureManager::MAX_TEXTURES as u32)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             // Material data storage:
             vk::DescriptorSetLayoutBinding::default()
-                .binding(3)
-                .descriptor_count(Self::MAX_PIPELINES_PER_LAYOUT as u32)
+                .binding(2)
+                .descriptor_count(1)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            // Array of textures:
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(3)
+                .descriptor_count(TextureManager::MAX_TEXTURES as u32)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ]
     }
 
-    //fn material_data_descriptor_set_layout_bindings() -> [vk::DescriptorSetLayoutBinding<'static>; 1] {
-    //    [
-    //        // Material data storage:
-    //        vk::DescriptorSetLayoutBinding::default()
-    //            .binding(0)
-    //            .descriptor_count(1)
-    //            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-    //            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-    //    ]
-    //}
-
     pub fn new(device: &Device, msaa_samples: vk::SampleCountFlags) -> Result<Self, PipelineManagerError> {
-        // Create level descriptor set layout.
+        // Create scene descriptor set layout.
         let scene_set_layout =
             Self::create_descriptor_set_layout(device, &Self::scene_descriptor_set_layout_bindings())?;
 
@@ -169,8 +175,7 @@ impl PipelineManager {
             pipeline_layouts
                 .entry(push_constant)
                 .try_or_insert_with::<vk::Result, _>(|| {
-                    let layout = PipelineLayout::new(device, Some(&[scene_set_layout]), push_constant_range.as_ref())?;
-                    Ok(Arc::new(layout))
+                    create_pipeline_layout(device, Some(&[scene_set_layout]), push_constant_range.as_ref())
                 })?;
 
             // Load shaders.
@@ -232,8 +237,8 @@ impl PipelineManager {
     //    self.pipeline_layouts.len()
     //}
 
-    pub fn get_layout(&self, binding: Option<PushConstantBinding>) -> Option<&PipelineLayout> {
-        self.pipeline_layouts.get(&binding).map(Arc::as_ref)
+    pub fn get_layout(&self, binding: Option<PushConstantBinding>) -> Option<vk::PipelineLayout> {
+        self.pipeline_layouts.get(&binding).copied()
     }
 }
 
@@ -253,9 +258,10 @@ impl Drop for PipelineManager {
 
         // Destroy descriptor set layout.
         unsafe { self.loader.destroy_descriptor_set_layout(self.scene_set_layout, None) }
-        //unsafe {
-        //    self.loader
-        //        .destroy_descriptor_set_layout(self.material_set_layout, None)
-        //}
+
+        // Destroy pipeline layouts.
+        for layout in self.pipeline_layouts.values() {
+            unsafe { self.loader.destroy_pipeline_layout(*layout, None) }
+        }
     }
 }

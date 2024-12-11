@@ -10,7 +10,7 @@ use ash::vk;
 use ash::vk::DependencyInfo;
 use castaway::cast;
 
-use crate::pipelines::{ComputePipeline, GraphicsPipeline, Pipeline, PipelineLayout};
+use crate::pipelines::{ComputePipeline, GraphicsPipeline, Pipeline};
 use crate::vulkan::buffer::{Buffer, GpuOnly, MemLocation};
 use crate::vulkan::device::{Device, DeviceExt, SharedDeviceLoader};
 use crate::vulkan::extensions::DeviceExtensions;
@@ -401,21 +401,21 @@ impl<Q: ComputeQueueType, R: RenderingState> CommandBuffer<Q, Recording<R>> {
 
     pub fn push_constants(
         &mut self,
-        pipeline_layout: &PipelineLayout,
+        pipeline_layout: vk::PipelineLayout,
         stage_flags: vk::ShaderStageFlags,
         offset: u32,
         data: &[u8],
     ) {
         unsafe {
             self.loader()
-                .cmd_push_constants(self.handle(), pipeline_layout.handle(), stage_flags, offset, data)
+                .cmd_push_constants(self.handle(), pipeline_layout, stage_flags, offset, data)
         };
     }
 
     pub fn bind_descriptor_sets(
         &mut self,
         bind_point: vk::PipelineBindPoint,
-        pipeline_layout: &PipelineLayout,
+        pipeline_layout: vk::PipelineLayout,
         first_set: u32,
         descriptor_sets: &[vk::DescriptorSet],
         dynamic_offsets: &[u32],
@@ -424,7 +424,7 @@ impl<Q: ComputeQueueType, R: RenderingState> CommandBuffer<Q, Recording<R>> {
             self.loader().cmd_bind_descriptor_sets(
                 self.handle(),
                 bind_point,
-                pipeline_layout.handle(),
+                pipeline_layout,
                 first_set,
                 descriptor_sets,
                 dynamic_offsets,

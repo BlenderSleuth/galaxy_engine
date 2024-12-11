@@ -8,7 +8,7 @@ use ultraviolet::{Vec2, Vec3, Vec4};
 
 use crate::engine::GalaxyEngine;
 use crate::materials::config::{get_material_config, ResourceBindingConfig};
-use crate::pipelines::{GraphicsPipeline, Pipeline, PipelineLayout};
+use crate::pipelines::{GraphicsPipeline, Pipeline};
 use crate::resource_paths::{resource_type, ResourcePath};
 use crate::textures::{TextureError, TextureManager};
 use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
@@ -137,7 +137,7 @@ impl Material {
         &self.pipeline
     }
 
-    pub fn pipeline_layout(&self) -> &PipelineLayout {
+    pub fn pipeline_layout(&self) -> vk::PipelineLayout {
         self.pipeline.layout()
     }
 

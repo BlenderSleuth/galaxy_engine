@@ -57,13 +57,19 @@ impl VolatileBufferType {
 pub struct VolatileBuffer<T: bytemuck::Pod, const N: usize = { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }> {
     buffer: Buffer<CpuToGpu>,
     size: usize,
+    len: usize,
     marker: std::marker::PhantomData<T>,
 }
 
 impl<T: bytemuck::Pod, const N: usize> VolatileBuffer<T, N> {
     pub fn new(name: &str, device: &Device, buffer_type: VolatileBufferType) -> MemResult<Self> {
+        Self::new_array(name, 1, device, buffer_type)
+    }
+
+    pub fn new_array(name: &str, len: usize, device: &Device, buffer_type: VolatileBufferType) -> MemResult<Self> {
         // Calculate the padded size of the buffer, based on the alignment requirements of the buffer type.
-        let size = core::alloc::Layout::new::<T>()
+        let size = core::alloc::Layout::array::<T>(len)
+            .unwrap()
             .align_to(buffer_type.min_align(device))
             .unwrap()
             .pad_to_align()
@@ -83,6 +89,7 @@ impl<T: bytemuck::Pod, const N: usize> VolatileBuffer<T, N> {
         Ok(Self {
             buffer,
             size,
+            len,
             marker: std::marker::PhantomData,
         })
     }
@@ -93,8 +100,13 @@ impl<T: bytemuck::Pod, const N: usize> VolatileBuffer<T, N> {
     }
 
     pub fn get_mut(&mut self, frame_index: usize) -> &mut T {
-        // Safety: The buffer is (at-least) zero-initialized, so this is a safe operation.
+        // Safety: The buffer is (at least) zero-initialized, so this is a safe operation.
         unsafe { self.buffer.get_mut(self.frame_offset(frame_index)) }
+    }
+
+    pub fn get_mut_slice(&mut self, frame_index: usize) -> &mut [T] {
+        // Safety: The buffer is (at least) zero-initialized, so this is a safe operation.
+        unsafe { self.buffer.get_mut_slice(self.len, self.frame_offset(frame_index)) }
     }
 
     pub fn descriptor_buffer_info(&self, frame_index: usize) -> vk::DescriptorBufferInfo {
@@ -102,5 +114,9 @@ impl<T: bytemuck::Pod, const N: usize> VolatileBuffer<T, N> {
             .buffer(self.buffer.handle())
             .offset(self.frame_offset(frame_index) as vk::DeviceSize)
             .range(std::mem::size_of::<T>() as vk::DeviceSize)
+    }
+
+    pub fn descriptor_buffer_infos(&self) -> [vk::DescriptorBufferInfo; N] {
+        core::array::from_fn(|frame| self.descriptor_buffer_info(frame))
     }
 }

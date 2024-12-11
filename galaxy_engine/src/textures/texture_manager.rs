@@ -26,7 +26,7 @@ pub struct TextureManager {
 }
 
 impl TextureManager {
-    pub const MAX_TEXTURES: usize = 512;
+    pub const MAX_TEXTURES: usize = 32;
 
     pub fn new(device: &Device) -> VkResult<Self> {
         // Create default texture sampler.

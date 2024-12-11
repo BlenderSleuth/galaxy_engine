@@ -281,6 +281,7 @@ impl PhysicalDevice {
 
         // Validation layers require some features enabled.
         if cfg!(feature = "debug_info") {
+            check_and_enable_feature!(features.shader_int64);
             check_and_enable_feature!(features.fragment_stores_and_atomics);
             check_and_enable_feature!(features.vertex_pipeline_stores_and_atomics);
             check_and_enable_feature!(features12.uniform_and_storage_buffer8_bit_access);

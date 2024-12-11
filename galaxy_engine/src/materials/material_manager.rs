@@ -15,6 +15,7 @@ use crate::pipelines::{GraphicsPipeline, Pipeline, PipelineBindingDataSize};
 use crate::resource_paths::ResourcePath;
 use crate::textures::TextureManager;
 use crate::utils::LayoutExt;
+use crate::volatile_buffer::{VolatileBuffer, VolatileBufferType};
 use crate::vulkan::buffer::{Buffer, GpuOnly};
 use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::debug::debug_only_name;
@@ -122,11 +123,13 @@ impl_material_binding!(Vec4, Vec4::new(1., 0., 1., 1.), [0]);
 struct PipelineData {
     materials: Vec<ResourcePath>,
     material_buffer: Buffer<GpuOnly>,
+    material_buffer_addr: vk::DeviceAddress,
 }
 
 pub(crate) struct MaterialManager {
-    materials: HashMap<ResourcePath, IndexedMaterial>,
     pipeline_data: IndexMap<Arc<str>, PipelineData>,
+    materials: HashMap<ResourcePath, IndexedMaterial>,
+    material_buffer_addresses: VolatileBuffer<vk::DeviceAddress>,
 }
 
 impl MaterialManager {
@@ -135,13 +138,11 @@ impl MaterialManager {
         engine: &GalaxyEngine,
         cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> MemResult<Self> {
-        // TODO: Upload all material data to the one buffer.
-        let mut cmd_buf = cmd_pool.allocate_transient_cmd_buffer()?;
-        let (_staging_buffers, pipeline_data) = loading
+        let buffer_layouts = loading
             .pipelines
-            .into_iter()
+            .iter()
             .map(|(name, resource_paths)| {
-                let pipeline = engine.pipeline_manager.get_graphics_pipeline(&name).unwrap();
+                let pipeline = engine.pipeline_manager.get_graphics_pipeline(name).unwrap();
                 let bindings_layout = pipeline.bindings_layout();
                 let bindings_size = bindings_layout.layout.size();
                 let (buffer_layout, padded_size) = bindings_layout.layout.repeat_pf(resource_paths.len()).unwrap();
@@ -149,161 +150,196 @@ impl MaterialManager {
                     padded_size, bindings_size,
                     "Initial pad to align should ensure repeat does add any padding."
                 );
-
-                // Create material buffer. TODO: Make buffer take a Layout to pass alignment to the allocator.
-                let mut material_buffer = Buffer::new(
-                    debug_only_name!("{name} material buffer"),
-                    &engine.device,
+                (
+                    pipeline,
+                    bindings_layout,
                     buffer_layout.size() as vk::DeviceSize,
-                    vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-                    None,
-                )?;
+                    bindings_size,
+                )
+            })
+            .collect::<Vec<_>>();
 
-                // Copy material resource bindings to buffer.
-                let staging_buffer =
-                    material_buffer.copy_via_staging_buffer_with(&engine.device, &mut cmd_buf, None, |buffer| {
-                        let buffer_memory = buffer.zero_and_get_mut_bytes();
+        // TODO: Upload all material data to the one buffer.
+        //let total_buffer_size = buffer_layouts.iter().map(|(_, _, size, _)| size).sum();
 
-                        for (i, path) in resource_paths.iter().enumerate() {
-                            let indexed_material = &loading.materials[path];
+        let mut cmd_buf = cmd_pool.allocate_transient_cmd_buffer()?;
+        let (_staging_buffers, pipeline_data) = loading
+            .pipelines
+            .into_iter()
+            .zip(buffer_layouts)
+            .map(
+                |((name, resource_paths), (pipeline, bindings_layout, buffer_size, bindings_size))| {
+                    // Create material buffer. TODO: Make buffer take a Layout to pass alignment to the allocator.
+                    let mut material_buffer = Buffer::new(
+                        debug_only_name!("{name} material buffer"),
+                        &engine.device,
+                        buffer_size,
+                        vk::BufferUsageFlags::STORAGE_BUFFER
+                            | vk::BufferUsageFlags::TRANSFER_DST
+                            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                        None,
+                    )?;
 
-                            let resource_bindings = &indexed_material.material.resource_bindings();
-                            let buffer_range = i * bindings_size..(i + 1) * bindings_size;
-                            let buffer_memory = &mut buffer_memory[buffer_range];
+                    // Copy material resource bindings to buffer.
+                    let staging_buffer =
+                        material_buffer.copy_via_staging_buffer_with(&engine.device, &mut cmd_buf, None, |buffer| {
+                            let buffer_memory = buffer.zero_and_get_mut_bytes();
 
-                            // A flags u32 is the final field, with a bit for each resource that says whether it's a constant (1) or a texture (0).
-                            // Then union the first f32 of the constant as the texture index.
-                            let mut flags = 0u32;
-                            for (i, ((bind_point, binding), field_range)) in pipeline
-                                .bindings()
-                                .iter()
-                                .zip(bindings_layout.ranges.iter().cloned())
-                                .enumerate()
-                            {
-                                // TODO: Remove code repetition here.
-                                match binding.ty {
-                                    PipelineBindingDataSize::Float => {
-                                        let mat_binding = bytemuck::from_bytes_mut::<MaterialBinding<f32>>(
-                                            &mut buffer_memory[field_range],
-                                        );
-                                        if let Some(resource_binding) = resource_bindings.get(bind_point) {
-                                            match resource_binding {
-                                                ResourceBinding::Constant(value) => {
-                                                    mat_binding.constant = value.as_f32();
-                                                    flags |= 1 << i;
+                            for (i, path) in resource_paths.iter().enumerate() {
+                                let indexed_material = &loading.materials[path];
+
+                                let resource_bindings = &indexed_material.material.resource_bindings();
+                                let buffer_range = i * bindings_size..(i + 1) * bindings_size;
+                                let buffer_memory = &mut buffer_memory[buffer_range];
+
+                                // A flags u32 is the final field, with a bit for each resource that says whether it's a constant (1) or a texture (0).
+                                // Then union the first f32 of the constant as the texture index.
+                                let mut flags = 0u32;
+                                for (i, ((bind_point, binding), field_range)) in pipeline
+                                    .bindings()
+                                    .iter()
+                                    .zip(bindings_layout.ranges.iter().cloned())
+                                    .enumerate()
+                                {
+                                    // TODO: Remove code repetition here.
+                                    match binding.ty {
+                                        PipelineBindingDataSize::Float => {
+                                            let mat_binding = bytemuck::from_bytes_mut::<MaterialBinding<f32>>(
+                                                &mut buffer_memory[field_range],
+                                            );
+                                            if let Some(resource_binding) = resource_bindings.get(bind_point) {
+                                                match resource_binding {
+                                                    ResourceBinding::Constant(value) => {
+                                                        mat_binding.constant = value.as_f32();
+                                                        flags |= 1 << i;
+                                                    }
+                                                    ResourceBinding::Texture(index) => {
+                                                        mat_binding.set_texture_index(*index);
+                                                    }
                                                 }
-                                                ResourceBinding::Texture(index) => {
-                                                    mat_binding.set_texture_index(*index);
-                                                }
+                                            } else {
+                                                // TODO: In debug builds, put a constant sentinel value in the buffer to catch errors.
+                                                mat_binding.constant = MaterialBinding::<f32>::UNBOUND;
+                                                flags |= 1 << i;
                                             }
-                                        } else {
-                                            // TODO: In debug builds, put a constant sentinel value in the buffer to catch errors.
-                                            mat_binding.constant = MaterialBinding::<f32>::UNBOUND;
-                                            flags |= 1 << i;
                                         }
-                                    }
-                                    PipelineBindingDataSize::Float2 => {
-                                        let mat_binding = bytemuck::from_bytes_mut::<MaterialBinding<Vec2>>(
-                                            &mut buffer_memory[field_range],
-                                        );
-                                        if let Some(resource_binding) = resource_bindings.get(bind_point) {
-                                            match resource_binding {
-                                                ResourceBinding::Constant(value) => {
-                                                    mat_binding.constant = value.as_vec2();
-                                                    flags |= 1 << i;
+                                        PipelineBindingDataSize::Float2 => {
+                                            let mat_binding = bytemuck::from_bytes_mut::<MaterialBinding<Vec2>>(
+                                                &mut buffer_memory[field_range],
+                                            );
+                                            if let Some(resource_binding) = resource_bindings.get(bind_point) {
+                                                match resource_binding {
+                                                    ResourceBinding::Constant(value) => {
+                                                        mat_binding.constant = value.as_vec2();
+                                                        flags |= 1 << i;
+                                                    }
+                                                    ResourceBinding::Texture(index) => {
+                                                        mat_binding.set_texture_index(*index);
+                                                    }
                                                 }
-                                                ResourceBinding::Texture(index) => {
-                                                    mat_binding.set_texture_index(*index);
-                                                }
+                                            } else {
+                                                mat_binding.constant = MaterialBinding::<Vec2>::UNBOUND;
+                                                flags |= 1 << i;
                                             }
-                                        } else {
-                                            mat_binding.constant = MaterialBinding::<Vec2>::UNBOUND;
-                                            flags |= 1 << i;
                                         }
-                                    }
-                                    PipelineBindingDataSize::Float3 => {
-                                        let mat_binding = bytemuck::from_bytes_mut::<MaterialBinding<Vec3>>(
-                                            &mut buffer_memory[field_range],
-                                        );
-                                        if let Some(resource_binding) = resource_bindings.get(bind_point) {
-                                            match resource_binding {
-                                                ResourceBinding::Constant(value) => {
-                                                    mat_binding.constant = value.as_vec3();
-                                                    flags |= 1 << i;
+                                        PipelineBindingDataSize::Float3 => {
+                                            let mat_binding = bytemuck::from_bytes_mut::<MaterialBinding<Vec3>>(
+                                                &mut buffer_memory[field_range],
+                                            );
+                                            if let Some(resource_binding) = resource_bindings.get(bind_point) {
+                                                match resource_binding {
+                                                    ResourceBinding::Constant(value) => {
+                                                        mat_binding.constant = value.as_vec3();
+                                                        flags |= 1 << i;
+                                                    }
+                                                    ResourceBinding::Texture(index) => {
+                                                        mat_binding.set_texture_index(*index);
+                                                    }
                                                 }
-                                                ResourceBinding::Texture(index) => {
-                                                    mat_binding.set_texture_index(*index);
-                                                }
+                                            } else {
+                                                mat_binding.constant = MaterialBinding::<Vec3>::UNBOUND;
+                                                flags |= 1 << i;
                                             }
-                                        } else {
-                                            mat_binding.constant = MaterialBinding::<Vec3>::UNBOUND;
-                                            flags |= 1 << i;
                                         }
-                                    }
-                                    PipelineBindingDataSize::Float4 => {
-                                        unimplemented!()
-                                    }
-                                    PipelineBindingDataSize::Normal => {
-                                        unimplemented!()
+                                        PipelineBindingDataSize::Float4 => {
+                                            unimplemented!()
+                                        }
+                                        PipelineBindingDataSize::Normal => {
+                                            unimplemented!()
+                                        }
                                     }
                                 }
+                                let flags_range = bindings_layout.ranges.last().unwrap().clone();
+                                *bytemuck::from_bytes_mut(&mut buffer_memory[flags_range]) = flags;
+
+                                // Debug printing.
+                                //#[repr(C)]
+                                //#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable, Debug)]
+                                //struct UnlitMaterialData {
+                                //    base_colour: MaterialBinding<Vec3>,
+                                //    roughness: MaterialBinding<f32>,
+                                //    normal: MaterialBinding<Vec3>,
+                                //    flags: u32,
+                                //}
+
+                                //println!(
+                                //    "Material data: {:?}",
+                                //    bytemuck::from_bytes::<UnlitMaterialData>(
+                                //        &buffer_memory[0..size_of::<UnlitMaterialData>()]
+                                //    )
+                                //);
+                                //println!("Raw material data size: {:?}", buffer_memory.len());
                             }
-                            let flags_range = bindings_layout.ranges.last().unwrap().clone();
-                            *bytemuck::from_bytes_mut(&mut buffer_memory[flags_range]) = flags;
 
-                            // Debug printing.
-                            //#[repr(C)]
-                            //#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable, Debug)]
-                            //struct UnlitMaterialData {
-                            //    base_colour: MaterialBinding<Vec3>,
-                            //    roughness: MaterialBinding<f32>,
-                            //    normal: MaterialBinding<Vec3>,
-                            //    flags: u32,
-                            //}
+                            Ok(())
+                        })?;
 
-                            //println!(
-                            //    "Material data: {:?}",
-                            //    bytemuck::from_bytes::<UnlitMaterialData>(
-                            //        &buffer_memory[0..size_of::<UnlitMaterialData>()]
-                            //    )
-                            //);
-                            //println!("Raw material data size: {:?}", buffer_memory.len());
-                        }
-
-                        Ok(())
-                    })?;
-
-                Ok((
-                    staging_buffer,
-                    (
-                        name,
-                        PipelineData {
-                            materials: resource_paths,
-                            material_buffer,
-                        },
-                    ),
-                ))
-            })
-            .collect::<MemResult<(Vec<_>, _)>>()?;
+                    Ok((
+                        staging_buffer,
+                        (
+                            name,
+                            PipelineData {
+                                materials: resource_paths,
+                                material_buffer_addr: material_buffer.device_address(),
+                                material_buffer,
+                            },
+                        ),
+                    ))
+                },
+            )
+            .collect::<MemResult<(Vec<_>, IndexMap<_, _>)>>()?;
 
         // Upload material buffer.
-        cmd_buf.end_submit_wait_and_free()?;
+        let pending = cmd_buf.end()?.submit(&[], &[])?;
+
+        let mut material_buffer_addresses = VolatileBuffer::new_array(
+            "Material buffer addresses",
+            pipeline_data.len(),
+            &engine.device,
+            VolatileBufferType::Storage,
+        )?;
+
+        for frame in 0..GalaxyEngine::MAX_FRAMES_IN_FLIGHT {
+            let addresses = material_buffer_addresses.get_mut_slice(frame);
+            for (i, data) in pipeline_data.values().enumerate() {
+                addresses[i] = data.material_buffer_addr;
+            }
+        }
+
+        // Wait before dropping.
+        pending.wait_for_fence()?;
 
         Ok(Self {
             materials: loading.materials,
             pipeline_data,
+            material_buffer_addresses,
         })
     }
 
-    pub fn get_material_buffer_infos(&self) -> Vec<vk::DescriptorBufferInfo> {
-        self.pipeline_data
-            .values()
-            .map(|data| {
-                vk::DescriptorBufferInfo::default()
-                    .buffer(data.material_buffer.handle())
-                    .range(vk::WHOLE_SIZE)
-            })
-            .collect()
+    pub fn get_material_buffer_addresses_infos(
+        &self,
+    ) -> [vk::DescriptorBufferInfo; GalaxyEngine::MAX_FRAMES_IN_FLIGHT] {
+        self.material_buffer_addresses.descriptor_buffer_infos()
     }
 
     pub fn iter_materials_for_pipeline(&self, pipeline: &GraphicsPipeline) -> impl Iterator<Item = &IndexedMaterial> {
