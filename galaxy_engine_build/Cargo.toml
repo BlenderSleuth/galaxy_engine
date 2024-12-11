@@ -13,4 +13,5 @@ glob.workspace = true
 serde = { workspace = true, features = ["derive"] }
 image = "0.23.5"
 normal-heights = "0.1.2"
-sha3 = "0.10.8"
+sha3 = "0.10.0"
+bincode = "2.0.0-rc.3"

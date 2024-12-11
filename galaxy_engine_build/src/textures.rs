@@ -12,7 +12,7 @@ use sha3::Digest;
 
 use crate::{current_dir, rerun_if_changed, OutputDir, CONTENT_DIR};
 
-#[derive(Deserialize, Debug, Copy, Clone)]
+#[derive(bincode::Encode, Deserialize, Debug, Copy, Clone)]
 enum TextureComponents {
     Greyscale,
     #[serde(rename = "RG")]
@@ -23,7 +23,7 @@ enum TextureComponents {
     Rgba,
 }
 
-#[derive(Deserialize, Debug, Copy, Clone)]
+#[derive(bincode::Encode, Deserialize, Debug, Copy, Clone)]
 enum TextureType {
     Colour(TextureComponents),
     Linear(TextureComponents),
@@ -35,13 +35,18 @@ fn default_mipmaps() -> bool {
     true
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(bincode::Encode, Deserialize, Debug)]
 struct Texture<'a> {
     path: &'a str,
     #[serde(rename = "type")]
     ty: TextureType,
     #[serde(default = "default_mipmaps")]
     mipmap: bool,
+}
+
+fn bincode_hash<E: bincode::Encode, D: Digest>(data: &E, hasher: &mut D) {
+    let bytes = bincode::encode_to_vec(data, bincode::config::standard()).expect("Failed to encode texture config");
+    hasher.update(&bytes);
 }
 
 impl<'a> Texture<'a> {
@@ -98,19 +103,22 @@ impl<'a> Texture<'a> {
 
                 // If the normal map already exists, check if it's up to date.
                 let mut hasher = sha3::Sha3_256::new();
+                hasher.update(filename.as_bytes());
                 hasher.update(bump_texture.as_raw());
+                bincode_hash(self, &mut hasher);
                 let hash = hasher.finalize();
+                let hash_str = format!("{hash:x}");
                 if std::fs::exists(&cached_normal_path).unwrap() {
                     // Check the hash of the bump texture to ensure the normal map is only rebuilt when the bump texture changes.
                     if let Ok(hash_file) = std::fs::read_to_string(&cached_hash_path) {
-                        if hash_file == format!("{:x}", hash) {
+                        if hash_file == hash_str {
                             // Normal map is up to date.
                             return;
                         }
                     }
                 }
                 // Write out the hash.
-                std::fs::write(&cached_hash_path, format!("{:x}", hash)).expect("Failed to write new hash to disk");
+                std::fs::write(&cached_hash_path, hash_str).expect("Failed to write new hash to disk");
 
                 let normal_texture =
                     normal_heights::map_normals_with_strength(&DynamicImage::ImageRgb8(bump_texture), 1.0);
@@ -127,7 +135,11 @@ impl<'a> Texture<'a> {
                     .arg("--normal-mode");
             }
             TextureType::Normal => {
-                command.args(["--normal-mode", "--format", "R8G8B8_UNORM"]);
+                command
+                    //.args(["--assign-primaries", "BT709"])
+                    //.args(["--assign-oetf", "linear"])
+                    .args(["--format", "R8G8B8_UNORM"])
+                    .arg("--normal-mode");
             }
         };
 
