@@ -73,18 +73,22 @@ impl StaticResources {
         PositionTexCoordVertex {
             position: Vec3::new(-1.0, -1.0, 0.0),
             tex_coord: Vec2::new(0.0, 0.0),
+            element_index: 0,
         },
         PositionTexCoordVertex {
             position: Vec3::new(1.0, -1.0, 0.0),
             tex_coord: Vec2::new(1.0, 0.0),
+            element_index: 0,
         },
         PositionTexCoordVertex {
             position: Vec3::new(1.0, 1.0, 0.0),
             tex_coord: Vec2::new(1.0, 1.0),
+            element_index: 0,
         },
         PositionTexCoordVertex {
             position: Vec3::new(-1.0, 1.0, 0.0),
             tex_coord: Vec2::new(0.0, 1.0),
+            element_index: 0,
         },
     ];
 
@@ -102,34 +106,42 @@ impl StaticResources {
         PositionTexCoordVertex {
             position: Vec3::new(1.0, 0.0, 0.0),
             tex_coord: Vec2::new(1.0, 0.5),
+            element_index: 0,
         },
         PositionTexCoordVertex {
             position: Vec3::new(FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0),
             tex_coord: Vec2::new(0.5 + FRAC_1_SQRT_8, 0.5 + FRAC_1_SQRT_8),
+            element_index: 0,
         },
         PositionTexCoordVertex {
             position: Vec3::new(0.0, 1.0, 0.0),
             tex_coord: Vec2::new(0.5, 1.0),
+            element_index: 0,
         },
         PositionTexCoordVertex {
             position: Vec3::new(-FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0),
             tex_coord: Vec2::new(0.5 - FRAC_1_SQRT_8, 0.5 + FRAC_1_SQRT_8),
+            element_index: 0,
         },
         PositionTexCoordVertex {
             position: Vec3::new(-1.0, 0.0, 0.0),
             tex_coord: Vec2::new(0.0, 0.5),
+            element_index: 0,
         },
         PositionTexCoordVertex {
             position: Vec3::new(-FRAC_1_SQRT_2, -FRAC_1_SQRT_2, 0.0),
             tex_coord: Vec2::new(0.5 - FRAC_1_SQRT_8, 0.5 - FRAC_1_SQRT_8),
+            element_index: 0,
         },
         PositionTexCoordVertex {
             position: Vec3::new(0.0, -1.0, 0.0),
             tex_coord: Vec2::new(0.5, 0.0),
+            element_index: 0,
         },
         PositionTexCoordVertex {
             position: Vec3::new(FRAC_1_SQRT_2, -FRAC_1_SQRT_2, 0.0),
             tex_coord: Vec2::new(0.5 + FRAC_1_SQRT_8, 0.5 - FRAC_1_SQRT_8),
+            element_index: 0,
         },
     ];
 

@@ -3,11 +3,15 @@
 pub mod mesh_manager;
 
 use std::alloc::Layout;
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
+use std::num::TryFromIntError;
 
 use ash::vk;
 use meshopt::VertexDataAdapter;
+use obj::raw::object::Polygon;
 
 use crate::engine::GalaxyEngine;
 use crate::prelude::*;
@@ -61,7 +65,7 @@ impl MeshBuffer {
 
         let mut buffer = Buffer::<GpuOnly>::new(
             debug::debug_only_name!("{name} meshes buffer"),
-            &device,
+            device,
             buffer_size,
             vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::VERTEX_BUFFER
@@ -71,7 +75,7 @@ impl MeshBuffer {
 
         let mut staging_buffer = Buffer::<CpuToGpu>::new(
             debug::debug_only_name!("{name} meshes staging buffer"),
-            &device,
+            device,
             buffer_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
             None,
@@ -124,27 +128,94 @@ impl Mesh {
         cmd_pool: &mut TransientPrimaryCommandPool,
         mesh_path: &ResourcePath,
     ) -> Result<Self, MeshError> {
-        // Load model. The obj crate already does indexing for us.
-        let start = std::time::Instant::now();
-        let obj_model: obj::Obj<obj::TexturedVertex, u32> = obj::load_obj(BufReader::new(File::open(
-            mesh_path.full_path::<resource_type::Mesh>(engine),
-        )?))?;
-        log::info!("Loaded mesh in {:?}", start.elapsed());
+        let obj_path = mesh_path.full_path::<resource_type::Mesh>(engine);
+        let mtl_path = obj_path.with_extension("mtl");
 
-        let vertices = obj_model
-            .vertices
-            .iter()
-            .map(|v| PositionTexCoordVertex {
-                position: Vec3::new(v.position[0], v.position[1], v.position[2]),
-                tex_coord: Vec2::new(v.texture[0], 1.0 - v.texture[1]),
+        // Load model.
+        let start = std::time::Instant::now();
+        let raw_obj = obj::raw::parse_obj(BufReader::new(File::open(obj_path)?))?;
+
+        // Get ordered mesh elements (based on material).
+        let mut element_index = 0;
+        let mut element_orders = HashMap::new();
+        let mtl_str = std::fs::read_to_string(mtl_path);
+        if let Ok(mtl_str) = mtl_str.as_ref() {
+            for line in mtl_str.lines() {
+                let mut parts = line.split_whitespace();
+                if let Some("newmtl") = parts.next() {
+                    let name = parts.next().expect("Material name not found");
+                    element_orders.insert(name, element_index);
+                    element_index += 1;
+                }
+            }
+        }
+
+        // Index vertices.
+        let polygons = &raw_obj.polygons;
+        let positions = &raw_obj.positions;
+        let normals = &raw_obj.normals;
+        let tex_coords = &raw_obj.tex_coords;
+        let mut vb = Vec::with_capacity(polygons.len() * 3);
+        let mut ib = Vec::with_capacity(polygons.len() * 3);
+
+        // Indexing code from obj crate.
+        let mut cache = HashMap::new();
+        let mut can_use_16_bit = true;
+        let mut map = |pi: usize, ni: usize, ti: usize, element_index: u32| -> Result<(), TryFromIntError> {
+            // Look up cache
+            let index = match cache.entry((pi, ni, ti)) {
+                // Cache miss -> make new, store it on cache
+                Entry::Vacant(entry) => {
+                    let p = positions[pi];
+                    let n = normals[ni];
+                    let t = tex_coords[ti];
+                    let vertex = PositionTexCoordVertex {
+                        position: Vec3::new(p.0, p.1, p.2),
+                        element_index,
+                        tex_coord: Vec2::new(t.0, 1. - t.1),
+                    };
+
+                    let index = u32::try_from(vb.len())?;
+                    if index > u16::MAX as u32 {
+                        can_use_16_bit = false;
+                    }
+                    vb.push(vertex);
+                    entry.insert(index);
+                    index
+                }
+                // Cache hit -> use it
+                Entry::Occupied(entry) => *entry.get(),
+            };
+            ib.push(index);
+            Ok(())
+        };
+        raw_obj.meshes.iter().for_each(|(mat, group)| {
+            let element_index = element_orders.get(mat.as_str()).copied().unwrap_or(0);
+            group.polygons.iter().for_each(|range| {
+                polygons[range.start..range.end]
+                    .iter()
+                    .for_each(|polygon| match polygon {
+                        Polygon::P(_) => {
+                            panic!("Tried to extract normal and texture data which are not contained in the model")
+                        }
+                        Polygon::PT(_) => panic!("Tried to extract normal data which are not contained in the model"),
+                        Polygon::PN(_) => panic!("Tried to extract texture data which are not contained in the model"),
+                        Polygon::PTN(ref vec) if vec.len() == 3 => {
+                            for &(pi, ti, ni) in vec {
+                                map(pi, ni, ti, element_index).unwrap()
+                            }
+                        }
+                        _ => panic!("Model should be triangulated first to be loaded properly"),
+                    })
             })
-            .collect::<Vec<PositionTexCoordVertex>>();
+        });
+        log::info!("Loaded mesh in {:?}", start.elapsed());
 
         // Optimize model.
         let start = std::time::Instant::now();
-        let (vertex_count, vert_remap) = meshopt::generate_vertex_remap(&vertices, Some(&obj_model.indices));
-        let mut vertices = meshopt::remap_vertex_buffer(&vertices, vertex_count, &vert_remap);
-        let mut indices = meshopt::remap_index_buffer(Some(&obj_model.indices), vertex_count, &vert_remap);
+        let (vertex_count, vert_remap) = meshopt::generate_vertex_remap(&vb, Some(&ib));
+        let mut vertices = meshopt::remap_vertex_buffer(&vb, vertex_count, &vert_remap);
+        let mut indices = meshopt::remap_index_buffer(Some(&ib), vertex_count, &vert_remap);
         meshopt::optimize_vertex_cache_in_place(&mut indices, vertex_count);
         let vertex_data_adapter = VertexDataAdapter::new(
             bytemuck::must_cast_slice(&vertices),
@@ -156,8 +227,12 @@ impl Mesh {
         meshopt::optimize_vertex_fetch_in_place(&mut indices, &mut vertices);
         log::info!("Optimized mesh in {:?}", start.elapsed());
 
-        let mesh_buffer =
-            MeshBuffer::new_from_vertices_and_indices(name, &vertices, &indices, &engine.device, cmd_pool)?;
+        let mesh_buffer = if can_use_16_bit {
+            let indices = meshopt::convert_indices_32_to_16(&indices).unwrap();
+            MeshBuffer::new_from_vertices_and_indices(name, &vertices, &indices, &engine.device, cmd_pool)?
+        } else {
+            MeshBuffer::new_from_vertices_and_indices(name, &vertices, &indices, &engine.device, cmd_pool)?
+        };
 
         Ok(Self { mesh_buffer })
     }
@@ -170,12 +245,3 @@ impl Mesh {
         cmd_buf.draw_indexed(self.mesh_buffer.num_indices(), 1, 0, 0, 0);
     }
 }
-
-//impl Drop for Mesh {
-//    fn drop(&mut self) {
-//        unsafe {
-//            self.loader
-//                .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-//        }
-//    }
-//}

@@ -26,5 +26,6 @@ float4 mainFS(uniform DrawData draw, VSToFS input) : SV_TARGET0 {
     let normal = mat.normal.get(scene_data, mat.flags, input.tex_coord);
     let normal_z = sqrt(1.0 - dot(normal.xy, normal.xy));
 
+    //return float4(input.element_index / 20., 0., 0., 1.0);
     return float4(base_colour, 1.0);
 }

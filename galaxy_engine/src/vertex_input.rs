@@ -34,17 +34,17 @@ pub enum VertexInputType {
 #[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
 pub struct PositionTexCoordVertex {
     pub position: Vec3,
+    pub element_index: u32,
     pub tex_coord: Vec2,
 }
 
-impl BindableVertex<2> for PositionTexCoordVertex {
+impl BindableVertex<3> for PositionTexCoordVertex {
     fn binding_description() -> &'static vk::VertexInputBindingDescription {
-        static DESCRIPTION: vk::VertexInputBindingDescription =
-            binding_description_for_type::<PositionTexCoordVertex>();
+        const DESCRIPTION: vk::VertexInputBindingDescription = binding_description_for_type::<PositionTexCoordVertex>();
         &DESCRIPTION
     }
-    fn attribute_descriptions() -> &'static [vk::VertexInputAttributeDescription; 2] {
-        static DESCRIPTIONS: [vk::VertexInputAttributeDescription; 2] = [
+    fn attribute_descriptions() -> &'static [vk::VertexInputAttributeDescription; 3] {
+        const DESCRIPTIONS: [vk::VertexInputAttributeDescription; 3] = [
             vk::VertexInputAttributeDescription {
                 binding: 0,
                 location: 0,
@@ -54,6 +54,12 @@ impl BindableVertex<2> for PositionTexCoordVertex {
             vk::VertexInputAttributeDescription {
                 binding: 0,
                 location: 1,
+                format: vk::Format::R32_UINT,
+                offset: std::mem::offset_of!(PositionTexCoordVertex, element_index) as u32,
+            },
+            vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 2,
                 format: vk::Format::R32G32_SFLOAT,
                 offset: std::mem::offset_of!(PositionTexCoordVertex, tex_coord) as u32,
             },

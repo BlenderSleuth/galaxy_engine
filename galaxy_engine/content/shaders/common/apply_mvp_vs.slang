@@ -16,6 +16,7 @@ VSToFS mainVS(uniform DrawData draw, PositionTexCoord input) {
     float4x4 transform = scene_data.transforms[draw.transform_index];
     output.position = mul(float4(input.position, 1.), transform);
     output.tex_coord = input.tex_coord;
+    output.element_index = input.element_index;
     return output;
 }
 

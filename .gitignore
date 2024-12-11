@@ -21,3 +21,4 @@ ref/*
 
 # Content build files
 */build/*
+*/cache/*
