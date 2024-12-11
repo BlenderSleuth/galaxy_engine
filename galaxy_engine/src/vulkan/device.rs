@@ -148,7 +148,8 @@ impl Device {
             .push_next(&mut dynamic_rendering_features)
             .push_next(&mut synchronization2_features);
 
-        if cfg!(feature = "debug_info") {
+        #[cfg(feature = "debug_info")]
+        {
             device_info = device_info.push_next(&mut shader_sm_builtins_features_nv);
         }
 

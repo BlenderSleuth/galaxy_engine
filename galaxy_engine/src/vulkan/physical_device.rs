@@ -292,9 +292,8 @@ impl PhysicalDevice {
             };
         }
 
-        if cfg!(feature = "debug_info") {
-            check_and_enable_feature!(shader_sm_builtins_features_nv.shader_sm_builtins);
-        }
+        #[cfg(feature = "debug_info")]
+        check_and_enable_feature!(shader_sm_builtins_features_nv.shader_sm_builtins);
 
         // Require anisotropic filtering support.
         check_and_enable_feature!(features.sampler_anisotropy);

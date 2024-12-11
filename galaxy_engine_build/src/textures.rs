@@ -149,7 +149,7 @@ impl<'a> Texture<'a> {
         if debug {
             command.args(["--uastc-quality", "2"]).args(["--zstd", "10"]);
         } else {
-            command.args(["--uastc-quality", "5"]).args(["--zstd", "18"]);
+            command.args(["--uastc-quality", "5"]).args(["--zstd", "14"]);
         }
 
         if self.mipmap {
