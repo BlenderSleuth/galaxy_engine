@@ -354,11 +354,11 @@ pub struct Level {
     pub texture_manager: TextureManager,
     descriptor_pool: DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     scene_uniform_buffer: VolatileBuffer<SceneUniformData>,
-    scene_transforms_buffer: VolatileBuffer<[Mat4; Level::MAX_TRANSFORMS]>,
+    scene_transforms_buffer: VolatileBuffer<Mat4>,
 }
 
 impl Level {
-    const MAX_TRANSFORMS: usize = 1024;
+    const MAX_TRANSFORMS: usize = 256;
 
     pub fn new<T: DeserializableComponentConfig>(
         config_path: ResourcePath,
@@ -421,8 +421,12 @@ impl Level {
 
         // Create scene buffers.
         let scene_uniform_buffer = VolatileBuffer::new("Scene uniform buffer", device, VolatileBufferType::Uniform)?;
-        let scene_transforms_buffer =
-            VolatileBuffer::new("Scene transforms buffer", device, VolatileBufferType::Storage)?;
+        let scene_transforms_buffer = VolatileBuffer::new_array(
+            "Scene transforms buffer",
+            Level::MAX_TRANSFORMS,
+            device,
+            VolatileBufferType::Storage,
+        )?;
 
         let material_manager = MaterialManager::new(level.material_manager, engine, cmd_pool)?;
 
@@ -577,9 +581,11 @@ impl Level {
 
         // Update transforms.
         self.world.run(|mut vm_transforms: ViewMut<TransformComponent>| {
+            let transform_buffer = self.scene_transforms_buffer.get_mut_slice(frame_index);
+            assert!(vm_transforms.len() <= transform_buffer.len());
             (&mut vm_transforms)
                 .iter()
-                .zip(self.scene_transforms_buffer.get_mut(frame_index).iter_mut())
+                .zip(transform_buffer.iter_mut())
                 .enumerate()
                 .for_each(|(i, (transform_comp, transform_mat))| {
                     *transform_mat = view_info.mvp_from_transform(&transform_comp.transform);

@@ -52,8 +52,8 @@ impl VolatileBufferType {
     }
 }
 
-// A multi-buffered uniform buffer that can be updated every frame.
-// Update the local data and call copy_to_gpu to update the GPU buffer.
+// A multi-buffered uniform/storage buffer that can be updated every frame.
+// Used for data that changes every frame.
 pub struct VolatileBuffer<T: bytemuck::Pod, const N: usize = { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }> {
     buffer: Buffer<CpuToGpu>,
     size: usize,
@@ -113,7 +113,7 @@ impl<T: bytemuck::Pod, const N: usize> VolatileBuffer<T, N> {
         vk::DescriptorBufferInfo::default()
             .buffer(self.buffer.handle())
             .offset(self.frame_offset(frame_index) as vk::DeviceSize)
-            .range(std::mem::size_of::<T>() as vk::DeviceSize)
+            .range((std::mem::size_of::<T>() * self.len) as vk::DeviceSize)
     }
 
     pub fn descriptor_buffer_infos(&self) -> [vk::DescriptorBufferInfo; N] {

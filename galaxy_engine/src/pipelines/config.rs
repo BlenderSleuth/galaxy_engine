@@ -113,6 +113,7 @@ pub enum PushConstantBinding {
 
 impl PushConstantBinding {
     pub fn push_constant_range(&self) -> vk::PushConstantRange {
+        // TODO: Only access push constant in one shader.
         match self {
             Self::DrawData => vk::PushConstantRange::default()
                 .stage_flags((GraphicsShaderStageFlags::Vertex | GraphicsShaderStageFlags::Fragment).vk())

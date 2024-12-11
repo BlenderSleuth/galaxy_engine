@@ -37,7 +37,7 @@ zstd = "0.13"
 ktx2 = { git = "https://github.com/BVE-Reborn/ktx2.git" }
 
 [profile.dev]
-opt-level = 1
+#opt-level = 1
 
 [profile.dev.package."basis-universal-sys"]
 opt-level = 3

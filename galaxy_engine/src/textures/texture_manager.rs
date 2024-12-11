@@ -12,21 +12,13 @@ use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::device::Device;
 use crate::vulkan::image::Sampler;
 
-//#[repr(transparent)]
-//#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-//pub struct TextureIndex(u32);
-//
-//impl TextureIndex {
-//    pub const CONSTANT: Self = Self(1u32 << 31);
-//}
-
 pub struct TextureManager {
     default_sampler: Sampler,
     textures: IndexMap<ResourcePath, Texture>,
 }
 
 impl TextureManager {
-    pub const MAX_TEXTURES: usize = 32;
+    pub const MAX_TEXTURES: usize = 64;
 
     pub fn new(device: &Device) -> VkResult<Self> {
         // Create default texture sampler.
@@ -93,28 +85,4 @@ impl TextureManager {
             })
             .collect()
     }
-
-    //pub fn write_textures_to_descriptor_array(
-    //    &self,
-    //    engine: &GalaxyEngine,
-    //    scene_descriptor_pool: &mut SceneDescriptorPool,
-    //) {
-    //    if image_infos.is_empty() {
-    //        return;
-    //    }
-
-    //    let descriptor_writes: ArrayVec<_, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }> = scene_descriptor_pool
-    //        .iter()
-    //        .map(|set| {
-    //            vk::WriteDescriptorSet::default()
-    //                .dst_set(*set)
-    //                .dst_binding(2) // Texture buffer is index 2 the in scene descriptor set layout.
-    //                .dst_array_element(0)
-    //                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-    //                .image_info(&image_infos)
-    //        })
-    //        .collect();
-
-    //    unsafe { engine.device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
-    //}
 }
