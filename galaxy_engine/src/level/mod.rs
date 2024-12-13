@@ -11,7 +11,7 @@ use shipyard::{Component, EntityId, IntoIter, Ref, RefMut, View, ViewMut, World}
 use crate::camera::{CamIsometry, Camera, FirstPersonCamera, ViewInfo};
 use crate::engine::GalaxyEngine;
 use crate::materials::{LoadingMaterialManager, Material, MaterialError, MaterialManager};
-use crate::meshes::mesh_manager::MeshManager;
+use crate::meshes::mesh_manager::{LoadingMeshManager, MeshManager};
 use crate::meshes::{Mesh, MeshError};
 use crate::pipelines::PipelineManager;
 use crate::prelude::*;
@@ -344,7 +344,7 @@ pub struct LoadingLevel {
     config_path: ResourcePath,
     pub world: World,
     pub camera_entity: EntityId,
-    pub mesh_manager: MeshManager,
+    pub mesh_manager: LoadingMeshManager,
     pub material_manager: LoadingMaterialManager,
     pub texture_manager: TextureManager,
 }
@@ -368,7 +368,6 @@ pub struct LoadingLevel {
 //}
 
 pub struct Level {
-    _config_path: ResourcePath,
     pub world: World,
     pub camera_entity: EntityId,
     pub mesh_manager: MeshManager,
@@ -394,7 +393,7 @@ impl Level {
             config_path,
             world: World::new(),
             camera_entity: EntityId::dead(),
-            mesh_manager: MeshManager::new(),
+            mesh_manager: LoadingMeshManager::new(),
             material_manager: LoadingMaterialManager::new(),
             texture_manager: TextureManager::new(&engine.device)?,
         };
@@ -503,11 +502,12 @@ impl Level {
 
         unsafe { device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
 
+        let mesh_manager = MeshManager::new(level.mesh_manager, device)?;
+
         Ok(Self {
-            _config_path: level.config_path,
             world: level.world,
             camera_entity: level.camera_entity,
-            mesh_manager: level.mesh_manager,
+            mesh_manager,
             material_manager,
             texture_manager: level.texture_manager,
             descriptor_pool,

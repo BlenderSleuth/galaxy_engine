@@ -14,7 +14,7 @@ pub const fn binding_description_for_type<T>() -> vk::VertexInputBindingDescript
 }
 
 // For vertices with N attributes. TODO: Generate with a macro.
-pub trait BindableVertex<const N: usize> {
+pub trait BindableVertex<const N: usize>: bytemuck::Pod {
     fn binding_description() -> &'static vk::VertexInputBindingDescription;
     fn attribute_descriptions() -> &'static [vk::VertexInputAttributeDescription; N];
     fn vertex_input_state() -> vk::PipelineVertexInputStateCreateInfo<'static> {

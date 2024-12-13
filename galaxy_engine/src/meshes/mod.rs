@@ -39,30 +39,34 @@ impl IndexTypeTrait for u32 {
     }
 }
 
-pub struct MeshBuffer {
+pub struct MeshBuffer<V> {
     // Buffer contains vertices followed by indices.
     buffer: Buffer<GpuOnly>,
+    num_vertices: u32,
     num_indices: u32,
     index_type: vk::IndexType,
-    vertices_offset: vk::DeviceSize,
+    indices_offset: vk::DeviceSize,
+    _vertex_format: std::marker::PhantomData<V>,
 }
 
-impl MeshBuffer {
-    pub fn new_from_vertices_and_indices<V: bytemuck::Pod, I: IndexTypeTrait>(
+impl<V: bytemuck::Pod> MeshBuffer<V> {
+    pub fn pad_vertices_size<I: IndexTypeTrait>(vertices_size: usize) -> usize {
+        Layout::from_size_align(vertices_size, align_of::<I>())
+            .unwrap()
+            .pad_to_align()
+            .size()
+    }
+
+    pub fn new_from_vertices_and_indices<I: IndexTypeTrait>(
         name: &str,
         vertices: &[V],
         indices: &[I],
         device: &Device,
         cmd_pool: &mut TransientPrimaryCommandPool,
-    ) -> MemResult<MeshBuffer> {
+    ) -> MemResult<Self> {
         // Ensure proper alignment.
-        let indices_layout = Layout::for_value(indices);
-        let vertices_offset = indices_layout
-            .align_to(std::mem::align_of::<V>())
-            .unwrap()
-            .pad_to_align()
-            .size();
-        let buffer_size = (vertices_offset + std::mem::size_of_val(vertices)) as vk::DeviceSize;
+        let indices_offset = Self::pad_vertices_size::<I>(size_of_val(vertices));
+        let buffer_size = (indices_offset + size_of_val(indices)) as vk::DeviceSize;
 
         let mut buffer = Buffer::<GpuOnly>::new(
             debug::debug_only_name!("{name} meshes buffer"),
@@ -81,8 +85,8 @@ impl MeshBuffer {
             vk::BufferUsageFlags::TRANSFER_SRC,
             None,
         )?;
-        staging_buffer.copy_slice_into_buffer(indices, 0)?;
-        staging_buffer.copy_slice_into_buffer(vertices, vertices_offset)?;
+        staging_buffer.copy_slice_into_buffer(vertices, 0)?;
+        staging_buffer.copy_slice_into_buffer(indices, indices_offset)?;
 
         let mut cmd_buffer = cmd_pool.allocate_transient_cmd_buffer()?;
         staging_buffer.copy_to_buffer(&mut cmd_buffer, &mut buffer, staging_buffer.size());
@@ -90,27 +94,33 @@ impl MeshBuffer {
 
         Ok(Self {
             buffer,
+            num_vertices: vertices.len() as u32,
             num_indices: indices.len() as u32,
             index_type: I::index_type(),
-            vertices_offset: vertices_offset as vk::DeviceSize,
+            indices_offset: indices_offset as vk::DeviceSize,
+            _vertex_format: std::marker::PhantomData,
         })
+    }
+
+    pub fn num_vertices(&self) -> u32 {
+        self.num_vertices
     }
 
     pub fn num_indices(&self) -> u32 {
         self.num_indices
     }
 
-    pub fn indices_addr(&self) -> vk::DeviceAddress {
+    pub fn vertices_addr(&self) -> vk::DeviceAddress {
         self.buffer.device_address()
     }
 
-    pub fn vertices_addr(&self) -> vk::DeviceAddress {
-        self.buffer.device_address() + self.vertices_offset
+    pub fn indices_addr(&self) -> vk::DeviceAddress {
+        self.buffer.device_address() + self.indices_offset
     }
 
     pub fn bind(&self, cmd_buffer: &mut RecordingCmdBuf<PrimaryQueue, impl RenderingState>) {
-        cmd_buffer.bind_index_buffer(&self.buffer, 0, self.index_type);
-        cmd_buffer.bind_vertex_buffer(&self.buffer, self.vertices_offset);
+        cmd_buffer.bind_vertex_buffer(&self.buffer, 0);
+        cmd_buffer.bind_index_buffer(&self.buffer, self.indices_offset, self.index_type);
     }
 
     pub fn draw(&self, cmd_buf: &mut RenderingCmdBuf<PrimaryQueue>, first_index: u32, vertex_offset: i32) {
@@ -243,7 +253,7 @@ pub enum MeshError {
 }
 
 pub struct Mesh {
-    mesh_buffer: MeshBuffer,
+    mesh_buffer: MeshBuffer<PositionTexCoordVertex>,
     num_elements: u32,
 }
 
@@ -267,6 +277,14 @@ impl Mesh {
             mesh_buffer,
             num_elements: loaded_obj.num_elements,
         })
+    }
+
+    pub fn num_vertices(&self) -> u32 {
+        self.mesh_buffer.num_vertices()
+    }
+
+    pub fn num_indices(&self) -> u32 {
+        self.mesh_buffer.num_indices()
     }
 
     pub fn num_elements(&self) -> usize {

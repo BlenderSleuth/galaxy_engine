@@ -3,7 +3,11 @@ ComputePipeline(
     layout: (
         push_constant: None,
         bindings: {
-            "megabuffer": StorageBuffer,
+            "mesh_buffers": StorageBuffer,
+            "mesh_offsets": StorageBuffer,
+            "vertices_megabuffer": StorageBuffer,
+            "indices_megabuffer": StorageBuffer,
+            //"element_offset_megabuffer": StorageBuffer,
         }
     ),
 )

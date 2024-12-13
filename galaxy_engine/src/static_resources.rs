@@ -34,8 +34,8 @@ impl Drop for StaticResourcesGuard {
 }
 
 pub struct StaticResources {
-    quad_buffer: Arc<MeshBuffer>,
-    octagon_buffer: Arc<MeshBuffer>,
+    quad_buffer: Arc<MeshBuffer<PositionTexCoordVertex>>,
+    octagon_buffer: Arc<MeshBuffer<PositionTexCoordVertex>>,
 }
 
 impl StaticResources {
@@ -62,10 +62,10 @@ impl StaticResources {
     }
 
     /// Quad vertex/index buffer.
-    pub fn get_quad(&self) -> &MeshBuffer {
+    pub fn get_quad(&self) -> &MeshBuffer<PositionTexCoordVertex> {
         self.quad_buffer.deref()
     }
-    pub fn get_quad_cloned(&self) -> Arc<MeshBuffer> {
+    pub fn get_quad_cloned(&self) -> Arc<MeshBuffer<PositionTexCoordVertex>> {
         Arc::clone(&self.quad_buffer)
     }
 
@@ -95,10 +95,10 @@ impl StaticResources {
     const QUAD_INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
     /// Octagon vertex/index buffer.
-    pub fn get_octagon(&self) -> &MeshBuffer {
+    pub fn get_octagon(&self) -> &MeshBuffer<PositionTexCoordVertex> {
         self.octagon_buffer.deref()
     }
-    pub fn get_octagon_cloned(&self) -> Arc<MeshBuffer> {
+    pub fn get_octagon_cloned(&self) -> Arc<MeshBuffer<PositionTexCoordVertex>> {
         Arc::clone(&self.octagon_buffer)
     }
 
