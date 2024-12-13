@@ -23,7 +23,7 @@ arrayvec = { workspace = true, features = ["serde"] }
 itertools.workspace = true
 #fastrand.workspace = true
 ultraviolet = { workspace = true, features = ["bytemuck", "serde"] }
-serde = { workspace = true, features = ["derive", "rc"] }
+serde = { workspace = true, features = ["derive"] }
 gpu-allocator = { version = "0.27.0", default-features = false, features = ["vulkan"] }
 presser = "0.3.1"
 obj-rs = "0.7.4"
@@ -41,6 +41,7 @@ enum_delegate.workspace = true
 zstd.workspace = true
 basis-universal = { path = "../crates/basis-universal-rs/basis-universal" }
 self_cell = "1.1.0"
+path-slash = "0.2.1"
 
 [build-dependencies]
 galaxy_engine_build = { path = "../galaxy_engine_build" }

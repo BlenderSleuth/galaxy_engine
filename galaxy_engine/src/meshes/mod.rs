@@ -112,6 +112,10 @@ impl MeshBuffer {
         cmd_buffer.bind_index_buffer(&self.buffer, 0, self.index_type);
         cmd_buffer.bind_vertex_buffer(&self.buffer, self.vertices_offset);
     }
+
+    pub fn draw(&self, cmd_buf: &mut RenderingCmdBuf<PrimaryQueue>, first_index: u32, vertex_offset: i32) {
+        cmd_buf.draw_indexed(self.num_indices(), 1, first_index, vertex_offset, 0);
+    }
 }
 
 struct LoadedObj {
@@ -274,6 +278,6 @@ impl Mesh {
     }
 
     pub fn draw(&self, cmd_buf: &mut RenderingCmdBuf<PrimaryQueue>) {
-        cmd_buf.draw_indexed(self.mesh_buffer.num_indices(), 1, 0, 0, 0);
+        self.mesh_buffer.draw(cmd_buf, 0, 0);
     }
 }

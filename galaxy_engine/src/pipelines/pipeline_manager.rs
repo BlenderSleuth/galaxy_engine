@@ -1,7 +1,8 @@
 // Copyright (c) 2024 Ben Sutherland.
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::slice;
 use std::sync::Arc;
 
@@ -10,19 +11,58 @@ use ash::vk;
 use const_format::concatcp;
 use glob::glob;
 use itertools::{Either, Itertools};
+use path_slash::PathExt;
 
 use crate::engine::GalaxyEngine;
-use crate::pipelines::config::{PipelineConfig, PushConstantBinding};
-use crate::pipelines::pipeline::{ComputePipeline, GraphicsPipeline, Pipeline};
+use crate::pipelines::config::{ComputeResourceType, PipelineConfig, PushConstantBinding};
+use crate::pipelines::pipeline::{
+    ComputePipeline, ComputePipelineCreateResources, GraphicsPipeline, GraphicsPipelineCreateResources, Pipeline,
+};
 use crate::textures::TextureManager;
 use crate::utils::{ArcFinalOwner, EntryExt};
 use crate::vulkan::device::{Device, SharedDeviceLoader};
-use crate::vulkan::shader::{FragmentShaderStage, ShaderModule, VertexShaderStage};
+use crate::vulkan::shader::{shader_stage, ShaderModule};
 
-pub fn create_pipeline_layout(
+fn create_descriptor_set_layout(
     device: &Device,
-    descriptor_set_layout: Option<&[vk::DescriptorSetLayout]>,
+    bindings: &[vk::DescriptorSetLayoutBinding],
+) -> VkResult<vk::DescriptorSetLayout> {
+    let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(bindings);
+    unsafe { device.loader().create_descriptor_set_layout(&info, None) }
+}
+
+fn get_or_create_compute_descriptor_set_layout(
+    device: &Device,
+    cache: &mut ComputeDescriptorSetLayoutCache,
+    bindings: Vec<ComputeResourceType>,
+) -> VkResult<vk::DescriptorSetLayout> {
+    match cache.entry(bindings) {
+        Entry::Occupied(entry) => Ok(*entry.get()),
+        Entry::Vacant(entry) => {
+            let bindings = entry
+                .key()
+                .iter()
+                .enumerate()
+                .map(|(i, ty)| {
+                    vk::DescriptorSetLayoutBinding::default()
+                        .binding(i as u32)
+                        .descriptor_count(1)
+                        .descriptor_type(ty.descriptor_type())
+                        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                })
+                .collect::<Vec<_>>();
+
+            let layout = create_descriptor_set_layout(device, &bindings)?;
+            entry.insert(layout);
+            Ok(layout)
+        }
+    }
+}
+
+fn create_pipeline_layout(
+    device: &Device,
     push_constant_range: Option<&vk::PushConstantRange>,
+    descriptor_set_layout: Option<&[vk::DescriptorSetLayout]>,
 ) -> VkResult<vk::PipelineLayout> {
     let mut pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
     if let Some(descriptor_set_layout) = descriptor_set_layout {
@@ -36,26 +76,65 @@ pub fn create_pipeline_layout(
     Ok(handle)
 }
 
+fn get_or_create_pipeline_layout(
+    device: &Device,
+    cache: &mut PipelineLayoutCache,
+    push_constant: Option<PushConstantBinding>,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+) -> VkResult<vk::PipelineLayout> {
+    let entry = PipelineLayoutEntry {
+        push_constant,
+        descriptor_set_layout,
+    };
+    cache
+        .entry(entry)
+        .try_or_insert_with(|| {
+            create_pipeline_layout(
+                device,
+                push_constant
+                    .as_ref()
+                    .map(PushConstantBinding::push_constant_range)
+                    .as_ref(),
+                Some(&[descriptor_set_layout]),
+            )
+        })
+        .copied()
+}
+
+fn to_pipeline_table<P: Pipeline>(pipelines: Vec<P>) -> HashMap<Arc<str>, ArcFinalOwner<P>> {
+    pipelines
+        .into_iter()
+        .map(|pipeline| (pipeline.cloned_id(), ArcFinalOwner::new(pipeline)))
+        .collect()
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum PipelineManagerError {
     #[error("Vulkan error: {0}")]
-    VulkanError(#[from] vk::Result),
+    Vulkan(#[from] vk::Result),
     #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
+    Io(#[from] std::io::Error),
     #[error("RON parse error at {0}")]
-    RonError(#[from] ron::de::SpannedError),
+    Ron(#[from] ron::de::SpannedError),
 }
 
-pub type PipelineLayoutCache = HashMap<Option<PushConstantBinding>, vk::PipelineLayout>;
-pub type VertexShaderModuleCache<'a> = HashMap<&'a str, ShaderModule<VertexShaderStage>>;
-pub type FragmentShaderModuleCache<'a> = HashMap<&'a str, ShaderModule<FragmentShaderStage>>;
+#[derive(Hash, Debug, PartialEq, Eq)]
+pub struct PipelineLayoutEntry {
+    pub push_constant: Option<PushConstantBinding>,
+    pub descriptor_set_layout: vk::DescriptorSetLayout,
+}
+
+pub type PipelineLayoutCache = HashMap<PipelineLayoutEntry, vk::PipelineLayout>;
+type ComputeDescriptorSetLayoutCache = HashMap<Vec<ComputeResourceType>, vk::DescriptorSetLayout>;
+pub type ShaderModuleCache<'a, S> = HashMap<&'a str, ShaderModule<S>>;
 
 // TODO: Pipeline cache: https://zeux.io/2019/07/17/serializing-pipeline-cache/.
-// Could use an arena allocator for all the Arcs created here.
+// Could use an arena allocator for all the Arc IDs created here?.
 pub struct PipelineManager {
     loader: SharedDeviceLoader,
     pub(crate) scene_set_layout: vk::DescriptorSetLayout,
     pipeline_layouts: PipelineLayoutCache,
+    compute_descriptor_set_layouts: ComputeDescriptorSetLayoutCache,
     graphics_pipelines: HashMap<Arc<str>, ArcFinalOwner<GraphicsPipeline>>,
     compute_pipelines: HashMap<Arc<str>, ArcFinalOwner<ComputePipeline>>,
     bind_point_id_cache: HashSet<Arc<str>>,
@@ -67,14 +146,6 @@ impl PipelineManager {
     pub const BUILT_SHADER_PATH: &'static str = concatcp!(GalaxyEngine::BUILT_PATH, PipelineManager::SHADER_DIR);
     const PIPELINE_CONFIG_GLOB: &'static str = "**/*.pipeline.ron";
     //pub const MAX_PIPELINES_PER_LAYOUT: usize = 512;
-
-    pub fn create_descriptor_set_layout(
-        device: &Device,
-        bindings: &[vk::DescriptorSetLayoutBinding],
-    ) -> VkResult<vk::DescriptorSetLayout> {
-        let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(bindings);
-        unsafe { device.loader().create_descriptor_set_layout(&info, None) }
-    }
 
     fn scene_descriptor_set_layout_bindings() -> [vk::DescriptorSetLayoutBinding<'static>; 4] {
         [
@@ -109,8 +180,7 @@ impl PipelineManager {
 
     pub fn new(device: &Device, msaa_samples: vk::SampleCountFlags) -> Result<Self, PipelineManagerError> {
         // Create scene descriptor set layout.
-        let scene_set_layout =
-            Self::create_descriptor_set_layout(device, &Self::scene_descriptor_set_layout_bindings())?;
+        let scene_set_layout = create_descriptor_set_layout(device, &Self::scene_descriptor_set_layout_bindings())?;
 
         // Find and load pipeline configs. TODO: Add support for game-specific pipeline configs.
         let config_strings = glob(
@@ -121,13 +191,19 @@ impl PipelineManager {
         )
         .expect("Failed to read pipeline glob pattern")
         .filter_map(|path| {
-            let name = (match path.as_ref() {
+            let unwrapped_path = match path.as_ref() {
                 Ok(path) => path,
                 Err(err) => err.path(),
-            })
-            .file_name()?
-            .to_str()?
-            .to_owned();
+            };
+            let id = unwrapped_path.strip_prefix(Self::SHADER_PATH).ok()?;
+
+            // A bunch of string allocations going on here. An arena would be nice.
+            let mut id = PathBuf::from("/engine").join(id).to_slash()?.to_string();
+            // Remove file extensions.
+            if let Some(index) = id.find('.') {
+                id.truncate(index);
+            }
+            let id = Arc::<str>::from(id);
 
             // Nested function for error-handling.
             fn load_config(path: glob::GlobResult) -> Result<String, PipelineManagerError> {
@@ -137,22 +213,22 @@ impl PipelineManager {
             let config_str = match load_config(path) {
                 Ok(config) => Some(config),
                 Err(err) => {
-                    log::error!("Failed to read pipeline config for pipeline {name} ({err}).");
+                    log::error!("Failed to read pipeline config for pipeline {id} ({err}).");
                     None
                 }
             }?;
 
-            Some((name, config_str))
+            Some((id, config_str))
         })
         .collect::<Vec<_>>();
 
-        let (graphics_configs, _compute_configs): (Vec<_>, Vec<_>) = config_strings
+        let (graphics_configs, compute_configs): (Vec<_>, Vec<_>) = config_strings
             .iter()
             .filter_map(
-                |(name, config_str)| match crate::utils::load_config::<PipelineConfig>(config_str) {
-                    Ok(config) => Some(config),
+                |(id, config_str)| match crate::utils::load_config::<PipelineConfig>(config_str) {
+                    Ok(config) => Some(config.with_id(id)),
                     Err(err) => {
-                        log::error!("Failed to parse pipeline config for pipeline {name} ({err})");
+                        log::error!("Failed to parse pipeline config for pipeline {id} ({err})");
                         None
                     }
                 },
@@ -162,57 +238,103 @@ impl PipelineManager {
                 PipelineConfig::Compute(compute) => Either::Right(compute),
             });
 
+        let mut pipeline_layouts = PipelineLayoutCache::new();
+
         // Compile graphics pipelines. For lots of graphics pipelines, could use a graphics pipeline library for speedup:
         // https://www.khronos.org/blog/reducing-draw-time-hitching-with-vk-ext-graphics-pipeline-library.
-        let mut pipeline_layouts = PipelineLayoutCache::new();
-        let mut vertex_shaders = VertexShaderModuleCache::new();
-        let mut fragment_shaders = FragmentShaderModuleCache::new();
-
-        for config in &graphics_configs {
-            // Find or construct pipeline layout.
-            let push_constant = config.layout.push_constant;
-            let push_constant_range = push_constant.as_ref().map(|c| c.push_constant_range());
-            pipeline_layouts
-                .entry(push_constant)
-                .try_or_insert_with::<vk::Result, _>(|| {
-                    create_pipeline_layout(device, Some(&[scene_set_layout]), push_constant_range.as_ref())
-                })?;
-
-            // Load shaders.
-            vertex_shaders
-                .entry(config.shaders.vertex.id)
-                .try_or_insert_with(|| ShaderModule::new(device, config.shaders.vertex.id))?;
-            fragment_shaders
-                .entry(config.shaders.fragment.id)
-                .try_or_insert_with(|| ShaderModule::new(device, config.shaders.fragment.id))?;
-        }
-
         let mut bind_point_id_cache = HashSet::new();
-        log::info!("Compiling graphics pipelines...");
-        let compilation_start = std::time::Instant::now();
-        let graphics_pipelines = GraphicsPipeline::batch_new(
-            device,
-            &pipeline_layouts,
-            vertex_shaders,
-            fragment_shaders,
-            graphics_configs,
-            msaa_samples,
-            &mut bind_point_id_cache,
-        )?;
-        log::info!("Compiled graphics pipelines in {:?}", compilation_start.elapsed());
+        let graphics_pipelines = {
+            // Load shaders.
+            let mut vertex_shaders = ShaderModuleCache::<shader_stage::Vertex>::new();
+            let mut fragment_shaders = ShaderModuleCache::<shader_stage::Fragment>::new();
+            for config in graphics_configs.iter() {
+                vertex_shaders
+                    .entry(config.shaders.vertex.id)
+                    .try_or_insert_with(|| ShaderModule::new(device, config.shaders.vertex.id))?;
+                fragment_shaders
+                    .entry(config.shaders.fragment.id)
+                    .try_or_insert_with(|| ShaderModule::new(device, config.shaders.fragment.id))?;
+            }
 
-        // Collect to hashmap.
-        let graphics_pipelines = graphics_pipelines
-            .into_iter()
-            .map(|pipeline| (pipeline.cloned_name(), ArcFinalOwner::new(pipeline)))
-            .collect();
+            let create_resources = graphics_configs
+                .into_iter()
+                .map(|config| {
+                    // Find or construct pipeline layout.
+                    let pipeline_layout = get_or_create_pipeline_layout(
+                        device,
+                        &mut pipeline_layouts,
+                        config.layout.push_constant,
+                        scene_set_layout,
+                    )?;
+
+                    Ok(GraphicsPipelineCreateResources {
+                        pipeline_layout,
+                        vertex_shader: &vertex_shaders[config.shaders.vertex.id],
+                        fragment_shader: &fragment_shaders[config.shaders.fragment.id],
+                        config,
+                    })
+                })
+                .collect::<VkResult<Vec<_>>>()?;
+
+            log::info!("Compiling graphics pipelines...");
+            let compilation_start = std::time::Instant::now();
+            let graphics_pipelines =
+                GraphicsPipeline::batch_new(device, create_resources, msaa_samples, &mut bind_point_id_cache)?;
+            log::info!("Compiled graphics pipelines in {:?}", compilation_start.elapsed());
+            graphics_pipelines
+        };
+
+        // Compile compute pipelines.
+        let mut compute_descriptor_set_layouts = ComputeDescriptorSetLayoutCache::new();
+        let compute_pipelines = {
+            // Load shaders.
+            let mut compute_shader_cache = ShaderModuleCache::<shader_stage::Compute>::new();
+            for config in compute_configs.iter() {
+                compute_shader_cache
+                    .entry(config.shader)
+                    .try_or_insert_with(|| ShaderModule::new(device, config.shader))?;
+            }
+
+            let create_resources = compute_configs
+                .into_iter()
+                .map(|config| {
+                    // Get or create descriptor set layout.
+                    let descriptor_set_layout = get_or_create_compute_descriptor_set_layout(
+                        device,
+                        &mut compute_descriptor_set_layouts,
+                        config.layout.binding_types(),
+                    )?;
+
+                    // Construct pipeline layout.
+                    let pipeline_layout = get_or_create_pipeline_layout(
+                        device,
+                        &mut pipeline_layouts,
+                        config.layout.push_constant,
+                        descriptor_set_layout,
+                    )?;
+
+                    Ok(ComputePipelineCreateResources {
+                        pipeline_layout,
+                        shader: &compute_shader_cache[config.shader],
+                        config,
+                    })
+                })
+                .collect::<VkResult<Vec<_>>>()?;
+
+            log::info!("Compiling compute pipelines...");
+            let compilation_start = std::time::Instant::now();
+            let compute_pipelines = ComputePipeline::batch_new(device, create_resources)?;
+            log::info!("Compiled compute pipelines in {:?}", compilation_start.elapsed());
+            compute_pipelines
+        };
 
         Ok(Self {
             loader: device.cloned_loader(),
             scene_set_layout,
             pipeline_layouts,
-            graphics_pipelines,
-            compute_pipelines: HashMap::new(),
+            compute_descriptor_set_layouts,
+            graphics_pipelines: to_pipeline_table(graphics_pipelines),
+            compute_pipelines: to_pipeline_table(compute_pipelines),
             bind_point_id_cache,
         })
     }
@@ -237,9 +359,17 @@ impl PipelineManager {
     //    self.pipeline_layouts.len()
     //}
 
-    pub fn get_layout(&self, binding: Option<PushConstantBinding>) -> Option<vk::PipelineLayout> {
-        self.pipeline_layouts.get(&binding).copied()
+    pub fn get_draw_layout(&self) -> Option<vk::PipelineLayout> {
+        let entry = PipelineLayoutEntry {
+            push_constant: Some(PushConstantBinding::DrawData),
+            descriptor_set_layout: self.scene_set_layout,
+        };
+        self.pipeline_layouts.get(&entry).copied()
     }
+
+    //pub fn get_layout(&self, entry: &PipelineLayoutEntry) -> Option<vk::PipelineLayout> {
+    //    self.pipeline_layouts.get(entry).copied()
+    //}
 }
 
 impl Drop for PipelineManager {
@@ -256,8 +386,14 @@ impl Drop for PipelineManager {
             destroy_pipeline(&self.loader, &id, &mut pipeline);
         }
 
-        // Destroy descriptor set layout.
-        unsafe { self.loader.destroy_descriptor_set_layout(self.scene_set_layout, None) }
+        // Destroy descriptor set layouts.
+        for layout in self
+            .compute_descriptor_set_layouts
+            .values()
+            .chain(std::iter::once(&self.scene_set_layout))
+        {
+            unsafe { self.loader.destroy_descriptor_set_layout(*layout, None) }
+        }
 
         // Destroy pipeline layouts.
         for layout in self.pipeline_layouts.values() {

@@ -2,7 +2,6 @@ import common.scene_uniforms;
 import common.draw_data;
 import common.vertex_output_types;
 import common.material_binding;
-import common.debug;
 
 typedef PositionTexCoordVStoFS VSToFS;
 

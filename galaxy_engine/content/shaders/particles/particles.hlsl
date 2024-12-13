@@ -40,6 +40,7 @@ RWStructuredBuffer<Particle> Particles;
 //[[vk::binding(3)]]
 //RWStructuredBuffer<VkDrawIndexedIndirectCommand> draw_commands;
 
+[shader("compute")]
 [numthreads(256, 1, 1)]
 void mainCS(uint index: SV_DispatchThreadID) {
     Particle particle = Particles[index];
@@ -77,6 +78,7 @@ struct VSToFS {
     float2 tex_coord : TEXCOORD0;
 };
 
+[shader("vertex")]
 VSToFS mainVS(VSInput input, inout uint instance_id: SV_InstanceID) {
     float3 particle_position = DrawnParticles[instance_id].position; 
     float radius = DrawnParticles[instance_id].radius;
@@ -90,6 +92,7 @@ VSToFS mainVS(VSInput input, inout uint instance_id: SV_InstanceID) {
     return output;
 }
 
+[shader("fragment")]
 float4 mainFS(VSToFS input, uint instance_id: SV_InstanceID): SV_TARGET0 {
     //return float4(input.tex_coord, 0, 1.);
     return DrawnParticles[instance_id].colour;

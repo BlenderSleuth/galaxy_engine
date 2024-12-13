@@ -71,10 +71,10 @@ impl LoadingMaterialManager {
                 subresource_path.resource(),
                 cmd_pool,
             )?);
-            let resource_paths = if self.pipelines.contains_key(material.pipeline().name()) {
-                &mut self.pipelines[material.pipeline().name()]
+            let resource_paths = if self.pipelines.contains_key(material.pipeline().id()) {
+                &mut self.pipelines[material.pipeline().id()]
             } else {
-                self.pipelines.entry(material.pipeline().cloned_name()).or_default()
+                self.pipelines.entry(material.pipeline().cloned_id()).or_default()
             };
             let material_index = resource_paths.len() as u32;
             resource_paths.push(subresource_path.clone());
@@ -353,7 +353,7 @@ impl MaterialManager {
     }
 
     pub fn iter_materials_for_pipeline(&self, pipeline: &GraphicsPipeline) -> impl Iterator<Item = &IndexedMaterial> {
-        self.pipeline_data[pipeline.name()]
+        self.pipeline_data[pipeline.id()]
             .materials
             .iter()
             .map(|resource_path| &self.materials[resource_path])

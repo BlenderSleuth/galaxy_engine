@@ -9,13 +9,15 @@ use ash::vk;
 use ash::vk::Handle;
 use itertools::izip;
 
-use crate::pipelines::config::{GraphicsPipelineConfig, GraphicsShaderStageFlags, PipelineBinding, PipelineBindingMap};
-use crate::pipelines::pipeline_manager::{FragmentShaderModuleCache, PipelineLayoutCache, VertexShaderModuleCache};
+use crate::pipelines::config::{
+    ComputePipelineConfig, GraphicsPipelineBinding, GraphicsPipelineConfig, GraphicsShaderStageFlags,
+    PipelineBindingMap,
+};
 use crate::pipelines::PipelineBindingDataSize;
 use crate::utils::CStructLayout;
 use crate::vertex_input::{BindableVertex, PositionColourTexCoordVertex, PositionTexCoordVertex, VertexInputType};
 use crate::vulkan::device::Device;
-use crate::vulkan::shader::{ComputeShaderStage, ShaderModule};
+use crate::vulkan::shader::{shader_stage, ShaderModule};
 
 //#[derive(serde::Deserialize, Debug)]
 //#[serde(rename_all = "lowercase")]
@@ -33,26 +35,30 @@ use crate::vulkan::shader::{ComputeShaderStage, ShaderModule};
 //    }
 //}
 
+fn handle_pipeline_create(
+    device: &Device,
+    handles: Result<Vec<vk::Pipeline>, (Vec<vk::Pipeline>, vk::Result)>,
+) -> VkResult<Vec<vk::Pipeline>> {
+    match handles {
+        Ok(handles) => Ok(handles),
+        Err((handles, err_code)) => {
+            // Destroy any successfully created pipelines (unsuccessful are ignored).
+            // All pipelines must be created for successful engine initialisation.
+            for handle in handles {
+                if !handle.is_null() {
+                    unsafe { device.loader().destroy_pipeline(handle, None) };
+                }
+            }
+            return Err(err_code);
+        }
+    }
+}
+
 pub trait Pipeline {
     fn handle(&self) -> vk::Pipeline;
-    fn name(&self) -> &str;
-    fn cloned_name(&self) -> Arc<str>;
+    fn id(&self) -> &str;
+    fn cloned_id(&self) -> Arc<str>;
     fn layout(&self) -> vk::PipelineLayout;
-    fn bindings(&self) -> &PipelineBindingMap;
-    fn bindings_layout(&self) -> CStructLayout {
-        // Flags binding goes on the end.
-        const FLAGS_BINDING: PipelineBinding = PipelineBinding {
-            ty: PipelineBindingDataSize::Float,
-            stages: GraphicsShaderStageFlags::all(),
-        };
-        CStructLayout::new(
-            self.bindings()
-                .values()
-                .chain(std::iter::once(&FLAGS_BINDING))
-                .map(|binding| binding.ty.layout()),
-        )
-        .unwrap()
-    }
 }
 
 // Vertex, /*Hull, Domain, Geometry,*/ Fragment.
@@ -69,9 +75,16 @@ pub trait Pipeline {
 //    pub depth_test: bool,
 //}
 
+pub(crate) struct GraphicsPipelineCreateResources<'a> {
+    pub config: GraphicsPipelineConfig<'a>,
+    pub pipeline_layout: vk::PipelineLayout,
+    pub vertex_shader: &'a ShaderModule<shader_stage::Vertex>,
+    pub fragment_shader: &'a ShaderModule<shader_stage::Fragment>,
+}
+
 pub struct GraphicsPipeline {
     handle: vk::Pipeline,
-    name: Arc<str>,
+    id: Arc<str>,
     layout: vk::PipelineLayout,
     bindings: PipelineBindingMap,
 }
@@ -79,14 +92,11 @@ pub struct GraphicsPipeline {
 impl GraphicsPipeline {
     pub(super) fn batch_new(
         device: &Device,
-        pipeline_layouts: &PipelineLayoutCache,
-        vertex_shaders: VertexShaderModuleCache,
-        fragment_shaders: FragmentShaderModuleCache,
-        configs: Vec<GraphicsPipelineConfig>,
+        create_resources: Vec<GraphicsPipelineCreateResources>,
         msaa_samples: vk::SampleCountFlags,
         bind_point_id_cache: &mut HashSet<Arc<str>>,
     ) -> VkResult<Vec<Self>> {
-        if configs.is_empty() {
+        if create_resources.is_empty() {
             return Ok(Vec::new());
         }
 
@@ -119,36 +129,37 @@ impl GraphicsPipeline {
             .depth_attachment_format(device.physical_device().depth_stencil_format);
 
         // Create shader stages arrays.
-        let shader_stages: Vec<[vk::PipelineShaderStageCreateInfo; 2]> = configs
+        let shader_stages: Vec<[vk::PipelineShaderStageCreateInfo; 2]> = create_resources
             .iter()
-            .map(|config| {
-                let vertex_shader_module = &vertex_shaders[&config.shaders.vertex.id];
-                let fragment_shader_module = &fragment_shaders[&config.shaders.fragment.id];
-                [vertex_shader_module.stage_info(), fragment_shader_module.stage_info()]
+            .map(|resources| {
+                [
+                    resources.vertex_shader.stage_info(),
+                    resources.fragment_shader.stage_info(),
+                ]
             })
             .collect();
 
         // Store all prerequisite create info for pipeline creation in a separate buffer (that can be referenced by the main one).
-        let mut create_infos: Vec<_> = configs
+        let mut create_infos: Vec<_> = create_resources
             .iter()
-            .map(|config| {
+            .map(|resources| {
                 (
                     // Vertex input state.
-                    match config.shaders.vertex.input_type {
+                    match resources.config.shaders.vertex.input_type {
                         VertexInputType::PositionTexCoord => PositionTexCoordVertex::vertex_input_state(),
                         VertexInputType::PositionColourTexCoord => PositionColourTexCoordVertex::vertex_input_state(),
                     },
                     // Multisampling.
                     vk::PipelineMultisampleStateCreateInfo::default()
                         .sample_shading_enable(false)
-                        .rasterization_samples(if config.rasteriser.multisample_enable {
+                        .rasterization_samples(if resources.config.rasteriser.multisample_enable {
                             msaa_samples
                         } else {
                             vk::SampleCountFlags::TYPE_1
                         }),
                     // Depth stencil.
                     vk::PipelineDepthStencilStateCreateInfo::default()
-                        .depth_test_enable(config.rasteriser.depth_enable)
+                        .depth_test_enable(resources.config.rasteriser.depth_enable)
                         .depth_write_enable(true)
                         .depth_compare_op(vk::CompareOp::GREATER)
                         .stencil_test_enable(false)
@@ -159,51 +170,39 @@ impl GraphicsPipeline {
             })
             .collect();
 
-        let (pipeline_infos, pipeline_layouts): (Vec<_>, Vec<_>) = izip!(&configs, &shader_stages, &mut create_infos)
-            .map(|(config, shader_stages, infos)| {
-                let pipeline_layout = pipeline_layouts[&config.layout.push_constant];
-                (
-                    vk::GraphicsPipelineCreateInfo::default()
-                        .stages(shader_stages)
-                        .vertex_input_state(&infos.0)
-                        .input_assembly_state(&input_assembly)
-                        .viewport_state(&viewport_state)
-                        .rasterization_state(&rasterizer)
-                        .multisample_state(&infos.1)
-                        .color_blend_state(&color_blend_state)
-                        .depth_stencil_state(&infos.2)
-                        .dynamic_state(&pipeline_dynamic_state)
-                        .layout(pipeline_layout)
-                        .push_next(&mut infos.3),
-                    pipeline_layout,
-                )
+        let pipeline_infos = izip!(&create_resources, &shader_stages, &mut create_infos)
+            .map(|(resources, shader_stages, infos)| {
+                vk::GraphicsPipelineCreateInfo::default()
+                    .stages(shader_stages)
+                    .vertex_input_state(&infos.0)
+                    .input_assembly_state(&input_assembly)
+                    .viewport_state(&viewport_state)
+                    .rasterization_state(&rasterizer)
+                    .multisample_state(&infos.1)
+                    .color_blend_state(&color_blend_state)
+                    .depth_stencil_state(&infos.2)
+                    .dynamic_state(&pipeline_dynamic_state)
+                    .layout(resources.pipeline_layout)
+                    .push_next(&mut infos.3)
             })
-            .unzip();
+            .collect::<Vec<_>>();
 
         // Batch create graphics pipelines.
-        let handles = match unsafe {
+        let handles = handle_pipeline_create(device, unsafe {
             device
                 .loader()
                 .create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_infos, None)
-        } {
-            Ok(handles) => Ok(handles),
-            Err((handles, err_code)) => {
-                // Clean up any successfully created pipelines.
-                for handle in handles {
-                    if !handle.is_null() {
-                        unsafe { device.loader().destroy_pipeline(handle, None) };
-                    }
-                }
-                return Err(err_code);
-            }
-        }?;
+        })?;
 
-        Ok(izip!(handles.into_iter(), pipeline_layouts, configs)
-            .map(|(handle, layout, config)| Self {
+        Ok(handles
+            .into_iter()
+            .zip(create_resources)
+            .map(|(handle, resources)| Self {
                 handle,
-                name: config.name,
-                layout,
-                bindings: config
+                id: resources.config.id,
+                layout: resources.pipeline_layout,
+                bindings: resources
+                    .config
                     .layout
                     .bindings
                     .into_iter()
@@ -224,70 +223,86 @@ impl GraphicsPipeline {
             })
             .collect())
     }
+    pub fn bindings(&self) -> &PipelineBindingMap {
+        &self.bindings
+    }
+    pub fn bindings_layout(&self) -> CStructLayout {
+        // Flags binding goes on the end.
+        const FLAGS_BINDING: GraphicsPipelineBinding = GraphicsPipelineBinding {
+            ty: PipelineBindingDataSize::Float,
+            stages: GraphicsShaderStageFlags::all(),
+        };
+        CStructLayout::new(
+            self.bindings()
+                .values()
+                .chain(std::iter::once(&FLAGS_BINDING))
+                .map(|binding| binding.ty.layout()),
+        )
+        .unwrap()
+    }
 }
 
 impl Pipeline for GraphicsPipeline {
     fn handle(&self) -> vk::Pipeline {
         self.handle
     }
-    fn name(&self) -> &str {
-        &self.name
+    fn id(&self) -> &str {
+        &self.id
     }
-    fn cloned_name(&self) -> Arc<str> {
-        Arc::clone(&self.name)
+    fn cloned_id(&self) -> Arc<str> {
+        Arc::clone(&self.id)
     }
     fn layout(&self) -> vk::PipelineLayout {
         self.layout
     }
-    fn bindings(&self) -> &PipelineBindingMap {
-        &self.bindings
-    }
 }
 
-#[allow(unused)]
-pub struct ComputePipelineParameters {
-    pub layout: vk::PipelineLayout,
-    pub name: Arc<str>,
-    pub compute_module: ShaderModule<ComputeShaderStage>,
+pub(crate) struct ComputePipelineCreateResources<'a> {
+    pub config: ComputePipelineConfig<'a>,
+    pub pipeline_layout: vk::PipelineLayout,
+    pub shader: &'a ShaderModule<shader_stage::Compute>,
 }
 
 pub struct ComputePipeline {
     handle: vk::Pipeline,
-    name: Arc<str>,
+    id: Arc<str>,
     layout: vk::PipelineLayout,
-    bindings: PipelineBindingMap,
 }
 
 impl ComputePipeline {
-    pub(super) fn new(device: &Device, params: ComputePipelineParameters) -> VkResult<Self> {
-        let loader = device.cloned_loader();
-
-        let compute_stage = params.compute_module.stage_info();
-        let pipeline_info = vk::ComputePipelineCreateInfo::default()
-            .stage(compute_stage)
-            .layout(params.layout);
-
-        // Non allocating version of create_compute_pipelines.
-        let mut handle = vk::Pipeline::null();
-        let err_code = unsafe {
-            (loader.fp_v1_0().create_compute_pipelines)(
-                loader.handle(),
-                vk::PipelineCache::null(),
-                1,
-                &pipeline_info,
-                core::ptr::null(),
-                &mut handle,
-            )
-        };
-        if err_code != vk::Result::SUCCESS {
-            return Err(err_code);
+    pub(super) fn batch_new(
+        device: &Device,
+        create_resources: Vec<ComputePipelineCreateResources>,
+    ) -> VkResult<Vec<Self>> {
+        if create_resources.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(Self {
-            handle,
-            name: params.name,
-            layout: params.layout,
-            bindings: PipelineBindingMap::new(),
-        })
+
+        let pipeline_infos = create_resources
+            .iter()
+            .map(|resources| {
+                vk::ComputePipelineCreateInfo::default()
+                    .stage(resources.shader.stage_info())
+                    .layout(resources.pipeline_layout)
+            })
+            .collect::<Vec<_>>();
+
+        // Batch create compute pipelines.
+        let handles = handle_pipeline_create(device, unsafe {
+            device
+                .loader()
+                .create_compute_pipelines(vk::PipelineCache::null(), &pipeline_infos, None)
+        })?;
+
+        Ok(handles
+            .into_iter()
+            .zip(create_resources)
+            .map(|(handle, resources)| Self {
+                handle,
+                id: resources.config.id,
+                layout: resources.pipeline_layout,
+            })
+            .collect())
     }
 }
 
@@ -295,16 +310,13 @@ impl Pipeline for ComputePipeline {
     fn handle(&self) -> vk::Pipeline {
         self.handle
     }
-    fn name(&self) -> &str {
-        &self.name
+    fn id(&self) -> &str {
+        &self.id
     }
-    fn cloned_name(&self) -> Arc<str> {
-        Arc::clone(&self.name)
+    fn cloned_id(&self) -> Arc<str> {
+        Arc::clone(&self.id)
     }
     fn layout(&self) -> vk::PipelineLayout {
         self.layout
-    }
-    fn bindings(&self) -> &PipelineBindingMap {
-        &self.bindings
     }
 }

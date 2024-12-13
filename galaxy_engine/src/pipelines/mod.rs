@@ -4,6 +4,6 @@ mod config;
 mod pipeline;
 mod pipeline_manager;
 
-pub use config::{PipelineBindingDataSize, PushConstantBinding};
+pub use config::PipelineBindingDataSize;
 pub use pipeline::{ComputePipeline, GraphicsPipeline, Pipeline};
 pub use pipeline_manager::{PipelineManager, PipelineManagerError};

@@ -13,7 +13,7 @@ use crate::engine::GalaxyEngine;
 use crate::materials::{LoadingMaterialManager, Material, MaterialError, MaterialManager};
 use crate::meshes::mesh_manager::MeshManager;
 use crate::meshes::{Mesh, MeshError};
-use crate::pipelines::{PipelineManager, PushConstantBinding};
+use crate::pipelines::PipelineManager;
 use crate::prelude::*;
 use crate::resource_paths::{resource_type, ResourcePath, SubresourcePath};
 use crate::textures::TextureManager;
@@ -622,8 +622,8 @@ impl Level {
         cmd_buf: &mut RenderingCmdBuf<PrimaryQueue>,
         frame_index: usize,
     ) {
-        // Get the drawing layout.
-        let Some(layout) = pipeline_manager.get_layout(Some(PushConstantBinding::DrawData)) else {
+        // Get the drawing pipeline layout.
+        let Some(layout) = pipeline_manager.get_draw_layout() else {
             log::warn!("No pipelines to render with.");
             return;
         };

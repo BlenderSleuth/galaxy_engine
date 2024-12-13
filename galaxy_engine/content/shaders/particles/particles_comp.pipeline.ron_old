@@ -1,6 +1,5 @@
 ComputePipeline(
-    name: "particles_comp",
-    shader: "particles/compute",
+    shader: "particles/particles",
     layout: (
         push_constant: None,
         bindings: {}

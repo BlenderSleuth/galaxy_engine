@@ -97,14 +97,14 @@ impl PipelineBindingDataSize {
 }
 
 #[derive(serde::Deserialize, Debug, Copy, Clone)]
-pub struct PipelineBinding {
+pub struct GraphicsPipelineBinding {
     #[serde(rename = "type")]
     pub ty: PipelineBindingDataSize,
     // TODO: These are not currently used.
     pub stages: GraphicsShaderStageFlags,
 }
 
-pub type PipelineBindingMap<S = Arc<str>> = IndexMap<S, PipelineBinding>;
+pub type PipelineBindingMap<S = Arc<str>> = IndexMap<S, GraphicsPipelineBinding>;
 
 #[derive(serde::Deserialize, Debug, Hash, Copy, Clone, PartialEq, Eq)]
 pub enum PushConstantBinding {
@@ -124,11 +124,17 @@ impl PushConstantBinding {
 }
 
 #[derive(serde::Deserialize, Debug)]
-pub(crate) struct PipelineLayoutNamedBindings<'a> {
+pub(crate) struct GraphicsPipelineLayoutBindings<'a> {
     pub push_constant: Option<PushConstantBinding>,
     #[serde(borrow)]
     pub bindings: PipelineBindingMap<&'a str>,
 }
+
+//impl GraphicsPipelineLayoutBindings<'_> {
+//    pub fn push_constant_range(&self) -> Option<vk::PushConstantRange> {
+//        self.push_constant.map(|binding| binding.push_constant_range())
+//    }
+//}
 
 //impl PipelineLayoutNamedBindings {
 //    pub fn bindings(&self) -> PipelineLayoutBindings {
@@ -154,20 +160,54 @@ pub(crate) struct PipelineLayoutNamedBindings<'a> {
 
 #[derive(serde::Deserialize, Debug)]
 pub(super) struct GraphicsPipelineConfig<'a> {
-    pub name: Arc<str>,
+    #[serde(skip)]
+    pub id: Arc<str>,
     #[serde(borrow)]
     pub shaders: GraphicsShaderConfig<'a>,
     pub rasteriser: RasteriserConfig,
     #[serde(borrow)]
-    pub layout: PipelineLayoutNamedBindings<'a>,
+    pub layout: GraphicsPipelineLayoutBindings<'a>,
+}
+
+#[derive(serde::Deserialize, Debug, Copy, Clone, Hash, Eq, PartialEq)]
+pub(crate) enum ComputeResourceType {
+    UniformBuffer,
+    StorageBuffer,
+}
+
+impl ComputeResourceType {
+    pub fn descriptor_type(&self) -> vk::DescriptorType {
+        match self {
+            Self::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
+            Self::StorageBuffer => vk::DescriptorType::STORAGE_BUFFER,
+        }
+    }
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub(crate) struct ComputePipelineLayoutBindings<'a> {
+    pub push_constant: Option<PushConstantBinding>,
+    #[serde(borrow)]
+    pub bindings: IndexMap<&'a str, ComputeResourceType>,
+}
+
+impl ComputePipelineLayoutBindings<'_> {
+    //pub fn push_constant_range(&self) -> Option<vk::PushConstantRange> {
+    //    self.push_constant.map(|binding| binding.push_constant_range())
+    //}
+
+    pub fn binding_types(&self) -> Vec<ComputeResourceType> {
+        self.bindings.values().copied().collect()
+    }
 }
 
 #[derive(serde::Deserialize, Debug)]
 pub(super) struct ComputePipelineConfig<'a> {
-    name: &'a str,
-    shader: &'a str,
+    #[serde(skip)]
+    pub id: Arc<str>,
+    pub shader: &'a str,
     #[serde(borrow)]
-    layout: PipelineLayoutNamedBindings<'a>,
+    pub layout: ComputePipelineLayoutBindings<'a>,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -176,4 +216,15 @@ pub(crate) enum PipelineConfig<'a> {
     Graphics(GraphicsPipelineConfig<'a>),
     #[serde(borrow, rename = "ComputePipeline")]
     Compute(ComputePipelineConfig<'a>),
+}
+
+impl PipelineConfig<'_> {
+    pub fn with_id(mut self, id: &Arc<str>) -> Self {
+        let id = Arc::clone(id);
+        match &mut self {
+            Self::Graphics(config) => config.id = id,
+            Self::Compute(config) => config.id = id,
+        }
+        self
+    }
 }

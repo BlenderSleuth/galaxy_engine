@@ -1,0 +1,9 @@
+ComputePipeline(
+    shader: "compute/megabuffer_gen",
+    layout: (
+        push_constant: None,
+        bindings: {
+            "megabuffer": StorageBuffer,
+        }
+    ),
+)

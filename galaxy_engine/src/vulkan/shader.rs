@@ -8,28 +8,33 @@ use ash::vk;
 use crate::pipelines::PipelineManager;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 
-// Shader stage type state pattern.
-pub trait ShaderStageType {
-    fn stage() -> vk::ShaderStageFlags;
-}
-pub struct VertexShaderStage;
-impl ShaderStageType for VertexShaderStage {
-    fn stage() -> vk::ShaderStageFlags {
-        vk::ShaderStageFlags::VERTEX
+pub mod shader_stage {
+    use ash::vk;
+
+    // Shader stage type state pattern.
+    pub trait ShaderStageType {
+        fn stage() -> vk::ShaderStageFlags;
+    }
+    pub struct Vertex;
+    impl ShaderStageType for Vertex {
+        fn stage() -> vk::ShaderStageFlags {
+            vk::ShaderStageFlags::VERTEX
+        }
+    }
+    pub struct Fragment;
+    impl ShaderStageType for Fragment {
+        fn stage() -> vk::ShaderStageFlags {
+            vk::ShaderStageFlags::FRAGMENT
+        }
+    }
+    pub struct Compute;
+    impl ShaderStageType for Compute {
+        fn stage() -> vk::ShaderStageFlags {
+            vk::ShaderStageFlags::COMPUTE
+        }
     }
 }
-pub struct FragmentShaderStage;
-impl ShaderStageType for FragmentShaderStage {
-    fn stage() -> vk::ShaderStageFlags {
-        vk::ShaderStageFlags::FRAGMENT
-    }
-}
-pub struct ComputeShaderStage;
-impl ShaderStageType for ComputeShaderStage {
-    fn stage() -> vk::ShaderStageFlags {
-        vk::ShaderStageFlags::COMPUTE
-    }
-}
+use shader_stage::*;
 
 pub struct ShaderModule<S: ShaderStageType> {
     loader: SharedDeviceLoader,
@@ -45,9 +50,10 @@ impl<S: ShaderStageType> ShaderModule<S> {
 
         // We unwrap here so we can provide a more informative error message for invalid shaders.
         // Ash utility function handles code alignment and endianness.
-        let code =
-            ash::util::read_spv(&mut std::fs::File::open(&path).expect(&format!("Invalid shader path: {path:?}.")))
-                .expect(&format!("Invalid shader file: {path:?}"));
+        let code = ash::util::read_spv(
+            &mut std::fs::File::open(&path).unwrap_or_else(|err| panic!("Invalid shader path: {path:?} ({err}).")),
+        )
+        .unwrap_or_else(|err| panic!("Invalid shader file: {path:?} ({err})."));
 
         let create_info = vk::ShaderModuleCreateInfo::default().code(&code);
         Ok(Self {

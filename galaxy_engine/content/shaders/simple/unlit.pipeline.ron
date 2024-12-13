@@ -1,5 +1,4 @@
 GraphicsPipeline(
-    name: "engine/simple/unlit",
     shaders: (
         vertex: (
             id: "common/apply_mvp_vs",
