@@ -34,6 +34,7 @@ use crate::vulkan::gpu_alloc::MemResult;
 pub enum VolatileBufferType {
     Uniform,
     Storage,
+    Indirect,
 }
 
 impl VolatileBufferType {
@@ -41,6 +42,7 @@ impl VolatileBufferType {
         match self {
             Self::Uniform => vk::BufferUsageFlags::UNIFORM_BUFFER,
             Self::Storage => vk::BufferUsageFlags::STORAGE_BUFFER,
+            Self::Indirect => vk::BufferUsageFlags::INDIRECT_BUFFER,
         }
     }
     pub fn min_align(&self, device: &Device) -> usize {
@@ -48,6 +50,7 @@ impl VolatileBufferType {
         match self {
             Self::Uniform => limits.min_uniform_buffer_offset_alignment as usize,
             Self::Storage => limits.min_storage_buffer_offset_alignment as usize,
+            Self::Indirect => limits.min_storage_buffer_offset_alignment as usize,
         }
     }
 }
@@ -94,7 +97,12 @@ impl<T: bytemuck::Pod, const N: usize> VolatileBuffer<T, N> {
         })
     }
 
-    fn frame_offset(&self, frame_index: usize) -> usize {
+    #[deprecated]
+    pub fn handle_dep(&self) -> vk::Buffer {
+        self.buffer.handle()
+    }
+
+    pub fn frame_offset(&self, frame_index: usize) -> usize {
         debug_assert!(frame_index < N);
         self.size * frame_index
     }

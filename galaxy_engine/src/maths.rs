@@ -92,3 +92,30 @@ pub fn spin_transform(time_s: f32, rpm: f32) -> Similarity3 {
         0.,
     )
 }
+
+// Finds a 2D grid size for a given count of elements, with a maximum number of unused elements.
+pub fn grid_size_for_count(count: u32, max_unused: u32) -> (u32, u32) {
+    let max_unused = max_unused as i32;
+    let mut root = (count as f32).sqrt().floor() as u32;
+    while {
+        let diff = (root * count.div_ceil(root)) as i32 - count as i32;
+        0 > diff || diff > max_unused
+    } {
+        root -= 1;
+    }
+    (root, count.div_ceil(root))
+}
+
+#[allow(dead_code)]
+pub(crate) fn test_grid_size_for_count(test_size: u32) {
+    let mut results = Vec::with_capacity(test_size as usize);
+    for test_num in 1..test_size {
+        let (group_count_x, group_size_y) = grid_size_for_count(test_num, 5);
+        let grid_size = group_count_x * group_size_y;
+        let remainder = grid_size as i32 - test_num as i32;
+        results.push((test_num, group_count_x, group_size_y, remainder));
+    }
+    for (test_num, x, y, remainder) in results {
+        println!("Test num: {test_num}, {x}x{y}, remainder: {remainder}",);
+    }
+}

@@ -19,7 +19,7 @@ use crate::prelude::*;
 use crate::resource_paths::{resource_type, ResourcePath};
 use crate::vertex_input::PositionTexCoordVertex;
 use crate::vulkan::buffer::{Buffer, CpuToGpu, GpuOnly};
-use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingCmdBuf, RenderingState, TransientPrimaryCommandPool};
+use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingState, TransientPrimaryCommandPool};
 use crate::vulkan::debug;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
@@ -73,8 +73,9 @@ impl<V: bytemuck::Pod> MeshBuffer<V> {
             device,
             buffer_size,
             vk::BufferUsageFlags::TRANSFER_DST
-                | vk::BufferUsageFlags::VERTEX_BUFFER
-                | vk::BufferUsageFlags::INDEX_BUFFER,
+                //| vk::BufferUsageFlags::VERTEX_BUFFER
+                //| vk::BufferUsageFlags::INDEX_BUFFER 
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             None,
         )?;
 
@@ -118,14 +119,15 @@ impl<V: bytemuck::Pod> MeshBuffer<V> {
         self.buffer.device_address() + self.indices_offset
     }
 
+    #[deprecated]
     pub fn bind(&self, cmd_buffer: &mut RecordingCmdBuf<PrimaryQueue, impl RenderingState>) {
         cmd_buffer.bind_vertex_buffer(&self.buffer, 0);
         cmd_buffer.bind_index_buffer(&self.buffer, self.indices_offset, self.index_type);
     }
 
-    pub fn draw(&self, cmd_buf: &mut RenderingCmdBuf<PrimaryQueue>, first_index: u32, vertex_offset: i32) {
-        cmd_buf.draw_indexed(self.num_indices(), 1, first_index, vertex_offset, 0);
-    }
+    //pub fn draw(&self, cmd_buf: &mut RenderingCmdBuf<PrimaryQueue>, first_index: u32, vertex_offset: i32) {
+    //    cmd_buf.draw_indexed(self.num_indices(), 1, first_index, vertex_offset, 0);
+    //}
 }
 
 struct LoadedObj {
@@ -273,6 +275,12 @@ impl Mesh {
             &engine.device,
             cmd_pool,
         )?;
+        log::info!(
+            "Loaded mesh: {} has {} vertices and {} indices.",
+            name,
+            mesh_buffer.num_vertices(),
+            mesh_buffer.num_indices()
+        );
         Ok(Self {
             mesh_buffer,
             num_elements: loaded_obj.num_elements,
@@ -287,15 +295,11 @@ impl Mesh {
         self.mesh_buffer.num_indices()
     }
 
-    pub fn num_elements(&self) -> usize {
-        self.num_elements as usize
+    pub fn num_elements(&self) -> u32 {
+        self.num_elements
     }
 
-    pub fn bind(&self, cmd_buf: &mut RenderingCmdBuf<PrimaryQueue>) {
-        self.mesh_buffer.bind(cmd_buf);
-    }
-
-    pub fn draw(&self, cmd_buf: &mut RenderingCmdBuf<PrimaryQueue>) {
-        self.mesh_buffer.draw(cmd_buf, 0, 0);
+    pub fn buffer(&self) -> &MeshBuffer<PositionTexCoordVertex> {
+        &self.mesh_buffer
     }
 }

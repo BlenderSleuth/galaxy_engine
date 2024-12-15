@@ -14,6 +14,10 @@ pub mod queue_type {
     // operations are also allowed on a queue that supports either graphics or compute operations."
     // So we can use the graphics queue for "sync" transfer operations as well.
 
+    // If we end up using the separate queue types, it might be worth creating more primary queues
+    // as fill-ins if the specialised ones are not supported. This means we can keep the async
+    // architecture of the async compute and transfer threads.
+
     // Not from the spec, but on good authority, "No such hardware exists" that supports graphics and
     // presentation without a graphics and present queue. Thus, this primary queue is also used for presentation.
     // https://stackoverflow.com/questions/61434615/in-vulkan-is-it-beneficial-for-the-graphics-queue-family-to-be-separate-from-th

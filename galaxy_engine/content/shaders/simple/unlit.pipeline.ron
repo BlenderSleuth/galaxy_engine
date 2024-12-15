@@ -13,7 +13,7 @@ GraphicsPipeline(
         depth_enable: true,
     ),
     layout: (
-        push_constant: DrawData, 
+        push_constant: None, 
         bindings: {
             "base_colour": (
                 type: Float3, 

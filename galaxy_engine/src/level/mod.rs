@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use arrayvec::ArrayVec;
 use ash::vk;
+use itertools::izip;
 use serde::{Deserialize, Serialize};
 use shipyard::{Component, EntityId, IntoIter, Ref, RefMut, View, ViewMut, World};
 
@@ -20,6 +21,7 @@ use crate::textures::TextureManager;
 use crate::volatile_buffer::{VolatileBuffer, VolatileBufferType};
 use crate::vulkan::command_buffer::{RenderingCmdBuf, TransientPrimaryCommandPool};
 use crate::vulkan::descriptors::DescriptorPool;
+use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::MemoryError;
 use crate::vulkan::queue::queue_type::PrimaryQueue;
 
@@ -104,7 +106,6 @@ impl BufferIndex {
 #[derive(Component, Default)]
 pub struct TransformComponent {
     transform: Transform,
-    index: BufferIndex,
 }
 
 impl ComponentConfig for Transform {
@@ -119,7 +120,6 @@ impl ComponentConfig for Transform {
             entity_id,
             TransformComponent {
                 transform: self.clone(),
-                index: BufferIndex::default(),
             },
         );
         Ok(())
@@ -193,8 +193,10 @@ pub struct ModelConfig {
 
 #[derive(Component)]
 pub struct Model {
+    // mesh.num_elements() == materials.len()
     pub mesh: Arc<Mesh>,
     pub materials: Vec<Arc<Material>>,
+    pub draw_index: Option<u32>,
 }
 
 impl ComponentConfig for ModelConfig {
@@ -230,7 +232,7 @@ impl ComponentConfig for ModelConfig {
             })
             .collect::<LoadResult<Vec<_>>>()?;
 
-        let num_elements = mesh.num_elements();
+        let num_elements = mesh.num_elements() as usize;
         match materials.len().cmp(&num_elements) {
             std::cmp::Ordering::Less => {
                 log::warn!("Too few materials for mesh, duplicating last material.");
@@ -244,12 +246,19 @@ impl ComponentConfig for ModelConfig {
             }
         }
 
-        debug_assert_eq!(materials.len(), mesh.num_elements());
+        debug_assert_eq!(materials.len(), mesh.num_elements() as usize);
 
         // Ensure each model has a transform.
         level.world.update_transform_with(entity_id, |_| {});
 
-        level.world.add_component(entity_id, Model { mesh, materials });
+        level.world.add_component(
+            entity_id,
+            Model {
+                mesh,
+                materials,
+                draw_index: None,
+            },
+        );
         Ok(())
     }
 }
@@ -291,6 +300,10 @@ impl Name {
         Self {
             name: name.to_owned().into_boxed_str(),
         }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
     }
 }
 
@@ -349,38 +362,21 @@ pub struct LoadingLevel {
     pub texture_manager: TextureManager,
 }
 
-//struct LevelDescriptorPool {
-//    descriptor_pool: DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
-//}
-//
-//impl LevelDescriptorPool {
-//    // Two for the scene descriptor sets and one for the material descriptor set.
-//    //const NUM_SETS: usize = GalaxyEngine::MAX_FRAMES_IN_FLIGHT + 1;
-//
-//    fn new(engine: &GalaxyEngine, level: &LoadingLevel) -> VkResult<Self> {
-//
-//        Ok(Self { descriptor_pool })
-//    }
-//
-//    fn get(&self, frame_index: usize) -> vk::DescriptorSet {
-//        self.descriptor_pool.get(frame_index)
-//    }
-//}
-
 pub struct Level {
     pub world: World,
     pub camera_entity: EntityId,
     pub mesh_manager: MeshManager,
     material_manager: MaterialManager,
     pub texture_manager: TextureManager,
-    descriptor_pool: DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
+    scene_descriptor_pool: DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     scene_uniform_buffer: VolatileBuffer<SceneUniformData>,
     scene_transforms_buffer: VolatileBuffer<Mat4>,
+    element_offsets: VolatileBuffer<u32>,
+    material_data_addresses: VolatileBuffer<vk::DeviceAddress>,
+    draw_indirect_buffer: VolatileBuffer<crate::pod::vk::DrawIndexedIndirectCommand>,
 }
 
 impl Level {
-    const MAX_TRANSFORMS: usize = 256;
-
     pub fn new<T: DeserializableComponentConfig>(
         config_path: ResourcePath,
         engine: &GalaxyEngine,
@@ -418,10 +414,10 @@ impl Level {
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32),
-            // Scene transforms buffer.
+            // Scene transforms + elements offsets buffers.
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32),
+                .descriptor_count(GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32 * 2),
             // Scene texture descriptor array.
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
@@ -442,22 +438,46 @@ impl Level {
 
         // Create scene buffers.
         let scene_uniform_buffer = VolatileBuffer::new("Scene uniform buffer", device, VolatileBufferType::Uniform)?;
+
+        let num_models = level.world.iter::<&Model>().iter().count();
         let scene_transforms_buffer = VolatileBuffer::new_array(
             "Scene transforms buffer",
-            Level::MAX_TRANSFORMS,
+            num_models,
             device,
             VolatileBufferType::Storage,
         )?;
 
+        // Finish material and mesh loading.
         let material_manager = MaterialManager::new(level.material_manager, engine, cmd_pool)?;
+        let mesh_manager = MeshManager::new(level.mesh_manager, engine, cmd_pool)?;
+
+        let total_scene_material_refs = level
+            .world
+            .iter::<&Model>()
+            .iter()
+            .map(|model| model.materials.len())
+            .sum();
+        let element_offsets_buffer = VolatileBuffer::new_array(
+            "Element offsets buffer",
+            num_models,
+            device,
+            VolatileBufferType::Storage,
+        )?;
+        let material_buffer_addresses = VolatileBuffer::new_array(
+            "Material buffer addresses",
+            total_scene_material_refs,
+            &engine.device,
+            VolatileBufferType::Storage,
+        )?;
 
         // Write to scene descriptor sets.
         let uniform_buffer_info = scene_uniform_buffer.descriptor_buffer_infos();
         let transform_buffer_info = scene_transforms_buffer.descriptor_buffer_infos();
+        let element_offset_buffer_info = element_offsets_buffer.descriptor_buffer_infos();
         let texture_image_infos = level.texture_manager.get_image_infos();
-        let material_buffer_infos = material_manager.get_material_buffer_addresses_infos();
+        let material_buffer_infos = material_buffer_addresses.descriptor_buffer_infos();
 
-        const NUM_WRITES: usize = 4;
+        const NUM_WRITES: usize = 5;
         let mut descriptor_writes: ArrayVec<_, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT * NUM_WRITES }> = descriptor_pool
             .iter()
             .enumerate()
@@ -477,10 +497,17 @@ impl Level {
                         .dst_array_element(0)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .buffer_info(slice::from_ref(&transform_buffer_info[frame])),
-                    // Material buffers.
+                    // Element offset buffer.
                     vk::WriteDescriptorSet::default()
                         .dst_set(*set)
                         .dst_binding(2)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(slice::from_ref(&element_offset_buffer_info[frame])),
+                    // Material buffers.
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(*set)
+                        .dst_binding(3)
                         .dst_array_element(0)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .buffer_info(slice::from_ref(&material_buffer_infos[frame])),
@@ -493,7 +520,7 @@ impl Level {
                 // Textures array.
                 vk::WriteDescriptorSet::default()
                     .dst_set(*set)
-                    .dst_binding(3) // Texture buffer is index 3 the in scene descriptor set layout.
+                    .dst_binding(4) // Texture buffer is index 3 the in scene descriptor set layout.
                     .dst_array_element(0)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .image_info(&texture_image_infos)
@@ -502,7 +529,17 @@ impl Level {
 
         unsafe { device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
 
-        let mesh_manager = MeshManager::new(level.mesh_manager, device)?;
+        // Create draw indirect buffer.
+        //let draw_indirect_commands_size = (size_of::<vk::DrawIndexedIndirectCommand>() * num_models) as vk::DeviceSize;
+        let draw_indirect_buffer = VolatileBuffer::new_array(
+            "Draw indirect buffer",
+            num_models,
+            &engine.device,
+            VolatileBufferType::Indirect,
+        )?;
+        //let mut draw_indirect_buffer_info = draw_indirect_buffer.descriptor_buffer_info();
+        //draw_indirect_buffer_info.range = draw_indirect_commands_size;
+        //let indirect_draw_count_addr = draw_indirect_buffer.device_address() + draw_indirect_commands_size;
 
         Ok(Self {
             world: level.world,
@@ -510,9 +547,12 @@ impl Level {
             mesh_manager,
             material_manager,
             texture_manager: level.texture_manager,
-            descriptor_pool,
+            scene_descriptor_pool: descriptor_pool,
             scene_uniform_buffer,
             scene_transforms_buffer,
+            material_data_addresses: material_buffer_addresses,
+            element_offsets: element_offsets_buffer,
+            draw_indirect_buffer,
         })
     }
 
@@ -590,6 +630,8 @@ impl Level {
         let time = game_time.as_secs_f64();
 
         // Update GPU buffers.
+
+        // Update scene uniforms.
         *self.scene_uniform_buffer.get_mut(frame_index) = SceneUniformData {
             view: view_info.view,
             proj: view_info.projection,
@@ -601,30 +643,69 @@ impl Level {
             delta_time,
         };
 
-        // Update transforms.
-        self.world.run(|mut vm_transforms: ViewMut<TransformComponent>| {
-            let transform_buffer = self.scene_transforms_buffer.get_mut_slice(frame_index);
-            assert!(vm_transforms.len() <= transform_buffer.len());
-            (&mut vm_transforms)
-                .iter()
-                .zip(transform_buffer.iter_mut())
-                .enumerate()
-                .for_each(|(i, (transform_comp, transform_mat))| {
-                    *transform_mat = view_info.mvp_from_transform(&transform_comp.transform);
-                    transform_comp.index.set(i as u32);
-                });
-        });
+        //{
+        //    let addresses = material_buffer_addresses.get_mut_slice(0);
+        //    for (data, address) in pipeline_data.values().zip(addresses) {
+        //        *address = data.material_buffer.device_address();
+        //    }
+        //}
+
+        //for _frame in 1..GalaxyEngine::MAX_FRAMES_IN_FLIGHT {
+        //    // Copy first frame to second.
+        //}
+
+        // Update scene data.
+        self.world
+            .run(|v_models: View<Model>, v_transforms: View<TransformComponent>| {
+                let transform_buffer = self.scene_transforms_buffer.get_mut_slice(frame_index);
+                let element_offsets = self.element_offsets.get_mut_slice(frame_index);
+                let material_data_addresses = self.material_data_addresses.get_mut_slice(frame_index);
+                let draw_indirect_buffer = self.draw_indirect_buffer.get_mut_slice(frame_index);
+
+                debug_assert!(v_models.len() <= transform_buffer.len());
+
+                let mut current_element_offset = 0;
+                izip!(
+                    (&v_transforms, &v_models).iter(),
+                    transform_buffer.iter_mut(),
+                    element_offsets.iter_mut(),
+                    draw_indirect_buffer.iter_mut(),
+                )
+                .for_each(
+                    |((transform_comp, model), transform_mat, element_offset, draw_indirect)| {
+                        // Write transform.
+                        *transform_mat = view_info.mvp_from_transform(&transform_comp.transform);
+                        // Write element offset.
+                        *element_offset = current_element_offset;
+                        // Write draw indirect command.
+                        let draw_params = self.mesh_manager.draw_command_for_mesh(&model.mesh);
+                        draw_indirect.index_count = model.mesh.num_indices();
+                        draw_indirect.instance_count = 1;
+                        draw_indirect.first_index = draw_params.index_offset;
+                        draw_indirect.vertex_offset = draw_params.vertex_offset;
+                        draw_indirect.first_instance = 0;
+
+                        // Write material data.
+                        for (i, material) in model.materials.iter().enumerate() {
+                            material_data_addresses[current_element_offset as usize + i] =
+                                self.material_manager.get_material_data_buffer_addr(material);
+                        }
+                        current_element_offset += model.mesh.num_elements();
+                    },
+                );
+            });
     }
 
     pub(crate) fn render(
         &self,
+        device: &Device,
         pipeline_manager: &PipelineManager,
         cmd_buf: &mut RenderingCmdBuf<PrimaryQueue>,
         frame_index: usize,
     ) {
         // Get the drawing pipeline layout.
         let Some(layout) = pipeline_manager.get_draw_layout() else {
-            log::warn!("No pipelines to render with.");
+            log::warn!("No pipelines to draw with.");
             return;
         };
 
@@ -633,39 +714,26 @@ impl Level {
             vk::PipelineBindPoint::GRAPHICS,
             layout,
             0,
-            &[self.descriptor_pool.get(frame_index)],
+            &[self.scene_descriptor_pool.get(frame_index)],
             &[],
         );
 
-        self.world
-            .run(|v_models: View<Model>, v_transforms: View<TransformComponent>| {
-                for (pipeline_index, pipeline) in pipeline_manager.iter_graphics_pipelines().enumerate() {
-                    // Bind pipeline.
-                    cmd_buf.bind_graphics_pipeline(pipeline);
+        // TODO: Num models per pipeline.
+        let num_models = self.world.iter::<&Model>().iter().count();
 
-                    for indexed_material in self.material_manager.iter_materials_for_pipeline(pipeline) {
-                        // TODO: This is a stupid simple linear search to find models with the same material.
-                        for (model, transform) in (&v_models, &v_transforms).iter().filter(|(model, _)| {
-                            model
-                                .materials
-                                .iter()
-                                .any(|mat| Arc::ptr_eq(mat, &indexed_material.material))
-                        }) {
-                            cmd_buf.push_constants(
-                                layout,
-                                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                                0,
-                                bytemuck::bytes_of(&DrawData {
-                                    transform_index: transform.index.get().unwrap(),
-                                    pipeline_index: pipeline_index as u32,
-                                    material_index: indexed_material.buffer_index,
-                                }),
-                            );
-                            model.mesh.bind(cmd_buf);
-                            model.mesh.draw(cmd_buf);
-                        }
-                    }
-                }
-            });
+        for pipeline in pipeline_manager.iter_graphics_pipelines() {
+            // Bind pipeline.
+            cmd_buf.bind_graphics_pipeline(pipeline);
+            self.mesh_manager.bind_megabuffer(cmd_buf);
+            unsafe {
+                device.loader().cmd_draw_indexed_indirect(
+                    cmd_buf.handle_dep(),
+                    self.draw_indirect_buffer.handle_dep(),
+                    self.draw_indirect_buffer.frame_offset(frame_index) as vk::DeviceSize,
+                    num_models as u32,
+                    size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+                )
+            };
+        }
     }
 }

@@ -274,7 +274,7 @@ impl GpuParticleSystem {
             0,
             bytemuck::bytes_of(&mvp),
         );
-        self.mesh_buffer.bind(command_buffer);
+        //self.mesh_buffer.bind(command_buffer);
         command_buffer.set_viewport(viewport);
         command_buffer.set_scissor(scissor);
         command_buffer.draw_indexed(self.mesh_buffer.num_indices(), self.max_num_particles, 0, 0, 0);

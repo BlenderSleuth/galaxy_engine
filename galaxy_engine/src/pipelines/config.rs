@@ -6,7 +6,6 @@ use std::sync::Arc;
 use ash::vk;
 use indexmap::IndexMap;
 
-use crate::level::DrawData;
 use crate::vertex_input::VertexInputType;
 
 #[derive(serde::Deserialize, Debug)]
@@ -106,19 +105,40 @@ pub struct GraphicsPipelineBinding {
 
 pub type PipelineBindingMap<S = Arc<str>> = IndexMap<S, GraphicsPipelineBinding>;
 
+// Todo: better push constant management. List of sizes and shader stages.
 #[derive(serde::Deserialize, Debug, Hash, Copy, Clone, PartialEq, Eq)]
 pub enum PushConstantBinding {
-    DrawData,
+    //DrawData,
+    PipelineIndex,
+    ComputeInt,
+    ComputeInt2,
+    ComputeInt4,
 }
 
 impl PushConstantBinding {
     pub fn push_constant_range(&self) -> vk::PushConstantRange {
         // TODO: Only access push constant in one shader.
         match self {
-            Self::DrawData => vk::PushConstantRange::default()
-                .stage_flags((GraphicsShaderStageFlags::Vertex | GraphicsShaderStageFlags::Fragment).vk())
+            //Self::DrawData => vk::PushConstantRange::default()
+            //    .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            //    .offset(0)
+            //    .size(size_of::<DrawData>() as u32),
+            Self::PipelineIndex => vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT)
                 .offset(0)
-                .size(std::mem::size_of::<DrawData>() as u32),
+                .size(size_of::<u32>() as u32),
+            Self::ComputeInt => vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                .offset(0)
+                .size(size_of::<u32>() as u32),
+            Self::ComputeInt2 => vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                .offset(0)
+                .size(size_of::<u32>() as u32 * 2),
+            Self::ComputeInt4 => vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                .offset(0)
+                .size(size_of::<u32>() as u32 * 4),
         }
     }
 }
@@ -170,7 +190,7 @@ pub(super) struct GraphicsPipelineConfig<'a> {
 }
 
 #[derive(serde::Deserialize, Debug, Copy, Clone, Hash, Eq, PartialEq)]
-pub(crate) enum ComputeResourceType {
+pub enum ComputeResourceType {
     UniformBuffer,
     StorageBuffer,
 }
@@ -206,6 +226,7 @@ pub(super) struct ComputePipelineConfig<'a> {
     #[serde(skip)]
     pub id: Arc<str>,
     pub shader: &'a str,
+    pub num_threads: [u32; 3],
     #[serde(borrow)]
     pub layout: ComputePipelineLayoutBindings<'a>,
 }

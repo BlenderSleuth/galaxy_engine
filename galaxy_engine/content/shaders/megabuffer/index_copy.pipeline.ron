@@ -1,0 +1,15 @@
+ComputePipeline(
+    shader: "megabuffer/index_copy",
+    num_threads: (64, 1, 1),
+    layout: (
+        push_constant: ComputeInt2,
+        bindings: {
+            "vertex_offsets": StorageBuffer,
+            "vertex_buffers": StorageBuffer,
+            "index_offsets": StorageBuffer,
+            "index_buffers": StorageBuffer,
+            "vertices_megabuffer": StorageBuffer,
+            "indices_megabuffer": StorageBuffer,
+        }
+    ),
+)

@@ -78,7 +78,7 @@ pub struct PhysicalDevice {
     pub swapchain_image_count: u32,
     pub supported_msaa_samples: vk::SampleCountFlags,
     pub max_msaa_samples: vk::SampleCountFlags,
-    pub volatile_memory_type: VolatileMemoryType,
+    pub volatile_memory_type: VolatileMemoryType, // TODO: Find the non-volatile CPU memory type for staging buffers.
     pub mem_properties: vk::PhysicalDeviceMemoryProperties,
     pub enabled_extensions: Vec<&'static CStr>,
     pub properties: PhysicalDeviceProperties,
@@ -89,6 +89,7 @@ pub struct PhysicalDevice {
 pub type PropertyQueueList<T = u32> = ArrayVec<T, { PhysicalDevice::MAX_QUEUE_FAMILIES }>;
 impl PhysicalDevice {
     const MAX_QUEUE_FAMILIES: usize = 3;
+    pub const MAX_DISPATCH_GROUPS_PER_DIMENSION: u32 = 65535; // Guaranteed by Vulkan spec.
 
     pub fn new(
         instance: &ash::Instance,
@@ -322,6 +323,10 @@ impl PhysicalDevice {
 
         // Require descriptor indexing support.
         //check_and_enable_feature!(features12.descriptor_indexing);
+
+        // Require multi-draw indirect support.
+        check_and_enable_feature!(features.multi_draw_indirect);
+
         // Require draw indirect count.
         //check_and_enable_feature!(features12.draw_indirect_count);
 

@@ -331,7 +331,7 @@ impl CommandBuffer<PrimaryQueue, Recording<OutsideRenderPass>> {
 
 // Graphics recording commands.
 impl<R: RenderingState> CommandBuffer<PrimaryQueue, Recording<R>> {
-    pub fn bind_graphics_pipeline(&self, pipeline: &GraphicsPipeline) {
+    pub fn bind_graphics_pipeline(&mut self, pipeline: &GraphicsPipeline) {
         unsafe {
             self.loader()
                 .cmd_bind_pipeline(self.handle(), vk::PipelineBindPoint::GRAPHICS, pipeline.handle())
@@ -384,6 +384,41 @@ impl CommandBuffer<PrimaryQueue, Recording<InsideRenderPass>> {
         };
     }
 
+    pub fn draw_indexed_indirect(
+        &mut self,
+        buffer: &Buffer<impl MemLocation>,
+        offset: vk::DeviceSize,
+        draw_count: u32,
+        stride: u32,
+    ) {
+        unsafe {
+            self.loader()
+                .cmd_draw_indexed_indirect(self.handle(), buffer.handle(), offset, draw_count, stride)
+        };
+    }
+
+    pub fn draw_indexed_indirect_count(
+        &mut self,
+        buffer: &Buffer<GpuOnly>,
+        offset: vk::DeviceSize,
+        count_buffer: &Buffer<GpuOnly>,
+        count_buffer_offset: vk::DeviceSize,
+        max_draw_count: u32,
+        stride: u32,
+    ) {
+        unsafe {
+            self.loader().cmd_draw_indexed_indirect_count(
+                self.handle(),
+                buffer.handle(),
+                offset,
+                count_buffer.handle(),
+                count_buffer_offset,
+                max_draw_count,
+                stride,
+            )
+        };
+    }
+
     pub fn end_rendering(self, ext: &DeviceExtensions) -> RecordingCmdBuf<PrimaryQueue, OutsideRenderPass> {
         unsafe { ext.dyn_cmd.cmd_end_rendering(self.handle()) };
         self.next_state()
@@ -392,7 +427,7 @@ impl CommandBuffer<PrimaryQueue, Recording<InsideRenderPass>> {
 
 // Graphics/compute recording commands.
 impl<Q: ComputeQueueType, R: RenderingState> CommandBuffer<Q, Recording<R>> {
-    pub fn bind_compute_pipeline(&self, pipeline: &ComputePipeline) {
+    pub fn bind_compute_pipeline(&mut self, pipeline: &ComputePipeline) {
         unsafe {
             self.loader()
                 .cmd_bind_pipeline(self.handle(), vk::PipelineBindPoint::COMPUTE, pipeline.handle())

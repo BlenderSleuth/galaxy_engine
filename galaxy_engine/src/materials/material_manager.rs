@@ -12,32 +12,17 @@ use ultraviolet::{Vec2, Vec3, Vec4};
 use super::config::MaterialConfigsCache;
 use crate::engine::GalaxyEngine;
 use crate::materials::{Material, MaterialError, ResourceBinding};
-use crate::pipelines::{GraphicsPipeline, Pipeline, PipelineBindingDataSize};
+use crate::pipelines::{Pipeline, PipelineBindingDataSize};
 use crate::resource_paths::SubresourcePath;
 use crate::textures::TextureManager;
 use crate::utils::LayoutExt;
-use crate::volatile_buffer::{VolatileBuffer, VolatileBufferType};
 use crate::vulkan::buffer::{Buffer, GpuOnly};
 use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::debug::debug_only_name;
 use crate::vulkan::gpu_alloc::MemResult;
 
-pub struct IndexedMaterial {
-    pub material: Arc<Material>,
-    pub buffer_index: u32,
-}
-
-impl IndexedMaterial {
-    pub fn new(material: Arc<Material>, index: u32) -> Self {
-        Self {
-            material,
-            buffer_index: index,
-        }
-    }
-}
-
 pub struct LoadingMaterialManager {
-    materials: HashMap<SubresourcePath, IndexedMaterial>,
+    materials: HashMap<SubresourcePath, Arc<Material>>,
     pipelines: IndexMap<Arc<str>, Vec<SubresourcePath>>,
     configs: MaterialConfigsCache,
 }
@@ -59,16 +44,23 @@ impl LoadingMaterialManager {
         subresource_path: &SubresourcePath,
     ) -> Result<Arc<Material>, MaterialError> {
         log::info!("Loading material: {:?}", subresource_path);
-        if let Some(indexed_mat) = self.materials.get(subresource_path) {
-            Ok(Arc::clone(&indexed_mat.material))
+        if let Some(material) = self.materials.get(subresource_path) {
+            Ok(Arc::clone(material))
         } else {
             let config = self.configs.get_or_load_material_config(engine, subresource_path)?;
 
+            // The index in the material data buffer is the same as the index in the resource paths vec.
+            let buffer_index = if self.pipelines.contains_key(config.pipeline) {
+                self.pipelines[config.pipeline].len() as u32
+            } else {
+                0
+            };
             let material = Arc::new(Material::new(
                 engine,
                 texture_manager,
                 config,
                 subresource_path.resource(),
+                buffer_index,
                 cmd_pool,
             )?);
             let resource_paths = if self.pipelines.contains_key(material.pipeline().id()) {
@@ -76,12 +68,9 @@ impl LoadingMaterialManager {
             } else {
                 self.pipelines.entry(material.pipeline().cloned_id()).or_default()
             };
-            let material_index = resource_paths.len() as u32;
             resource_paths.push(subresource_path.clone());
-            self.materials.insert(
-                subresource_path.clone(),
-                IndexedMaterial::new(Arc::clone(&material), material_index),
-            );
+
+            self.materials.insert(subresource_path.clone(), Arc::clone(&material));
             Ok(material)
         }
     }
@@ -132,15 +121,20 @@ impl_material_binding!(Vec2, Vec2::new(0., 0.), [0]); // TODO: Make separate nor
 impl_material_binding!(Vec3, Vec3::new(1., 0., 1.), [0]);
 impl_material_binding!(Vec4, Vec4::new(1., 0., 1., 1.), [0]);
 
+struct MaterialPathWithDataAddr {
+    path: SubresourcePath,
+    temp_arc: Arc<Material>,
+    data_addr: vk::DeviceAddress,
+}
+
 struct PipelineData {
-    materials: Vec<SubresourcePath>,
-    material_buffer: Buffer<GpuOnly>,
+    materials: Vec<MaterialPathWithDataAddr>,
+    _material_buffer: Buffer<GpuOnly>,
 }
 
 pub(crate) struct MaterialManager {
     pipeline_data: IndexMap<Arc<str>, PipelineData>,
-    materials: HashMap<SubresourcePath, IndexedMaterial>,
-    material_buffer_addresses: VolatileBuffer<vk::DeviceAddress>,
+    _materials: Vec<Arc<Material>>,
 }
 
 impl MaterialManager {
@@ -191,16 +185,30 @@ impl MaterialManager {
                         None,
                     )?;
 
+                    let mut materials_paths = resource_paths
+                        .into_iter()
+                        .map(|path| MaterialPathWithDataAddr {
+                            temp_arc: Arc::clone(&loading.materials[&path]),
+                            path,
+                            data_addr: material_buffer.device_address(), // Point to the start of the material data buffer.
+                        })
+                        .collect::<Vec<_>>();
+
                     // Copy material resource bindings to buffer.
                     let staging_buffer =
                         material_buffer.copy_via_staging_buffer_with(&engine.device, &mut cmd_buf, None, |buffer| {
                             let buffer_memory = buffer.zero_and_get_mut_bytes();
 
-                            for (i, path) in resource_paths.iter().enumerate() {
-                                let indexed_material = &loading.materials[path];
+                            for (i, material_data) in materials_paths.iter_mut().enumerate() {
+                                let material = &loading.materials[&material_data.path];
+                                debug_assert_eq!(i, material.buffer_index() as usize);
 
-                                let resource_bindings = &indexed_material.material.resource_bindings();
+                                let resource_bindings = &material.resource_bindings();
                                 let buffer_range = i * bindings_size..(i + 1) * bindings_size;
+
+                                // Offset the data address to point to the start of this material's data.
+                                material_data.data_addr += buffer_range.start as vk::DeviceAddress;
+
                                 let buffer_memory = &mut buffer_memory[buffer_range];
 
                                 // A flags u32 is the final field, with a bit for each resource that says whether it's a constant (1) or a texture (0).
@@ -310,8 +318,8 @@ impl MaterialManager {
                         (
                             name,
                             PipelineData {
-                                materials: resource_paths,
-                                material_buffer,
+                                materials: materials_paths,
+                                _material_buffer: material_buffer,
                             },
                         ),
                     ))
@@ -322,40 +330,35 @@ impl MaterialManager {
         // Upload material buffer.
         let pending = cmd_buf.end()?.submit(&[], &[])?;
 
-        let mut material_buffer_addresses = VolatileBuffer::new_array(
-            "Material buffer addresses",
-            pipeline_data.len(),
-            &engine.device,
-            VolatileBufferType::Storage,
-        )?;
-
-        for frame in 0..GalaxyEngine::MAX_FRAMES_IN_FLIGHT {
-            let addresses = material_buffer_addresses.get_mut_slice(frame);
-            for (i, data) in pipeline_data.values().enumerate() {
-                addresses[i] = data.material_buffer.device_address();
-            }
-        }
-
         // Wait before dropping.
         pending.wait_for_fence()?;
 
         Ok(Self {
-            materials: loading.materials,
+            _materials: loading.materials.into_values().collect(),
             pipeline_data,
-            material_buffer_addresses,
         })
     }
 
-    pub fn get_material_buffer_addresses_infos(
-        &self,
-    ) -> [vk::DescriptorBufferInfo; GalaxyEngine::MAX_FRAMES_IN_FLIGHT] {
-        self.material_buffer_addresses.descriptor_buffer_infos()
-    }
-
-    pub fn iter_materials_for_pipeline(&self, pipeline: &GraphicsPipeline) -> impl Iterator<Item = &IndexedMaterial> {
-        self.pipeline_data[pipeline.id()]
+    #[deprecated]
+    pub fn get_material_data_buffer_addr(&self, material: &Arc<Material>) -> vk::DeviceAddress {
+        self.pipeline_data[material.pipeline().id()]
             .materials
             .iter()
-            .map(|resource_path| &self.materials[resource_path])
+            .find(|data| Arc::ptr_eq(&data.temp_arc, material))
+            .unwrap()
+            .data_addr
     }
+
+    //pub fn get_material_buffer_addresses_infos(
+    //    &self,
+    //) -> [vk::DescriptorBufferInfo; GalaxyEngine::MAX_FRAMES_IN_FLIGHT] {
+    //    self.material_buffer_addresses.descriptor_buffer_infos()
+    //}
+
+    //pub fn iter_materials_for_pipeline(&self, pipeline: &GraphicsPipeline) -> impl Iterator<Item = &IndexedMaterial> {
+    //    self.pipeline_data[pipeline.id()]
+    //        .materials
+    //        .iter()
+    //        .map(|resource_path| &self.materials[resource_path])
+    //}
 }

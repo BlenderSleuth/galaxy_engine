@@ -389,7 +389,7 @@ impl GalaxyEngine {
             let pipeline_manager = &self.pipeline_manager;
             let level_lock = self.level.lock().unwrap();
             if let Some(level) = level_lock.deref() {
-                level.render(pipeline_manager, rendering, frame_index);
+                level.render(&self.device, pipeline_manager, rendering, frame_index);
             };
         }
         let recording = gfx_cmd_buffer.end_rendering(ext)?;
@@ -478,11 +478,8 @@ impl GalaxyEngine {
     }
 
     pub(crate) fn notify_keyboard_input(&mut self, event: &KeyEvent) {
-        match &event.logical_key {
-            Key::Character(c) => {
-                self.key_input.insert(c.clone(), event.state);
-            }
-            _ => {}
+        if let Key::Character(c) = &event.logical_key {
+            self.key_input.insert(c.clone(), event.state);
         }
     }
 

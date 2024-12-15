@@ -147,31 +147,35 @@ impl PipelineManager {
     const PIPELINE_CONFIG_GLOB: &'static str = "**/*.pipeline.ron";
     //pub const MAX_PIPELINES_PER_LAYOUT: usize = 512;
 
-    fn scene_descriptor_set_layout_bindings() -> [vk::DescriptorSetLayoutBinding<'static>; 4] {
+    fn scene_descriptor_set_layout_bindings() -> [vk::DescriptorSetLayoutBinding<'static>; 5] {
         [
             // Scene uniforms:
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
                 .descriptor_count(1)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .stage_flags(
-                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE,
-                ),
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
             // Transforms:
             vk::DescriptorSetLayoutBinding::default()
                 .binding(1)
                 .descriptor_count(1)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .stage_flags(vk::ShaderStageFlags::VERTEX),
-            // Material data storage:
+            // Element offsets:
             vk::DescriptorSetLayoutBinding::default()
                 .binding(2)
                 .descriptor_count(1)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            // Array of textures:
+            // Material data storage:
             vk::DescriptorSetLayoutBinding::default()
                 .binding(3)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            // Array of textures:
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
                 .descriptor_count(TextureManager::MAX_TEXTURES as u32)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
@@ -343,12 +347,12 @@ impl PipelineManager {
         self.bind_point_id_cache.get(id)
     }
 
-    pub fn get_graphics_pipeline(&self, name: &str) -> Option<&GraphicsPipeline> {
-        self.graphics_pipelines.get(name).map(ArcFinalOwner::as_ref)
+    pub fn get_graphics_pipeline(&self, id: &str) -> Option<&GraphicsPipeline> {
+        self.graphics_pipelines.get(id).map(ArcFinalOwner::as_ref)
     }
 
-    pub fn get_cloned_graphics_pipeline(&self, name: &str) -> Option<Arc<GraphicsPipeline>> {
-        self.graphics_pipelines.get(name).map(ArcFinalOwner::clone)
+    pub fn get_cloned_graphics_pipeline(&self, id: &str) -> Option<Arc<GraphicsPipeline>> {
+        self.graphics_pipelines.get(id).map(ArcFinalOwner::clone)
     }
 
     pub fn iter_graphics_pipelines(&self) -> impl Iterator<Item = &GraphicsPipeline> {
@@ -361,10 +365,21 @@ impl PipelineManager {
 
     pub fn get_draw_layout(&self) -> Option<vk::PipelineLayout> {
         let entry = PipelineLayoutEntry {
-            push_constant: Some(PushConstantBinding::DrawData),
+            push_constant: None,
             descriptor_set_layout: self.scene_set_layout,
         };
         self.pipeline_layouts.get(&entry).copied()
+    }
+
+    pub fn get_compute_descriptor_set_layout(
+        &self,
+        bindings: &[ComputeResourceType],
+    ) -> Option<vk::DescriptorSetLayout> {
+        self.compute_descriptor_set_layouts.get(bindings).copied()
+    }
+
+    pub fn get_compute_pipeline(&self, name: &str) -> Option<&ComputePipeline> {
+        self.compute_pipelines.get(name).map(ArcFinalOwner::as_ref)
     }
 
     //pub fn get_layout(&self, entry: &PipelineLayoutEntry) -> Option<vk::PipelineLayout> {

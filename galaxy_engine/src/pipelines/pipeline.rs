@@ -266,6 +266,7 @@ pub(crate) struct ComputePipelineCreateResources<'a> {
 pub struct ComputePipeline {
     handle: vk::Pipeline,
     id: Arc<str>,
+    num_threads: [u32; 3],
     layout: vk::PipelineLayout,
 }
 
@@ -300,9 +301,18 @@ impl ComputePipeline {
             .map(|(handle, resources)| Self {
                 handle,
                 id: resources.config.id,
+                num_threads: resources.config.num_threads,
                 layout: resources.pipeline_layout,
             })
             .collect())
+    }
+
+    pub fn num_threads_per_group(&self) -> &[u32; 3] {
+        &self.num_threads
+    }
+
+    pub fn total_threads_per_group(&self) -> u32 {
+        self.num_threads.iter().product()
     }
 }
 
