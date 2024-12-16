@@ -1,6 +1,6 @@
 // Copyright (c) 2024 Ben Sutherland.
 
-pub use galaxy_engine_utils::config::*;
+pub use galaxy_engine_config::config::*;
 
 #[derive(thiserror::Error, Debug)]
 pub enum ConfigLoadError {

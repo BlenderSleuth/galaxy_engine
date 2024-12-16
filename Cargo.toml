@@ -4,7 +4,7 @@ resolver = "2"
 members = [
     "galaxy_engine",
     "galaxy_engine_build",
-    "galaxy_engine_utils",
+    "galaxy_engine_config",
     "gravity_game",
 ]
 exclude = ["crates/basis-universal-rs"]
@@ -35,6 +35,7 @@ shipyard = "0.7.4"
 ron = "0.8.1"
 zstd = "0.13"
 ktx2 = { git = "https://github.com/BVE-Reborn/ktx2.git" }
+const_format = "0.2.33"
 
 [profile.dev]
 #opt-level = 1

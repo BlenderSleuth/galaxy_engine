@@ -1,11 +1,13 @@
 // Copyright (c) 2024 Ben Sutherland.
 
+mod cache;
 mod shaders;
 mod textures;
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
+use const_format::concatcp;
 pub use shaders::compile_shaders;
 pub use textures::build_textures;
 
@@ -13,7 +15,14 @@ const CONTENT_DIR: &str = "content/";
 fn content_dir() -> &'static Path {
     Path::new(CONTENT_DIR)
 }
-const CACHE_DIR: &str = "cache/";
+const BUILD_TYPE_SUBDIR: &str = const {
+    if cfg!(feature = "packaged") {
+        "packaged/"
+    } else {
+        "debug/"
+    }
+};
+const CACHE_DIR: &str = concatcp!("cache/", BUILD_TYPE_SUBDIR);
 fn cache_dir() -> &'static Path {
     Path::new(CACHE_DIR)
 }
@@ -36,21 +45,34 @@ impl OutputDir {
     }
 }
 
-fn convert_content_to_output_dir(content_path: &Path, output_dir: OutputDir) -> Option<PathBuf> {
+fn convert_content_to_output_dir(content_path: &Path, built_filename: &str, output_dir: OutputDir) -> Option<PathBuf> {
     Some(
         output_dir
             .to_path()
-            .join(content_path.strip_prefix(content_dir()).ok()?),
+            .join(content_path.strip_prefix(content_dir()).ok()?)
+            .with_file_name(built_filename),
     )
 }
+
+//fn convert_cache_to_build_dir(cache_path: &Path) -> Option<PathBuf> {
+//    Some(build_dir().join(cache_path.strip_prefix(cache_dir()).ok()?))
+//}
 
 fn current_dir() -> String {
     std::env::var("CARGO_MANIFEST_DIR").unwrap()
 }
 
-fn join(a: &str, b: &str) -> String {
+fn str_path_join(a: &str, b: &str) -> String {
     // Given both a and b are valid strings, this should never fail.
     Path::new(a).join(b).into_os_string().into_string().unwrap()
+}
+
+fn str_with_extension(path: &str, extension: &str) -> String {
+    Path::new(path)
+        .with_extension(extension)
+        .into_os_string()
+        .into_string()
+        .unwrap()
 }
 
 fn full_path(path: &Path) -> PathBuf {

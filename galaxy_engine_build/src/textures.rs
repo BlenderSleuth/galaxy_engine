@@ -4,13 +4,12 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
-use galaxy_engine_utils::config::load_config;
+use galaxy_engine_config::config::load_config;
 use glob::glob;
 use image::DynamicImage;
 use serde::Deserialize;
-use sha3::Digest;
 
-use crate::{current_dir, rerun_if_changed, OutputDir, CONTENT_DIR};
+use crate::{current_dir, print_warning, rerun_if_changed, OutputDir, CONTENT_DIR};
 
 #[derive(bincode::Encode, Deserialize, Debug, Copy, Clone)]
 enum TextureComponents {
@@ -44,23 +43,27 @@ struct Texture<'a> {
     mipmap: bool,
 }
 
-fn bincode_hash<E: bincode::Encode, D: Digest>(data: &E, hasher: &mut D) {
-    let bytes = bincode::encode_to_vec(data, bincode::config::standard()).expect("Failed to encode texture config");
-    hasher.update(&bytes);
-}
-
 impl<'a> Texture<'a> {
     fn build(&self, config_path: &Path, filename: &str, debug: bool) {
         rerun_if_changed(config_path);
 
+        // Set up input and output file.
+        let built_filename = crate::str_with_extension(filename, "ktx2");
+        let mut input_texture_path = config_path.with_file_name("");
+        input_texture_path.push(self.path);
+        let content_texture_path = input_texture_path.clone();
+        rerun_if_changed(&input_texture_path);
+
+        // Only build the texture if it doesn't already exist in the cache.
+        if crate::cache::exists_in_cache(self, &content_texture_path, &built_filename, None) {
+            crate::cache::copy_from_cache_to_build(&content_texture_path, &built_filename);
+            return;
+        }
+        print_warning!("Building texture: {}", filename);
+
         // Run ktx create. https://github.khronos.org/KTX-Software/ktxtools/ktx_create.html.
         let mut command = Command::new("ktx");
         command.arg("create").current_dir(current_dir());
-
-        // Set up input and output file.
-        let mut texture_asset_path = config_path.with_file_name("");
-        texture_asset_path.push(self.path);
-        rerun_if_changed(&texture_asset_path);
 
         match self.ty {
             TextureType::Colour(dimensions) => {
@@ -90,45 +93,37 @@ impl<'a> Texture<'a> {
             }
             TextureType::NormalFromBump => {
                 // Load the bump texture.
-                let bump_texture = image::open(&texture_asset_path)
+                let bump_texture = image::open(&input_texture_path)
                     .expect("Failed to open bump texture")
                     .into_rgb8();
 
-                // File paths.
-                let cached_normal_path = crate::convert_content_to_output_dir(&texture_asset_path, OutputDir::Cache)
-                    .unwrap()
-                    .with_extension("normal.png");
-                let cached_hash_path = cached_normal_path.with_extension("hash");
-                crate::create_required_folders(&cached_normal_path);
+                let built_normal_filename = crate::str_with_extension(filename, "normal.png");
 
-                // If the normal map already exists, check if it's up to date.
-                let mut hasher = sha3::Sha3_256::new();
-                hasher.update(filename.as_bytes());
-                hasher.update(bump_texture.as_raw());
-                bincode_hash(self, &mut hasher);
-                let hash = hasher.finalize();
-                let hash_str = format!("{hash:x}");
-                if std::fs::exists(&cached_normal_path).unwrap() {
-                    // Check the hash of the bump texture to ensure the normal map is only rebuilt when the bump texture changes.
-                    if let Ok(hash_file) = std::fs::read_to_string(&cached_hash_path) {
-                        if hash_file == hash_str {
-                            // Normal map is up to date.
-                            return;
-                        }
-                    }
+                let cached_normal_path = crate::convert_content_to_output_dir(
+                    &content_texture_path,
+                    &built_normal_filename,
+                    OutputDir::Cache,
+                )
+                .unwrap();
+
+                if !crate::cache::exists_in_cache(
+                    self,
+                    &content_texture_path,
+                    &built_normal_filename,
+                    Some(bump_texture.as_raw()),
+                ) {
+                    // Generate the normal texture.
+                    let normal_texture =
+                        normal_heights::map_normals_with_strength(&DynamicImage::ImageRgb8(bump_texture), 1.0);
+
+                    // Save the normal texture to disk.
+                    crate::create_required_folders(&cached_normal_path);
+                    normal_texture
+                        .save(&cached_normal_path)
+                        .expect("Failed to save normal texture to disk");
                 }
-                // Write out the hash.
-                std::fs::write(&cached_hash_path, hash_str).expect("Failed to write new hash to disk");
 
-                let normal_texture =
-                    normal_heights::map_normals_with_strength(&DynamicImage::ImageRgb8(bump_texture), 1.0);
-
-                // Save the normal texture to disk.
-                normal_texture
-                    .save(&cached_normal_path)
-                    .expect("Failed to save normal texture to disk");
-
-                texture_asset_path = cached_normal_path;
+                input_texture_path = cached_normal_path;
                 command
                     .args(["--assign-oetf", "linear"])
                     .args(["--format", "R8G8B8_UNORM"])
@@ -159,20 +154,22 @@ impl<'a> Texture<'a> {
         }
 
         // Create output paths.
-        let mut output_file_path = crate::convert_content_to_output_dir(config_path, OutputDir::Build).unwrap();
-        output_file_path.set_file_name(filename);
-        output_file_path.set_extension("ktx2");
+        let output_file_path =
+            crate::convert_content_to_output_dir(config_path, &built_filename, OutputDir::Cache).unwrap();
         crate::create_required_folders(&output_file_path);
 
-        command.arg(texture_asset_path).arg(output_file_path);
+        command.arg(&input_texture_path).arg(&output_file_path);
 
         crate::handle_command_result(command.output(), "Texture build failed", "ktx");
+
+        // Move the texture from the cache to the build folder.
+        crate::cache::copy_from_cache_to_build(&content_texture_path, &built_filename);
     }
 }
 
 pub fn build_textures(glob_texture_paths: &[&str], debug: bool) {
     for glob_path in glob_texture_paths {
-        for path in glob(&crate::join(CONTENT_DIR, glob_path)).expect("Failed to read texture glob pattern") {
+        for path in glob(&crate::str_path_join(CONTENT_DIR, glob_path)).expect("Failed to read texture glob pattern") {
             let config_path = path.unwrap();
             rerun_if_changed(&config_path);
 

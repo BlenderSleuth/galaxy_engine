@@ -1,5 +1,5 @@
 [package]
-name = "galaxy_engine_utils"
+name = "galaxy_engine_config"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

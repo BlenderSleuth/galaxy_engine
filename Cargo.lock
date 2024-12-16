@@ -747,7 +747,7 @@ dependencies = [
  "const_format",
  "enum_delegate",
  "galaxy_engine_build",
- "galaxy_engine_utils",
+ "galaxy_engine_config",
  "glob",
  "gpu-allocator",
  "indexmap",
@@ -775,7 +775,8 @@ name = "galaxy_engine_build"
 version = "0.1.0"
 dependencies = [
  "bincode",
- "galaxy_engine_utils",
+ "const_format",
+ "galaxy_engine_config",
  "glob",
  "image",
  "normal-heights",
@@ -784,7 +785,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "galaxy_engine_utils"
+name = "galaxy_engine_config"
 version = "0.1.0"
 dependencies = [
  "ron",

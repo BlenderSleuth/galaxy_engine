@@ -35,8 +35,16 @@ impl ShaderStages {
         }
 
         // Stage / output path pairs. If adding other stages, make a macro.
-        let mut output_file_path = convert_content_to_output_dir(input_file_path, OutputDir::Build).unwrap();
-        output_file_path.set_extension("spv");
+        let output_filename = input_file_path
+            .with_extension("spv")
+            .file_name()
+            .unwrap()
+            .to_os_string()
+            .into_string()
+            .unwrap();
+        let output_file_path =
+            convert_content_to_output_dir(input_file_path, &output_filename, OutputDir::Build).unwrap();
+        //output_file_path.set_extension("spv");
 
         crate::create_required_folders(&output_file_path);
         //let vert_output_path = input_file_path.with_extension("vert.spv");
@@ -95,7 +103,7 @@ impl ShaderStages {
 // Paths are relative to CARGO_MANIFEST_DIR.
 pub fn compile_shaders(glob_shader_paths: &[&str], debug: bool) {
     for glob_path in glob_shader_paths {
-        for path in glob(&crate::join(CONTENT_DIR, glob_path)).expect("Failed to read shader glob pattern.") {
+        for path in glob(&crate::str_path_join(CONTENT_DIR, glob_path)).expect("Failed to read shader glob pattern.") {
             let shader_path = path.unwrap();
             let shader_source = std::fs::read_to_string(&shader_path).unwrap();
             ShaderStages::from_source(&shader_source).compile(&shader_path, debug);
