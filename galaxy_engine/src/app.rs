@@ -11,7 +11,7 @@ use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, DeviceId, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
-use winit::window::{CursorGrabMode, Window, WindowId};
+use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use crate::engine::GalaxyEngine;
 use crate::game::Game;
@@ -161,14 +161,35 @@ impl ApplicationHandler for GalaxyApp {
                     engine.notify_keyboard_input(&event);
                 }
 
-                match event.logical_key {
-                    Key::Named(key) => match key {
+                if let Key::Named(key) = event.logical_key {
+                    match key {
                         NamedKey::Escape => {
                             event_loop.exit();
                         }
+                        NamedKey::F11 => {
+                            if event.state.is_pressed() {
+                                if let Some(window) = self.window.as_ref() {
+                                    // TODO: Set up fullscreen options for the user, and prefer borderless on macOS.
+                                    if window.fullscreen().is_none() {
+                                        let monitor = window.current_monitor().unwrap();
+                                        if let Some(video_mode) = monitor.video_modes().max_by(|a, b| {
+                                            a.size()
+                                                .cmp(&b.size())
+                                                .then(a.refresh_rate_millihertz().cmp(&b.refresh_rate_millihertz()))
+                                        }) {
+                                            log::info!("Fullscreen video mode: {:?}", video_mode);
+                                            window.set_fullscreen(Some(Fullscreen::Exclusive(video_mode)));
+                                        } else {
+                                            log::warn!("No fullscreen video modes found.");
+                                        }
+                                    } else {
+                                        window.set_fullscreen(None);
+                                    }
+                                }
+                            }
+                        }
                         _ => {}
-                    },
-                    _ => {}
+                    }
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -194,6 +215,11 @@ impl ApplicationHandler for GalaxyApp {
             DeviceEvent::MouseMotion { delta } => {
                 if let Some(engine) = self.engine.as_mut() {
                     engine.notify_mouse_motion(delta.0 as f32, delta.1 as f32);
+                }
+            }
+            DeviceEvent::MouseWheel { delta } => {
+                if let Some(engine) = self.engine.as_mut() {
+                    engine.notify_mouse_wheel(delta);
                 }
             }
             _ => {}

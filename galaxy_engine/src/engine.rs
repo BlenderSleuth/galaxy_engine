@@ -12,7 +12,7 @@ use ash::vk;
 use const_format::concatcp;
 use parking_lot::{MappedRwLockReadGuard, RwLockReadGuard};
 use raw_window_handle::{DisplayHandle, WindowHandle};
-use winit::event::{ElementState, KeyEvent, MouseButton};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta};
 use winit::keyboard::{Key, SmolStr};
 
 use crate::app::AppInfo;
@@ -475,6 +475,9 @@ impl GalaxyEngine {
         }
         self.window_size = window_size;
         self.window_resized = true;
+        if let Some(level) = self.level.lock().unwrap().as_mut() {
+            level.notify_window_resize(width, height)
+        }
     }
 
     pub(crate) fn notify_keyboard_input(&mut self, event: &KeyEvent) {
@@ -488,6 +491,8 @@ impl GalaxyEngine {
     pub(crate) fn notify_mouse_motion(&mut self, x: f32, y: f32) {
         self.accumulated_mouse_delta += Vec2::new(x, y);
     }
+
+    pub(crate) fn notify_mouse_wheel(&mut self, _delta: MouseScrollDelta) {}
 }
 
 impl Drop for GalaxyEngine {

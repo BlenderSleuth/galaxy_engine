@@ -556,6 +556,12 @@ impl Level {
         })
     }
 
+    pub(crate) fn notify_window_resize(&self, width: u32, height: u32) {
+        // Update camera aspect.
+        let mut camera = self.world.get::<&mut Camera>(self.camera_entity).unwrap();
+        camera.aspect = width as f32 / height as f32;
+    }
+
     pub fn get_camera(&self) -> (Ref<&Isometry3>, Ref<&Camera>) {
         let (cam_transform, cam) = self
             .world
