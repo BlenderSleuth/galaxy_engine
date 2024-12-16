@@ -43,7 +43,6 @@ impl LoadingMaterialManager {
         cmd_pool: &mut TransientPrimaryCommandPool,
         subresource_path: &SubresourcePath,
     ) -> Result<Arc<Material>, MaterialError> {
-        log::info!("Loading material: {:?}", subresource_path);
         if let Some(material) = self.materials.get(subresource_path) {
             Ok(Arc::clone(material))
         } else {

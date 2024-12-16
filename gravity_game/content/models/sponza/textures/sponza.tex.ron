@@ -1,27 +1,110 @@
 {
-    "spnza_bricks_a_diff": Texture(
+    "lion": Texture(
+        path: "lion.png",
+        type: Colour(RGB),
+    ),   
+    "background": Texture(
+        path: "background.png",
+        type: Colour(RGB),
+    ),   
+    "vase_plant": Texture(
+        path: "vase_plant.png",
+        type: Colour(RGB),
+    ),   
+    "arch_diff": Texture(
+        path: "sponza_arch_diff.png",
+        type: Colour(RGB),
+    ),   
+    "bricks_diff": Texture(
         path: "spnza_bricks_a_diff.png",
         type: Colour(RGB),
-        mipmaps: true,
     ),
-    "spnza_bricks_a_spec": Texture(
+    "bricks_spec": Texture(
         path: "spnza_bricks_a_spec.png",
         type: Linear(Greyscale),
-        mipmaps: true,
     ),
-    "spnza_bricks_a_normal": Texture(
+    "bricks_normal": Texture(
         path: "spnza_bricks_a_bump.png",
         type: NormalFromBump,
-        mipmaps: true,
     ),
-    "sponza_ceiling_a_diff": Texture(
+    "ceiling_diff": Texture(
         path: "sponza_ceiling_a_diff.png",
         type: Colour(RGB),
-        mipmaps: true,
     ),   
-    "sponza_ceiling_a_spec": Texture(
+    "ceiling_spec": Texture(
         path: "sponza_ceiling_a_spec.png",
         type: Linear(RGB),
-        mipmaps: true,
+    ),   
+    "chain_diff": Texture(
+        path: "chain_texture.png",
+        type: Colour(RGB),
+    ),   
+    "column_a_diff": Texture(
+        path: "sponza_column_a_diff.png",
+        type: Colour(RGB),
+    ),   
+    "column_b_diff": Texture(
+        path: "sponza_column_b_diff.png",
+        type: Colour(RGB),
+    ),   
+    "column_c_diff": Texture(
+        path: "sponza_column_c_diff.png",
+        type: Colour(RGB),
+    ),   
+    "details_diff": Texture(
+        path: "sponza_details_diff.png",
+        type: Colour(RGB),
+    ),   
+    "fabric_red_diff": Texture(
+        path: "sponza_fabric_diff.png",
+        type: Colour(RGB),
+    ),   
+    "curtain_red_diff": Texture(
+        path: "sponza_curtain_diff.png",
+        type: Colour(RGB),
+    ),   
+    "fabric_green_diff": Texture(
+        path: "sponza_fabric_green_diff.png",
+        type: Colour(RGB),
+    ),   
+    "curtain_green_diff": Texture(
+        path: "sponza_curtain_green_diff.png",
+        type: Colour(RGB),
+    ),   
+    "fabric_blue_diff": Texture(
+        path: "sponza_fabric_blue_diff.png",
+        type: Colour(RGB),
+    ),   
+    "curtain_blue_diff": Texture(
+        path: "sponza_curtain_blue_diff.png",
+        type: Colour(RGB),
+    ),   
+    "flagpole_diff": Texture(
+        path: "sponza_flagpole_diff.png",
+        type: Colour(RGB),
+    ),
+    "floor_diff": Texture(
+        path: "sponza_floor_a_diff.png",
+        type: Colour(RGB),
+    ),
+    "leaf_diff": Texture(
+        path: "sponza_thorn_diff.png",
+        type: Colour(RGB),
+    ),   
+    "roof_diff": Texture(
+        path: "sponza_roof_diff.png",
+        type: Colour(RGB),
+    ),   
+    "vase_diff": Texture(
+        path: "vase_dif.png",
+        type: Colour(RGB),
+    ),   
+    "vase_hanging_diff": Texture(
+        path: "vase_hanging.png",
+        type: Colour(RGB),
+    ),   
+    "vase_round_diff": Texture(
+        path: "vase_round.png",
+        type: Colour(RGB),
     ),   
 }

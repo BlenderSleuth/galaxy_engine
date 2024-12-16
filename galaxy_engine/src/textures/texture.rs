@@ -88,7 +88,6 @@ impl Texture {
                 "No basic data format descriptor found for texture: {name}"
             )));
         }
-        log::info!("Loaded texture: {name}.");
 
         // Uncompress mip levels.
         let mut mip_ranges = Vec::with_capacity(image.levels().len());
@@ -110,7 +109,12 @@ impl Texture {
             .map(|(i, range)| {
                 let level_width = header.pixel_width >> i;
                 let level_height = header.pixel_height >> i;
-                assert!(level_width > 0 && level_height > 0);
+
+                // Ignore zero size mip levels.
+                if level_width == 0 || level_height == 0 {
+                    return Ok(Vec::new());
+                }
+
                 let num_blocks_x = (level_width + 3) / 4;
                 let num_blocks_y = (level_height + 3) / 4;
 
@@ -136,7 +140,17 @@ impl Texture {
             })
             .collect::<Result<Vec<_>, TranscodeError>>()
             .map_err(TextureError::TranscodeError)?;
-        let mip_levels = mip_level_data.iter().map(|data| data.as_slice()).collect::<Vec<_>>();
+        let mip_levels = mip_level_data
+            .iter()
+            .filter_map(|data| {
+                let data = data.as_slice();
+                if data.is_empty() {
+                    None
+                } else {
+                    Some(data)
+                }
+            })
+            .collect::<Vec<_>>();
 
         let extent = vk::Extent2D {
             width: header.pixel_width,
