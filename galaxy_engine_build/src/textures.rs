@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
-use galaxy_engine_config::config::load_config;
+use galaxy_engine_config::load_ron_config;
 use glob::glob;
 use image::DynamicImage;
 use serde::Deserialize;
@@ -175,7 +175,7 @@ pub fn build_textures(glob_texture_paths: &[&str]) {
             let texture_config_source =
                 std::fs::read_to_string(&config_path).expect("Failed to read texture config file.");
             let configs: HashMap<&str, Texture> =
-                load_config(&texture_config_source).expect("Failed to load texture config.");
+                load_ron_config(&texture_config_source).expect("Failed to load texture config.");
             for (filename, config) in configs {
                 config.build(&config_path, filename);
             }

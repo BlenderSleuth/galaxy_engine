@@ -788,6 +788,7 @@ dependencies = [
 name = "galaxy_engine_config"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "ron",
  "serde",
 ]

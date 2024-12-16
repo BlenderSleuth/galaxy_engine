@@ -396,7 +396,7 @@ impl Level {
 
         // Parse level config.
         let config_str = std::fs::read_to_string(level.config_path.full_path::<resource_type::Level>(engine))?;
-        let config = crate::utils::load_config::<LevelConfig<T>>(&config_str)?;
+        let config = crate::utils::load_ron_config::<LevelConfig<T>>(&config_str)?;
 
         // Load level.
         for entity_config in config.entities {

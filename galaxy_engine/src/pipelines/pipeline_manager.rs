@@ -229,7 +229,7 @@ impl PipelineManager {
         let (graphics_configs, compute_configs): (Vec<_>, Vec<_>) = config_strings
             .iter()
             .filter_map(
-                |(id, config_str)| match crate::utils::load_config::<PipelineConfig>(config_str) {
+                |(id, config_str)| match crate::utils::load_ron_config::<PipelineConfig>(config_str) {
                     Ok(config) => Some(config.with_id(id)),
                     Err(err) => {
                         log::error!("Failed to parse pipeline config for pipeline {id} ({err})");

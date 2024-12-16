@@ -8,11 +8,11 @@ default = []
 packaged = []
 
 [dependencies]
-galaxy_engine_config = { path = "../galaxy_engine_config" }
+galaxy_engine_config = { path = "../galaxy_engine_config", features = ["ron"] }
 glob.workspace = true
 serde = { workspace = true, features = ["derive"] }
 const_format = { workspace = true, features = ["rust_1_64"] }
 image = "0.23.5"
 normal-heights = "0.1.2"
 sha3 = "0.10.0"
-bincode = "2.0.0-rc.3"
+bincode.workspace = true

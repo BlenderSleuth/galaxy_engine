@@ -9,7 +9,7 @@ debug_info = ["ash/debug"]
 packaged = ["galaxy_engine_build/packaged"]
 
 [dependencies]
-galaxy_engine_config = { path = "../galaxy_engine_config" }
+galaxy_engine_config = { path = "../galaxy_engine_config", features = ["ron"] }
 ash = { workspace = true, default-features = false, features = ["loaded"] }
 ash-window.workspace = true
 raw-window-handle.workspace = true
