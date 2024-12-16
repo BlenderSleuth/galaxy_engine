@@ -1,0 +1,3 @@
+[lfs]
+	locksverify = true
+	url = https://dev.azure.com/bensutherland/ProjectKelpie/_git/galaxy_engine.git/info/lfs

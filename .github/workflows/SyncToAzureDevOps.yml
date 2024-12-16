@@ -1,0 +1,15 @@
+name: Sync to Azure DevOps
+
+on: 
+  - push
+  - workflow_dispatch
+        
+jobs:
+  checkout-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Required for push to succeed
+      - name: Push to Azure DevOps
+        run: git push https://blender.sleuth:${{ secrets.AZURE_DEVOPS_PWD }}@dev.azure.com/bensutherland/ProjectKelpie/_git/galaxy_engine
