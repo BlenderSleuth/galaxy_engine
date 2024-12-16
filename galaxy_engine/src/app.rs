@@ -27,11 +27,11 @@ bitflags! {
 #[macro_export]
 macro_rules! game_dir {
     () => {
-        if cfg!(feature = "packaged") {
-            std::path::PathBuf::new()
-        } else {
-            std::path::PathBuf::from(env!("CARGO_PKG_NAME"))
-        }
+        //if cfg!(feature = "packaged") {
+        //    std::path::PathBuf::new()
+        //} else {
+        std::path::PathBuf::from(env!("CARGO_PKG_NAME"))
+        //}
     };
 }
 

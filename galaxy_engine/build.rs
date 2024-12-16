@@ -2,5 +2,5 @@
 
 fn main() {
     // Compile shaders.
-    galaxy_engine_build::compile_shaders(&["shaders/**/*.slang"], cfg!(feature = "debug_info"));
+    galaxy_engine_build::compile_shaders(&["shaders/**/*.slang"]);
 }

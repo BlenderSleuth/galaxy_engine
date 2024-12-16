@@ -6,7 +6,7 @@ edition.workspace = true
 [features]
 default = []
 debug_info = ["galaxy_engine/debug_info"]
-packaged = ["galaxy_engine/packaged"]
+packaged = ["galaxy_engine/packaged", "galaxy_engine_build/packaged"]
 
 [dependencies]
 galaxy_engine = { path = "../galaxy_engine" }

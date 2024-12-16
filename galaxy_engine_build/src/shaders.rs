@@ -26,7 +26,7 @@ impl ShaderStages {
         self.vertex || self.fragment || self.compute
     }
 
-    fn compile(&self, input_file_path: &Path, debug: bool) {
+    fn compile(&self, input_file_path: &Path) {
         // Rerun if any shader file is changed, even if it's just a module.
         rerun_if_changed(input_file_path);
 
@@ -86,13 +86,13 @@ impl ShaderStages {
             .args(["-I", "content/shaders"])
             .args(["-o", output_file_path.to_str().unwrap()]);
 
-        if debug {
+        if cfg!(feature = "packaged") {
+            command.arg("-g0").arg("-O2");
+        } else {
             command
                 .arg("-g2")
                 .arg("-O0")
                 .args(["-capability", "SPV_KHR_non_semantic_info"]);
-        } else {
-            command.arg("-g0").arg("-O2");
         }
 
         crate::handle_command_result(command.output(), "Shader compile failed", "slangc");
@@ -101,12 +101,12 @@ impl ShaderStages {
 
 // Compile all shaders in the given glob pattern. Relies on slangc being installed.
 // Paths are relative to CARGO_MANIFEST_DIR.
-pub fn compile_shaders(glob_shader_paths: &[&str], debug: bool) {
+pub fn compile_shaders(glob_shader_paths: &[&str]) {
     for glob_path in glob_shader_paths {
         for path in glob(&crate::str_path_join(CONTENT_DIR, glob_path)).expect("Failed to read shader glob pattern.") {
             let shader_path = path.unwrap();
             let shader_source = std::fs::read_to_string(&shader_path).unwrap();
-            ShaderStages::from_source(&shader_source).compile(&shader_path, debug);
+            ShaderStages::from_source(&shader_source).compile(&shader_path);
         }
     }
 }

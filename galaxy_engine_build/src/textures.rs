@@ -9,7 +9,7 @@ use glob::glob;
 use image::DynamicImage;
 use serde::Deserialize;
 
-use crate::{current_dir, print_warning, rerun_if_changed, OutputDir, CONTENT_DIR};
+use crate::{current_dir, rerun_if_changed, OutputDir, CONTENT_DIR};
 
 #[derive(bincode::Encode, Deserialize, Debug, Copy, Clone)]
 enum TextureComponents {
@@ -44,7 +44,7 @@ struct Texture<'a> {
 }
 
 impl<'a> Texture<'a> {
-    fn build(&self, config_path: &Path, filename: &str, debug: bool) {
+    fn build(&self, config_path: &Path, filename: &str) {
         rerun_if_changed(config_path);
 
         // Set up input and output file.
@@ -59,7 +59,6 @@ impl<'a> Texture<'a> {
             crate::cache::copy_from_cache_to_build(&content_texture_path, &built_filename);
             return;
         }
-        print_warning!("Building texture: {}", filename);
 
         // Run ktx create. https://github.khronos.org/KTX-Software/ktxtools/ktx_create.html.
         let mut command = Command::new("ktx");
@@ -141,10 +140,10 @@ impl<'a> Texture<'a> {
         // Set up UASTC compression.
         command.args(["--encode", "uastc", "--uastc-rdo"]);
 
-        if debug {
-            command.args(["--uastc-quality", "2"]).args(["--zstd", "10"]);
-        } else {
+        if cfg!(feature = "packaged") {
             command.args(["--uastc-quality", "5"]).args(["--zstd", "14"]);
+        } else {
+            command.args(["--uastc-quality", "2"]).args(["--zstd", "10"]);
         }
 
         if self.mipmap {
@@ -167,7 +166,7 @@ impl<'a> Texture<'a> {
     }
 }
 
-pub fn build_textures(glob_texture_paths: &[&str], debug: bool) {
+pub fn build_textures(glob_texture_paths: &[&str]) {
     for glob_path in glob_texture_paths {
         for path in glob(&crate::str_path_join(CONTENT_DIR, glob_path)).expect("Failed to read texture glob pattern") {
             let config_path = path.unwrap();
@@ -178,7 +177,7 @@ pub fn build_textures(glob_texture_paths: &[&str], debug: bool) {
             let configs: HashMap<&str, Texture> =
                 load_config(&texture_config_source).expect("Failed to load texture config.");
             for (filename, config) in configs {
-                config.build(&config_path, filename, debug);
+                config.build(&config_path, filename);
             }
         }
     }
