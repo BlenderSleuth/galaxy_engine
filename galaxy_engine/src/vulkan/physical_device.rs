@@ -9,11 +9,51 @@ use ash::vk;
 use crate::vulkan;
 use crate::vulkan::surface::Surface;
 
-// Memory type that can be used for buffers that are written to every frame (all of Host Visible, Host Coherent and Device Local).
 #[derive(Copy, Clone, Debug)]
-pub struct VolatileMemoryType {
+pub struct MemoryType {
     pub type_bits: NonZeroU32,
     pub size: vk::DeviceSize,
+}
+
+impl MemoryType {
+    fn get_max_size_memory_with_flags(
+        mem_properties: &vk::PhysicalDeviceMemoryProperties,
+        with_memory_flags: vk::MemoryPropertyFlags,
+        without_memory_flags: vk::MemoryPropertyFlags,
+    ) -> Result<MemoryType, PhysicalDeviceIncompatibility> {
+        let mut memory_types = mem_properties
+            .memory_types
+            .iter()
+            .take(mem_properties.memory_type_count as usize)
+            .enumerate()
+            .filter_map(|(idx, mem_type)| {
+                if mem_type.property_flags.contains(with_memory_flags)
+                    && !mem_type.property_flags.intersects(without_memory_flags)
+                {
+                    Some(MemoryType {
+                        type_bits: NonZeroU32::new(1 << idx as u32).unwrap(),
+                        size: mem_properties.memory_heaps[mem_type.heap_index as usize].size,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        // Combine type bits of memory types with the maximum size.
+        let memory_type_with_max_size = memory_types
+            .iter()
+            .max_by(|a, b| a.size.cmp(&b.size))
+            .copied()
+            .ok_or(PhysicalDeviceIncompatibility::NoVolatileMemoryAvailable)?;
+        memory_types.retain(|mem| mem.size == memory_type_with_max_size.size);
+        Ok(memory_types
+            .iter()
+            .fold(memory_type_with_max_size, |acc, mem| MemoryType {
+                type_bits: NonZeroU32::new(acc.type_bits.get() | mem.type_bits.get()).unwrap(),
+                size: acc.size,
+            }))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -33,7 +73,7 @@ pub enum PhysicalDeviceIncompatibility {
     #[error("{0} not supported")]
     FeatureNotSupported(&'static str),
     #[error("Uniform memory not available")]
-    NoUniformMemoryAvailable,
+    NoVolatileMemoryAvailable,
 }
 
 pub struct PhysicalDeviceProperties {
@@ -78,7 +118,9 @@ pub struct PhysicalDevice {
     pub swapchain_image_count: u32,
     pub supported_msaa_samples: vk::SampleCountFlags,
     pub max_msaa_samples: vk::SampleCountFlags,
-    pub volatile_memory_type: VolatileMemoryType, // TODO: Find the non-volatile CPU memory type for staging buffers.
+    // Memory type that can be used for buffers that are written to every frame (all of Host Visible, Host Coherent and Device Local).
+    pub volatile_memory_type: MemoryType,
+    pub staging_memory_type: MemoryType,
     pub mem_properties: vk::PhysicalDeviceMemoryProperties,
     pub enabled_extensions: Vec<&'static CStr>,
     pub properties: PhysicalDeviceProperties,
@@ -332,41 +374,22 @@ impl PhysicalDevice {
 
         let mem_properties = unsafe { instance.get_physical_device_memory_properties(handle) };
 
-        // Choose the memory type to use for uniforms updated every frame.
+        // Choose the memory type to use for buffers updated every frame.
         //TODO: handle when there are no volatile memory types available.
-        let mut volatile_memory_types: Vec<_> = mem_properties
-            .memory_types
-            .iter()
-            .take(mem_properties.memory_type_count as usize)
-            .enumerate()
-            .filter_map(|(idx, mem_type)| {
-                if mem_type.property_flags.contains(
-                    vk::MemoryPropertyFlags::HOST_VISIBLE
-                        | vk::MemoryPropertyFlags::HOST_COHERENT
-                        | vk::MemoryPropertyFlags::DEVICE_LOCAL,
-                ) {
-                    Some(VolatileMemoryType {
-                        type_bits: NonZeroU32::new(1 << idx as u32).unwrap(),
-                        size: mem_properties.memory_heaps[mem_type.heap_index as usize].size,
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let volatile_memory_type_with_max_size = volatile_memory_types
-            .iter()
-            .max_by(|a, b| a.size.cmp(&b.size))
-            .copied()
-            .ok_or(PhysicalDeviceIncompatibility::NoUniformMemoryAvailable)?;
-        volatile_memory_types.retain(|mem| mem.size == volatile_memory_type_with_max_size.size);
-        // Combine type bits.
-        let volatile_memory_type = volatile_memory_types
-            .iter()
-            .fold(volatile_memory_type_with_max_size, |acc, mem| VolatileMemoryType {
-                type_bits: NonZeroU32::new(acc.type_bits.get() | mem.type_bits.get()).unwrap(),
-                size: acc.size,
-            });
+        let volatile_memory_type = MemoryType::get_max_size_memory_with_flags(
+            &mem_properties,
+            vk::MemoryPropertyFlags::HOST_VISIBLE
+                | vk::MemoryPropertyFlags::HOST_COHERENT
+                | vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            vk::MemoryPropertyFlags::empty(),
+        )?;
+
+        let staging_memory_type = MemoryType::get_max_size_memory_with_flags(
+            &mem_properties,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )
+        .unwrap_or(volatile_memory_type); // If there is no staging memory type, use the volatile memory type (likely an integrated chip).
 
         Ok(PhysicalDevice {
             handle,
@@ -381,6 +404,7 @@ impl PhysicalDevice {
             supported_msaa_samples,
             max_msaa_samples,
             volatile_memory_type,
+            staging_memory_type,
             mem_properties,
             enabled_extensions,
             properties: physical_device_properties,

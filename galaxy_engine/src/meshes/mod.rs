@@ -18,7 +18,7 @@ use crate::engine::GalaxyEngine;
 use crate::prelude::*;
 use crate::resource_paths::{resource_type, ResourcePath};
 use crate::vertex_input::PositionTexCoordVertex;
-use crate::vulkan::buffer::{Buffer, CpuToGpu, GpuOnly};
+use crate::vulkan::buffer::{Buffer, GpuOnly, Staging};
 use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingState, TransientPrimaryCommandPool};
 use crate::vulkan::debug;
 use crate::vulkan::device::Device;
@@ -76,15 +76,13 @@ impl<V: bytemuck::Pod> MeshBuffer<V> {
                 //| vk::BufferUsageFlags::VERTEX_BUFFER
                 //| vk::BufferUsageFlags::INDEX_BUFFER 
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            None,
         )?;
 
-        let mut staging_buffer = Buffer::<CpuToGpu>::new(
+        let mut staging_buffer = Buffer::<Staging>::new(
             debug::debug_only_name!("{name} meshes staging buffer"),
             device,
             buffer_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
-            None,
         )?;
         staging_buffer.copy_slice_into_buffer(vertices, 0)?;
         staging_buffer.copy_slice_into_buffer(indices, indices_offset)?;

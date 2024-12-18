@@ -172,7 +172,6 @@ impl MeshManager {
             &engine.device,
             vertices_size,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::VERTEX_BUFFER,
-            None,
         )?;
         let vertex_megabuffer_info = vertex_megabuffer.descriptor_buffer_info();
 
@@ -221,7 +220,6 @@ impl MeshManager {
             &engine.device,
             indices_size,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER,
-            None,
         )?;
         let index_megabuffer_info = index_megabuffer.descriptor_buffer_info();
 

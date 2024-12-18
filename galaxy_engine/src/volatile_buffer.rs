@@ -3,7 +3,7 @@
 use ash::vk;
 
 use crate::engine::GalaxyEngine;
-use crate::vulkan::buffer::{Buffer, CpuToGpu};
+use crate::vulkan::buffer::{Buffer, HostVisibleDeviceLocal};
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::MemResult;
 
@@ -58,7 +58,7 @@ impl VolatileBufferType {
 // A multi-buffered uniform/storage buffer that can be updated every frame.
 // Used for data that changes every frame.
 pub struct VolatileBuffer<T: bytemuck::Pod, const N: usize = { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }> {
-    buffer: Buffer<CpuToGpu>,
+    buffer: Buffer<HostVisibleDeviceLocal>,
     size: usize,
     len: usize,
     marker: std::marker::PhantomData<T>,
@@ -78,13 +78,7 @@ impl<T: bytemuck::Pod, const N: usize> VolatileBuffer<T, N> {
             .pad_to_align()
             .size();
 
-        let mut buffer = Buffer::new(
-            name,
-            device,
-            (size * N) as vk::DeviceSize,
-            buffer_type.usage(),
-            Some(device.physical_device().volatile_memory_type.type_bits),
-        )?;
+        let mut buffer = Buffer::new(name, device, (size * N) as vk::DeviceSize, buffer_type.usage())?;
 
         // Zero-init memory (which allows it to be soundly casted to a Pod type).
         buffer.zero_memory();

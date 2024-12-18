@@ -22,6 +22,9 @@ pub trait MemLocation {
     fn extra_usage_flags() -> vk::BufferUsageFlags {
         vk::BufferUsageFlags::empty()
     }
+    fn memory_type_override(_device: &Device) -> Option<NonZeroU32> {
+        None
+    }
 }
 
 pub struct GpuOnly {
@@ -42,15 +45,35 @@ impl MemLocation for GpuOnly {
     }
 }
 
-pub struct CpuToGpu;
-impl MemLocation for CpuToGpu {
+pub trait HostVisible: MemLocation {}
+
+pub struct HostVisibleDeviceLocal;
+impl MemLocation for HostVisibleDeviceLocal {
     fn new(_loader: &ash::Device, _handle: vk::Buffer) -> Self {
         Self
     }
     fn location() -> MemoryLocation {
         MemoryLocation::CpuToGpu
     }
+    fn memory_type_override(device: &Device) -> Option<NonZeroU32> {
+        Some(device.physical_device().volatile_memory_type.type_bits)
+    }
 }
+impl HostVisible for HostVisibleDeviceLocal {}
+
+pub struct Staging;
+impl MemLocation for Staging {
+    fn new(_loader: &ash::Device, _handle: vk::Buffer) -> Self {
+        Self
+    }
+    fn location() -> MemoryLocation {
+        MemoryLocation::CpuToGpu
+    }
+    fn memory_type_override(device: &Device) -> Option<NonZeroU32> {
+        Some(device.physical_device().staging_memory_type.type_bits)
+    }
+}
+impl HostVisible for Staging {}
 
 pub struct GpuToCpu;
 impl MemLocation for GpuToCpu {
@@ -72,19 +95,8 @@ pub struct Buffer<L: MemLocation> {
 }
 
 impl<L: MemLocation> Buffer<L> {
-    pub fn new_for_type<T: bytemuck::Pod>(
-        name: &str,
-        device: &Device,
-        usage: vk::BufferUsageFlags,
-        mem_type_override: Option<NonZeroU32>,
-    ) -> MemResult<Self> {
-        Self::new(
-            name,
-            device,
-            std::mem::size_of::<T>() as vk::DeviceSize,
-            usage,
-            mem_type_override,
-        )
+    pub fn new_for_type<T: bytemuck::Pod>(name: &str, device: &Device, usage: vk::BufferUsageFlags) -> MemResult<Self> {
+        Self::new(name, device, size_of::<T>() as vk::DeviceSize, usage)
     }
 
     pub fn new_for_slice<T: bytemuck::Pod>(
@@ -92,25 +104,11 @@ impl<L: MemLocation> Buffer<L> {
         device: &Device,
         slice: &[T],
         usage: vk::BufferUsageFlags,
-        mem_type_override: Option<NonZeroU32>,
     ) -> MemResult<Self> {
-        Self::new(
-            name,
-            device,
-            std::mem::size_of_val(slice) as vk::DeviceSize,
-            usage,
-            mem_type_override,
-        )
+        Self::new(name, device, size_of_val(slice) as vk::DeviceSize, usage)
     }
 
-    pub fn new(
-        name: &str,
-        device: &Device,
-        size: vk::DeviceSize,
-        usage: vk::BufferUsageFlags,
-        // TODO: Bake this into type state.
-        mem_type_override: Option<NonZeroU32>,
-    ) -> MemResult<Self> {
+    pub fn new(name: &str, device: &Device, size: vk::DeviceSize, usage: vk::BufferUsageFlags) -> MemResult<Self> {
         let buffer_info = vk::BufferCreateInfo::default()
             .size(size)
             .usage(usage | L::extra_usage_flags())
@@ -133,7 +131,7 @@ impl<L: MemLocation> Buffer<L> {
         let mut requirements = requirements.memory_requirements;
 
         // Allows using a more specific type of memory.
-        if let Some(override_memory_type_bits) = mem_type_override.map(|n| n.get()) {
+        if let Some(override_memory_type_bits) = L::memory_type_override(device).map(|n| n.get()) {
             let overlap = override_memory_type_bits & requirements.memory_type_bits;
             if overlap == 0 {
                 log::warn!("Buffer cannot use override memory type - using required memory type.")
@@ -206,19 +204,18 @@ impl<L: MemLocation> Drop for Buffer<L> {
 }
 
 impl Buffer<GpuOnly> {
-    pub fn copy_via_staging_buffer_with<Q: QueueType, F: FnOnce(&mut Buffer<CpuToGpu>) -> MemResult<()>>(
+    pub fn copy_via_staging_buffer_with<Q: QueueType, F: FnOnce(&mut Buffer<Staging>) -> MemResult<()>>(
         &mut self,
         device: &Device,
         cmd_buf: &mut RecordingCmdBuf<Q>,
         size: Option<vk::DeviceSize>,
         f: F,
-    ) -> MemResult<Buffer<CpuToGpu>> {
-        let mut staging_buffer = Buffer::<CpuToGpu>::new(
+    ) -> MemResult<Buffer<Staging>> {
+        let mut staging_buffer = Buffer::<Staging>::new(
             "Staging buffer",
             device,
             size.unwrap_or(self.size),
             vk::BufferUsageFlags::TRANSFER_SRC,
-            None,
         )?;
         f(&mut staging_buffer)?;
         staging_buffer.copy_to_buffer(cmd_buf, self, staging_buffer.size());
@@ -230,9 +227,9 @@ impl Buffer<GpuOnly> {
     }
 }
 
-impl Buffer<CpuToGpu> {
+impl<L: HostVisible> Buffer<L> {
     fn get_mapped_memory(&mut self) -> &mut impl Slab {
-        // CPU to GPU memory is always mappable.
+        // Host visible memory is always mappable.
         self.allocation.deref_mut()
     }
 

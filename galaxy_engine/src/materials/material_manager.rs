@@ -181,7 +181,6 @@ impl MaterialManager {
                         vk::BufferUsageFlags::STORAGE_BUFFER
                             | vk::BufferUsageFlags::TRANSFER_DST
                             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-                        None,
                     )?;
 
                     let mut materials_paths = resource_paths

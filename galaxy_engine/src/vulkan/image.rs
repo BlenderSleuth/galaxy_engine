@@ -9,7 +9,7 @@ use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme};
 use gpu_allocator::MemoryLocation;
 
 use crate::utils;
-use crate::vulkan::buffer::{Buffer, CpuToGpu};
+use crate::vulkan::buffer::{Buffer, Staging};
 use crate::vulkan::command_buffer::{RecordingCmdBuf, TransientPrimaryCommandPool};
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::extensions::DeviceExtensions;
@@ -194,12 +194,11 @@ impl Image {
         };
         let mut image = Image::new(name, device, &image_info, subresource)?;
 
-        let mut image_buffer = Buffer::<CpuToGpu>::new(
+        let mut image_buffer = Buffer::<Staging>::new(
             debug::debug_only_name!("{name} staging buffer"),
             &device,
             total_mip_size as vk::DeviceSize,
             vk::BufferUsageFlags::TRANSFER_SRC,
-            None,
         )?;
 
         // Copy mip levels into buffer.
@@ -339,7 +338,7 @@ impl Image {
     pub fn copy_buffer_to_image(
         &mut self,
         cmd_buffer: &mut RecordingCmdBuf<impl QueueType>,
-        buffer: &Buffer<CpuToGpu>,
+        buffer: &Buffer<Staging>,
         mip_level: u32,
     ) {
         let region = vk::BufferImageCopy::default()
