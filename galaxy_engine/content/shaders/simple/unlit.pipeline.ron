@@ -8,12 +8,13 @@ GraphicsPipeline(
             id: "simple/unlit",
         ),
     ),
+    //phase: Opaque,
     rasteriser: (
         multisample_enable: true,
         depth_enable: true,
     ),
     layout: (
-        push_constant: None, 
+        push_constant: DrawOffset, 
         bindings: {
             "base_colour": (
                 type: Float3, 

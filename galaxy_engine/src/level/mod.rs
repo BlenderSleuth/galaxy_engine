@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use arrayvec::ArrayVec;
 use ash::vk;
-use itertools::izip;
+use itertools::{izip, Itertools};
 use serde::{Deserialize, Serialize};
 use shipyard::{Component, EntityId, IntoIter, Ref, RefMut, View, ViewMut, World};
 
@@ -14,7 +14,7 @@ use crate::engine::GalaxyEngine;
 use crate::materials::{LoadingMaterialManager, Material, MaterialError, MaterialManager};
 use crate::meshes::mesh_manager::{LoadingMeshManager, MeshManager};
 use crate::meshes::{Mesh, MeshError};
-use crate::pipelines::PipelineManager;
+use crate::pipelines::{GraphicsPipeline, Pipeline, PipelineManager};
 use crate::prelude::*;
 use crate::resource_paths::{resource_type, ResourcePath, SubresourcePath};
 use crate::textures::TextureManager;
@@ -106,6 +106,7 @@ impl BufferIndex {
 #[derive(Component, Default)]
 pub struct TransformComponent {
     transform: Transform,
+    scene_index: Option<u32>,
 }
 
 impl ComponentConfig for Transform {
@@ -120,6 +121,7 @@ impl ComponentConfig for Transform {
             entity_id,
             TransformComponent {
                 transform: self.clone(),
+                scene_index: None,
             },
         );
         Ok(())
@@ -348,9 +350,10 @@ pub struct SceneUniformData {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
 pub struct DrawData {
+    pub material: vk::DeviceAddress,
     pub transform_index: u32,
-    pub pipeline_index: u32,
-    pub material_index: u32,
+    padding: u32,
+    //pub material_index: u32,
 }
 
 pub struct LoadingLevel {
@@ -362,6 +365,25 @@ pub struct LoadingLevel {
     pub texture_manager: TextureManager,
 }
 
+struct PipelineDrawSlice {
+    pipeline: Arc<GraphicsPipeline>,
+    offset: u32,
+    len: u32,
+}
+impl PipelineDrawSlice {
+    fn draw_offset_push_constant(&self) -> [u8; size_of::<u32>()] {
+        self.offset.to_le_bytes()
+    }
+
+    fn draw_offset(&self) -> vk::DeviceSize {
+        self.offset as vk::DeviceSize * size_of::<vk::DrawIndexedIndirectCommand>() as vk::DeviceSize
+    }
+
+    fn len(&self) -> u32 {
+        self.len
+    }
+}
+
 pub struct Level {
     pub world: World,
     pub camera_entity: EntityId,
@@ -371,9 +393,9 @@ pub struct Level {
     scene_descriptor_pool: DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     scene_uniform_buffer: VolatileBuffer<SceneUniformData>,
     scene_transforms_buffer: VolatileBuffer<Mat4>,
-    element_offsets: VolatileBuffer<u32>,
-    material_data_addresses: VolatileBuffer<vk::DeviceAddress>,
+    draw_data_buffer: VolatileBuffer<DrawData>,
     draw_indirect_buffer: VolatileBuffer<crate::pod::vk::DrawIndexedIndirectCommand>,
+    pipeline_draw_ranges: Vec<PipelineDrawSlice>,
 }
 
 impl Level {
@@ -439,7 +461,16 @@ impl Level {
         // Create scene buffers.
         let scene_uniform_buffer = VolatileBuffer::new("Scene uniform buffer", device, VolatileBufferType::Uniform)?;
 
-        let num_models = level.world.iter::<&Model>().iter().count();
+        // Count models and draw calls (one per mesh element).
+        let (num_models, num_draws) = level
+            .world
+            .iter::<&Model>()
+            .iter()
+            .fold((0, 0), |(num_models, num_elements), model| {
+                (num_models + 1, num_elements + model.mesh.num_elements() as usize)
+            });
+
+        // Transforms are per-model.
         let scene_transforms_buffer = VolatileBuffer::new_array(
             "Scene transforms buffer",
             num_models,
@@ -451,31 +482,15 @@ impl Level {
         let material_manager = MaterialManager::new(level.material_manager, engine, cmd_pool)?;
         let mesh_manager = MeshManager::new(level.mesh_manager, engine, cmd_pool)?;
 
-        let total_scene_material_refs = level
-            .world
-            .iter::<&Model>()
-            .iter()
-            .map(|model| model.materials.len())
-            .sum();
-        let element_offsets_buffer = VolatileBuffer::new_array(
-            "Element offsets buffer",
-            num_models,
-            device,
-            VolatileBufferType::Storage,
-        )?;
-        let material_buffer_addresses = VolatileBuffer::new_array(
-            "Material buffer addresses",
-            total_scene_material_refs,
-            &engine.device,
-            VolatileBufferType::Storage,
-        )?;
+        let draw_data_buffer =
+            VolatileBuffer::new_array("Draw data buffer", num_draws, device, VolatileBufferType::Storage)?;
 
         // Write to scene descriptor sets.
         let uniform_buffer_info = scene_uniform_buffer.descriptor_buffer_infos();
         let transform_buffer_info = scene_transforms_buffer.descriptor_buffer_infos();
-        let element_offset_buffer_info = element_offsets_buffer.descriptor_buffer_infos();
+        let draw_data_buffer_info = draw_data_buffer.descriptor_buffer_infos();
         let texture_image_infos = level.texture_manager.get_image_infos();
-        let material_buffer_infos = material_buffer_addresses.descriptor_buffer_infos();
+        let material_buffer_info = material_manager.material_data_addresses_info();
 
         const NUM_WRITES: usize = 5;
         let mut descriptor_writes: ArrayVec<_, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT * NUM_WRITES }> = descriptor_pool
@@ -497,20 +512,20 @@ impl Level {
                         .dst_array_element(0)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .buffer_info(slice::from_ref(&transform_buffer_info[frame])),
-                    // Element offset buffer.
+                    // Draw data buffer.
                     vk::WriteDescriptorSet::default()
                         .dst_set(*set)
                         .dst_binding(2)
                         .dst_array_element(0)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(slice::from_ref(&element_offset_buffer_info[frame])),
+                        .buffer_info(slice::from_ref(&draw_data_buffer_info[frame])),
                     // Material buffers.
                     vk::WriteDescriptorSet::default()
                         .dst_set(*set)
                         .dst_binding(3)
                         .dst_array_element(0)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(slice::from_ref(&material_buffer_infos[frame])),
+                        .buffer_info(slice::from_ref(&material_buffer_info)),
                 ]
             })
             .collect();
@@ -533,7 +548,7 @@ impl Level {
         //let draw_indirect_commands_size = (size_of::<vk::DrawIndexedIndirectCommand>() * num_models) as vk::DeviceSize;
         let draw_indirect_buffer = VolatileBuffer::new_array(
             "Draw indirect buffer",
-            num_models,
+            num_draws,
             &engine.device,
             VolatileBufferType::Indirect,
         )?;
@@ -550,9 +565,9 @@ impl Level {
             scene_descriptor_pool: descriptor_pool,
             scene_uniform_buffer,
             scene_transforms_buffer,
-            material_data_addresses: material_buffer_addresses,
-            element_offsets: element_offsets_buffer,
+            draw_data_buffer,
             draw_indirect_buffer,
+            pipeline_draw_ranges: Vec::new(),
         })
     }
 
@@ -649,57 +664,94 @@ impl Level {
             delta_time,
         };
 
-        //{
-        //    let addresses = material_buffer_addresses.get_mut_slice(0);
-        //    for (data, address) in pipeline_data.values().zip(addresses) {
-        //        *address = data.material_buffer.device_address();
-        //    }
-        //}
-
-        //for _frame in 1..GalaxyEngine::MAX_FRAMES_IN_FLIGHT {
-        //    // Copy first frame to second.
-        //}
-
         // Update scene data.
-        self.world
-            .run(|v_models: View<Model>, v_transforms: View<TransformComponent>| {
-                let transform_buffer = self.scene_transforms_buffer.get_mut_slice(frame_index);
-                let element_offsets = self.element_offsets.get_mut_slice(frame_index);
-                let material_data_addresses = self.material_data_addresses.get_mut_slice(frame_index);
-                let draw_indirect_buffer = self.draw_indirect_buffer.get_mut_slice(frame_index);
+        self.world.run(
+            |v_models: View<Model>, mut vm_transforms: ViewMut<TransformComponent>| {
+                // Update scene transforms.
+                {
+                    let transform_buffer = self.scene_transforms_buffer.get_mut_slice(frame_index);
 
-                debug_assert!(v_models.len() <= transform_buffer.len());
+                    // Once models can be added and removed, the transforms buffer will need to be dynamically resized.
+                    assert!(v_models.len() <= transform_buffer.len());
 
-                let mut current_element_offset = 0;
-                izip!(
-                    (&v_transforms, &v_models).iter(),
-                    transform_buffer.iter_mut(),
-                    element_offsets.iter_mut(),
-                    draw_indirect_buffer.iter_mut(),
-                )
-                .for_each(
-                    |((transform_comp, model), transform_mat, element_offset, draw_indirect)| {
-                        // Write transform.
+                    // Write transforms to buffer and save index. Only transforms for models are uploaded.
+                    // TODO: Use wide for simd processing?
+                    for (i, ((_model, transform_comp), transform_mat)) in (&v_models, &mut vm_transforms)
+                        .iter()
+                        .zip(transform_buffer.iter_mut())
+                        .enumerate()
+                    {
                         *transform_mat = view_info.mvp_from_transform(&transform_comp.transform);
-                        // Write element offset.
-                        *element_offset = current_element_offset;
-                        // Write draw indirect command.
-                        let draw_params = self.mesh_manager.draw_command_for_mesh(&model.mesh);
-                        draw_indirect.index_count = model.mesh.num_indices();
-                        draw_indirect.instance_count = 1;
-                        draw_indirect.first_index = draw_params.index_offset;
-                        draw_indirect.vertex_offset = draw_params.vertex_offset;
-                        draw_indirect.first_instance = 0;
+                        transform_comp.scene_index = Some(i as u32);
+                    }
+                }
 
-                        // Write material data.
-                        for (i, material) in model.materials.iter().enumerate() {
-                            material_data_addresses[current_element_offset as usize + i] =
-                                self.material_manager.get_material_data_buffer_addr(material);
-                        }
-                        current_element_offset += model.mesh.num_elements();
-                    },
-                );
-            });
+                // Create array of all draw calls for the scene.
+                // If transform indices become stable, the entries can be sorted on level load.
+                struct SceneDrawEntry<'a> {
+                    pipeline_id: &'a str,
+                    mesh: &'a Mesh,
+                    element_index: u32,
+                    material: &'a Material,
+                    transform_index: u32,
+                }
+
+                let mut scene_draws = (&v_models, &vm_transforms)
+                    .iter()
+                    .flat_map(|(model, transform_comp)| {
+                        debug_assert_eq!(model.mesh.num_elements(), model.materials.len() as u32);
+                        model.materials.iter().enumerate().map(|(i, mat)| SceneDrawEntry {
+                            pipeline_id: mat.pipeline().id(),
+                            mesh: &model.mesh,
+                            element_index: i as u32,
+                            material: mat,
+                            transform_index: transform_comp.scene_index.unwrap(),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+
+                // Sort by pipeline id, then mesh, then mesh element.
+                scene_draws.sort_by(|a, b| {
+                    a.pipeline_id
+                        .cmp(b.pipeline_id)
+                        .then(a.mesh.level_index().cmp(&b.mesh.level_index()))
+                        .then(a.element_index.cmp(&b.element_index))
+                });
+
+                // Construct the ranges of draws using the same pipeline.
+                self.pipeline_draw_ranges = scene_draws
+                    .iter()
+                    .enumerate()
+                    .batching(|scene_draws| {
+                        let mut peekable = scene_draws.peekable();
+                        let (start, start_draw) = peekable.peek()?;
+                        let offset = *start as u32;
+                        let pipeline = start_draw.material.cloned_pipeline();
+
+                        let len = peekable.take_while(|(_, sd)| sd.pipeline_id == pipeline.id()).count() as u32;
+                        Some(PipelineDrawSlice { pipeline, offset, len })
+                    })
+                    .collect();
+
+                // Write draw indirect commands.
+                for (draw_data, draw_indirect, scene_draw) in izip!(
+                    self.draw_data_buffer.get_mut_slice(frame_index).iter_mut(),
+                    self.draw_indirect_buffer.get_mut_slice(frame_index).iter_mut(),
+                    scene_draws.iter()
+                ) {
+                    draw_data.transform_index = scene_draw.transform_index;
+                    draw_data.material = self.material_manager.get_material_addr(scene_draw.material);
+
+                    let draw_params = self.mesh_manager.get_element_draw_data_for_mesh(scene_draw.mesh)
+                        [scene_draw.element_index as usize];
+                    draw_indirect.index_count = draw_params.index_count;
+                    draw_indirect.instance_count = 1;
+                    draw_indirect.first_index = draw_params.first_index;
+                    draw_indirect.vertex_offset = draw_params.vertex_offset;
+                    draw_indirect.first_instance = 0;
+                }
+            },
+        );
     }
 
     pub(crate) fn render(
@@ -724,19 +776,28 @@ impl Level {
             &[],
         );
 
-        // TODO: Num models per pipeline.
-        let num_models = self.world.iter::<&Model>().iter().count();
+        // Megabuffer has all the mesh vertex and index data for the scene.
+        self.mesh_manager.bind_megabuffer(cmd_buf);
 
-        for pipeline in pipeline_manager.iter_graphics_pipelines() {
+        for pipeline_draw_range in self.pipeline_draw_ranges.iter() {
+            let pipeline = pipeline_draw_range.pipeline.as_ref();
+            assert_eq!(pipeline.layout(), layout);
+
             // Bind pipeline.
             cmd_buf.bind_graphics_pipeline(pipeline);
-            self.mesh_manager.bind_megabuffer(cmd_buf);
+            cmd_buf.push_constants(
+                layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                &pipeline_draw_range.draw_offset_push_constant(),
+            );
             unsafe {
                 device.loader().cmd_draw_indexed_indirect(
                     cmd_buf.handle_dep(),
                     self.draw_indirect_buffer.handle_dep(),
-                    self.draw_indirect_buffer.frame_offset(frame_index) as vk::DeviceSize,
-                    num_models as u32,
+                    self.draw_indirect_buffer.frame_offset(frame_index) as vk::DeviceSize
+                        + pipeline_draw_range.draw_offset(),
+                    pipeline_draw_range.len(),
                     size_of::<vk::DrawIndexedIndirectCommand>() as u32,
                 )
             };

@@ -68,7 +68,8 @@ pub type ResourceBindingMap = HashMap<Arc<str>, ResourceBinding>;
 pub struct Material {
     pipeline: Arc<GraphicsPipeline>,
     resource_bindings: ResourceBindingMap,
-    buffer_index: u32,
+    level_index: u32,
+    //buffer_index: u32,
 }
 
 impl Material {
@@ -77,7 +78,8 @@ impl Material {
         texture_manager: &mut TextureManager,
         config: &MaterialConfig,
         resource_path: &ResourcePath,
-        buffer_index: u32,
+        //buffer_index: u32,
+        level_index: u32,
         cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<Self, MaterialError> {
         let pipeline = engine
@@ -112,12 +114,17 @@ impl Material {
         Ok(Self {
             pipeline,
             resource_bindings,
-            buffer_index,
+            level_index,
+            //buffer_index,
         })
     }
 
     pub fn pipeline(&self) -> &GraphicsPipeline {
         &self.pipeline
+    }
+
+    pub fn cloned_pipeline(&self) -> Arc<GraphicsPipeline> {
+        Arc::clone(&self.pipeline)
     }
 
     pub fn pipeline_layout(&self) -> vk::PipelineLayout {
@@ -136,9 +143,13 @@ impl Material {
         self.resource_bindings.get(bind_point)
     }
 
-    pub fn buffer_index(&self) -> u32 {
-        self.buffer_index
+    pub fn level_index(&self) -> u32 {
+        self.level_index
     }
+
+    //pub fn buffer_index(&self) -> u32 {
+    //    self.buffer_index
+    //}
 
     // pub fn shader_stages(&self) -> GraphicsPipelineShaderStages {
     //     utils::arrayvec_from_array([

@@ -7,7 +7,6 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
-use std::num::TryFromIntError;
 use std::path::Path;
 
 use ash::vk;
@@ -128,17 +127,24 @@ impl<V: bytemuck::Pod> MeshBuffer<V> {
     //}
 }
 
+struct MeshElementOffset {
+    _vertex_offset: u32,
+    vertex_count: u32,
+    _index_offset: u32,
+    index_count: u32,
+}
+
 struct LoadedObj {
     vertices: Vec<PositionTexCoordVertex>,
     indices: Vec<u32>,
-    num_elements: u32,
+    elements: Vec<MeshElementOffset>,
 }
 
 fn load_obj(obj_path: &Path) -> Result<LoadedObj, obj::ObjError> {
     let mtl_path = obj_path.with_extension("mtl");
 
     // Load model.
-    let start = std::time::Instant::now();
+    let load_start = std::time::Instant::now();
     let raw_obj = obj::raw::parse_obj(BufReader::new(File::open(obj_path)?))?;
 
     // Get ordered mesh elements (based on material).
@@ -169,10 +175,10 @@ fn load_obj(obj_path: &Path) -> Result<LoadedObj, obj::ObjError> {
     // Indexing code from obj crate.
     let mut cache = HashMap::new();
     let mut can_use_16_bit = true;
-    let mut map = |pi: usize, ni: usize, ti: usize, element_index: u32| -> Result<(), TryFromIntError> {
+    let mut map = |pi: usize, ni: usize, ti: usize, element_index: u32| -> u32 {
         // Look up cache
-        let index = match cache.entry((pi, element_index, ti)) {
-            // Cache miss -> make new, store it on cache
+        match cache.entry((pi, ti, element_index)) {
+            // Cache miss -> make new, store it on cache.
             Entry::Vacant(entry) => {
                 let p = positions[pi];
                 let _n = normals[ni];
@@ -183,7 +189,8 @@ fn load_obj(obj_path: &Path) -> Result<LoadedObj, obj::ObjError> {
                     tex_coord: Vec2::new(t.0, 1. - t.1),
                 };
 
-                let index = u32::try_from(vb.len())?;
+                let index = u32::try_from(vb.len())
+                    .unwrap_or_else(|_| panic!("Mesh {obj_path:?} contains over u32::MAX vertices."));
                 if u16::try_from(index).is_err() {
                     can_use_16_bit = false;
                 }
@@ -191,14 +198,13 @@ fn load_obj(obj_path: &Path) -> Result<LoadedObj, obj::ObjError> {
                 entry.insert(index);
                 index
             }
-            // Cache hit -> use it
+            // Cache hit -> use it.
             Entry::Occupied(entry) => *entry.get(),
-        };
-        ib.push(index);
-        Ok(())
+        }
     };
     raw_obj.meshes.iter().for_each(|(mat, group)| {
-        let element_index = element_orders.get(mat.as_str()).copied().unwrap_or(0);
+        let element_index = element_orders.get(mat.as_str()).copied().unwrap_or(0) as u32;
+
         group.polygons.iter().for_each(|range| {
             polygons[range.start..range.end]
                 .iter()
@@ -209,36 +215,84 @@ fn load_obj(obj_path: &Path) -> Result<LoadedObj, obj::ObjError> {
                     Polygon::PT(_) => panic!("Tried to extract normal data which are not contained in the model"),
                     Polygon::PN(_) => panic!("Tried to extract texture data which are not contained in the model"),
                     Polygon::PTN(ref vec) if vec.len() == 3 => {
-                        for &(pi, ti, ni) in vec {
-                            map(pi, ni, ti, element_index).unwrap()
-                        }
+                        let triangle = (
+                            core::array::from_fn::<_, 3, _>(|i| {
+                                let (pi, ti, ni) = vec[i];
+                                map(pi, ni, ti, 0)
+                            }),
+                            element_index,
+                        );
+                        ib.push(triangle);
                     }
                     _ => panic!("Model should be triangulated first to be loaded properly"),
                 })
-        })
+        });
     });
-    log::info!("Loaded mesh in {:?}", start.elapsed());
 
-    // Optimize model.
+    // Sort triangles by element index.
+    ib.sort_by_key(|i| i.1);
+
+    // Calculate the number and offset of indices for each element.
+    let element_index_ranges = (0..num_elements)
+        .scan(0, |start_index, _| {
+            let element_index = ib[*start_index].1;
+            let end_index = ib
+                .iter()
+                .skip(*start_index)
+                .position(|&i| i.1 != element_index)
+                .map(|p| *start_index + p)
+                .unwrap_or(ib.len());
+            let index_range = (*start_index * 3)..(end_index * 3);
+            *start_index = end_index;
+            Some(index_range)
+        })
+        .collect::<Vec<_>>();
+
+    let mut ib: Vec<u32> = ib.into_iter().flat_map(|(tri, _)| tri).collect();
+
+    log::info!("Loaded mesh in {:?}", load_start.elapsed());
+
     let start = std::time::Instant::now();
-    let (vertex_count, vert_remap) = meshopt::generate_vertex_remap(&vb, Some(&ib));
-    let mut vertices = meshopt::remap_vertex_buffer(&vb, vertex_count, &vert_remap);
-    let mut indices = meshopt::remap_index_buffer(Some(&ib), vertex_count, &vert_remap);
-    meshopt::optimize_vertex_cache_in_place(&mut indices, vertex_count);
-    let vertex_data_adapter = VertexDataAdapter::new(
-        bytemuck::must_cast_slice(&vertices),
-        std::mem::size_of::<PositionTexCoordVertex>(),
-        std::mem::offset_of!(PositionTexCoordVertex, position),
-    )
-    .unwrap();
-    meshopt::optimize_overdraw_in_place(&mut indices, &vertex_data_adapter, 1.05);
-    meshopt::optimize_vertex_fetch_in_place(&mut indices, &mut vertices);
+    // Optimize each element.
+    let mut vertices = Vec::with_capacity(vb.len());
+    let mut elements = Vec::with_capacity(num_elements as usize);
+    for element_index_range in element_index_ranges {
+        let old_element_indices = &mut ib[element_index_range.clone()];
+
+        let (vertex_count, vert_remap) = meshopt::generate_vertex_remap(&vb, Some(old_element_indices));
+        let mut element_vertices = meshopt::remap_vertex_buffer(&vb, vertex_count, &vert_remap);
+        let mut element_indices = meshopt::remap_index_buffer(Some(old_element_indices), vertex_count, &vert_remap);
+        assert_eq!(element_indices.len(), old_element_indices.len()); // mesh-opt shouldn't find any duplicates.
+
+        meshopt::optimize_vertex_cache_in_place(&mut element_indices, vertex_count);
+        let vertex_data_adapter = VertexDataAdapter::new(
+            bytemuck::must_cast_slice(&element_vertices),
+            std::mem::size_of::<PositionTexCoordVertex>(),
+            std::mem::offset_of!(PositionTexCoordVertex, position),
+        )
+        .unwrap();
+        meshopt::optimize_overdraw_in_place(&mut element_indices, &vertex_data_adapter, 1.05);
+        meshopt::optimize_vertex_fetch_in_place(&mut element_indices, &mut element_vertices);
+
+        // Copy over to overall mesh buffer.
+        let vertex_offset = vertices.len() as u32;
+        let index_offset = element_index_range.start as u32;
+        vertices.extend_from_slice(&element_vertices);
+        old_element_indices.copy_from_slice(&element_indices);
+        elements.push(MeshElementOffset {
+            _vertex_offset: vertex_offset,
+            vertex_count: element_vertices.len() as u32,
+            _index_offset: index_offset,
+            index_count: element_indices.len() as u32,
+        });
+    }
+
     log::info!("Optimized mesh in {:?}", start.elapsed());
 
     Ok(LoadedObj {
         vertices,
-        indices,
-        num_elements,
+        indices: ib,
+        elements,
     })
 }
 
@@ -253,8 +307,10 @@ pub enum MeshError {
 }
 
 pub struct Mesh {
-    mesh_buffer: MeshBuffer<PositionTexCoordVertex>,
-    num_elements: u32,
+    buffer: MeshBuffer<PositionTexCoordVertex>,
+    level_index: u32,          // Index of the mesh in the level.
+    level_element_offset: u32, // Offset of the first element in the mesh in the level.
+    elements: Vec<MeshElementOffset>,
 }
 
 impl Mesh {
@@ -263,6 +319,8 @@ impl Mesh {
         engine: &GalaxyEngine,
         cmd_pool: &mut TransientPrimaryCommandPool,
         mesh_path: &ResourcePath,
+        level_index: u32,
+        level_element_offset: u32,
     ) -> Result<Self, MeshError> {
         let obj_path = mesh_path.full_path::<resource_type::Mesh>(engine);
         let loaded_obj = load_obj(&obj_path)?;
@@ -280,24 +338,39 @@ impl Mesh {
             mesh_buffer.num_indices()
         );
         Ok(Self {
-            mesh_buffer,
-            num_elements: loaded_obj.num_elements,
+            buffer: mesh_buffer,
+            level_index,
+            level_element_offset,
+            elements: loaded_obj.elements,
         })
     }
 
     pub fn num_vertices(&self) -> u32 {
-        self.mesh_buffer.num_vertices()
+        self.buffer.num_vertices()
     }
 
     pub fn num_indices(&self) -> u32 {
-        self.mesh_buffer.num_indices()
+        self.buffer.num_indices()
     }
 
     pub fn num_elements(&self) -> u32 {
-        self.num_elements
+        self.elements.len() as u32
+    }
+
+    //pub fn elements(&self) -> &[MeshElementOffset] {
+    //    &self.elements
+    //}
+
+    pub fn level_index(&self) -> u32 {
+        self.level_index
+    }
+
+    pub fn level_element_range(&self) -> std::ops::Range<usize> {
+        let start = self.level_element_offset as usize;
+        start..(start + self.elements.len())
     }
 
     pub fn buffer(&self) -> &MeshBuffer<PositionTexCoordVertex> {
-        &self.mesh_buffer
+        &self.buffer
     }
 }

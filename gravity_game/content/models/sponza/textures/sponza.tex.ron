@@ -9,8 +9,8 @@
     ),   
     "vase_plant": Texture(
         path: "vase_plant.png",
-        type: Colour(RGB),
-    ),   
+        type: Colour(RGBA),
+    ),
     "arch_diff": Texture(
         path: "sponza_arch_diff.png",
         type: Colour(RGB),
@@ -33,11 +33,11 @@
     ),   
     "ceiling_spec": Texture(
         path: "sponza_ceiling_a_spec.png",
-        type: Linear(RGB),
-    ),   
+        type: Linear(Greyscale),
+    ),
     "chain_diff": Texture(
         path: "chain_texture.png",
-        type: Colour(RGB),
+        type: Colour(RGBA),
     ),   
     "column_a_diff": Texture(
         path: "sponza_column_a_diff.png",

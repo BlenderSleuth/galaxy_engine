@@ -161,12 +161,12 @@ impl PipelineManager {
                 .descriptor_count(1)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .stage_flags(vk::ShaderStageFlags::VERTEX),
-            // Element offsets:
+            // Draw data:
             vk::DescriptorSetLayoutBinding::default()
                 .binding(2)
                 .descriptor_count(1)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
             // Material data storage:
             vk::DescriptorSetLayoutBinding::default()
                 .binding(3)
@@ -355,9 +355,9 @@ impl PipelineManager {
         self.graphics_pipelines.get(id).map(ArcFinalOwner::clone)
     }
 
-    pub fn iter_graphics_pipelines(&self) -> impl Iterator<Item = &GraphicsPipeline> {
-        self.graphics_pipelines.values().map(ArcFinalOwner::as_ref)
-    }
+    //pub fn iter_graphics_pipelines(&self) -> impl Iterator<Item = &GraphicsPipeline> {
+    //    self.graphics_pipelines.values().map(ArcFinalOwner::as_ref)
+    //}
 
     //pub fn num_layouts(&self) -> usize {
     //    self.pipeline_layouts.len()
@@ -365,7 +365,7 @@ impl PipelineManager {
 
     pub fn get_draw_layout(&self) -> Option<vk::PipelineLayout> {
         let entry = PipelineLayoutEntry {
-            push_constant: None,
+            push_constant: Some(PushConstantBinding::DrawOffset),
             descriptor_set_layout: self.scene_set_layout,
         };
         self.pipeline_layouts.get(&entry).copied()

@@ -109,7 +109,8 @@ pub type PipelineBindingMap<S = Arc<str>> = IndexMap<S, GraphicsPipelineBinding>
 #[derive(serde::Deserialize, Debug, Hash, Copy, Clone, PartialEq, Eq)]
 pub enum PushConstantBinding {
     //DrawData,
-    PipelineIndex,
+    //PipelineIndex,
+    DrawOffset,
     ComputeInt,
     ComputeInt2,
     ComputeInt4,
@@ -123,8 +124,12 @@ impl PushConstantBinding {
             //    .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             //    .offset(0)
             //    .size(size_of::<DrawData>() as u32),
-            Self::PipelineIndex => vk::PushConstantRange::default()
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+            //Self::PipelineIndex => vk::PushConstantRange::default()
+            //    .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+            //    .offset(0)
+            //    .size(size_of::<u32>() as u32),
+            Self::DrawOffset => vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::VERTEX)
                 .offset(0)
                 .size(size_of::<u32>() as u32),
             Self::ComputeInt => vk::PushConstantRange::default()
@@ -178,12 +183,19 @@ pub(crate) struct GraphicsPipelineLayoutBindings<'a> {
 //    pub bindings: ArrayVec<PipelineLayoutBinding, NUM_DESCRIPTOR_BINDINGS>,
 //}
 
+//#[derive(serde::Deserialize, Debug)]
+//pub enum GraphicsRenderPhase {
+//    Opaque,
+//    AlphaClip,
+//}
+
 #[derive(serde::Deserialize, Debug)]
 pub(super) struct GraphicsPipelineConfig<'a> {
     #[serde(skip)]
     pub id: Arc<str>,
     #[serde(borrow)]
     pub shaders: GraphicsShaderConfig<'a>,
+    //pub phase: GraphicsRenderPhase,
     pub rasteriser: RasteriserConfig,
     #[serde(borrow)]
     pub layout: GraphicsPipelineLayoutBindings<'a>,

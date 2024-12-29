@@ -12,7 +12,6 @@ use crate::utils;
 use crate::vulkan::buffer::{Buffer, Staging};
 use crate::vulkan::command_buffer::{RecordingCmdBuf, TransientPrimaryCommandPool};
 use crate::vulkan::device::{Device, SharedDeviceLoader};
-use crate::vulkan::extensions::DeviceExtensions;
 use crate::vulkan::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
 use crate::vulkan::queue::queue_type::QueueType;
 use crate::vulkan::{debug, get_device_loader, gpu_alloc};
@@ -243,7 +242,7 @@ impl Image {
 
         // Transition all mip levels to transfer destination optimal.
         image.transition_layout(
-            device.extensions(),
+            device,
             &mut cmd_buffer,
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -260,7 +259,7 @@ impl Image {
 
         // Transition all mip levels to shader read only optimal.
         image.transition_layout(
-            device.extensions(),
+            device,
             &mut cmd_buffer,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
@@ -282,7 +281,7 @@ impl Image {
 
     pub fn transition_layout(
         &mut self,
-        ext: &DeviceExtensions,
+        device: &Device,
         cmd_buffer: &mut RecordingCmdBuf<impl QueueType>,
         old_layout: vk::ImageLayout,
         new_layout: vk::ImageLayout,
@@ -332,7 +331,7 @@ impl Image {
             .dependency_flags(vk::DependencyFlags::BY_REGION)
             .image_memory_barriers(slice::from_ref(&image_barrier));
 
-        cmd_buffer.pipeline_barrier2(ext, &dependency_info);
+        cmd_buffer.pipeline_barrier2(device, &dependency_info);
     }
 
     pub fn copy_buffer_to_image(

@@ -87,6 +87,7 @@ pub struct GraphicsPipeline {
     id: Arc<str>,
     layout: vk::PipelineLayout,
     bindings: PipelineBindingMap,
+    //phase: GraphicsRenderPhase,
 }
 
 impl GraphicsPipeline {

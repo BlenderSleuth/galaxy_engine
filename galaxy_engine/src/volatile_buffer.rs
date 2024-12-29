@@ -83,6 +83,10 @@ impl<T: bytemuck::Pod, const N: usize> VolatileBuffer<T, N> {
         // Zero-init memory (which allows it to be soundly casted to a Pod type).
         buffer.zero_memory();
 
+        if N == 1 {
+            log::warn!("VolatileBuffer with N=1 is deprecated. Use a single GPU-only buffer instead.");
+        }
+
         Ok(Self {
             buffer,
             size,

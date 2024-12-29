@@ -7,7 +7,6 @@ use std::slice;
 use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::vk;
-use ash::vk::DependencyInfo;
 use castaway::cast;
 
 use crate::pipelines::{ComputePipeline, GraphicsPipeline, Pipeline};
@@ -502,8 +501,13 @@ impl<Q: ComputeQueueType> CommandBuffer<Q, Recording<OutsideRenderPass>> {
 
 // Generic recording commands.
 impl<Q: QueueType, R: RenderingState> CommandBuffer<Q, Recording<R>> {
-    pub fn pipeline_barrier2(&mut self, ext: &DeviceExtensions, dependency_info: &DependencyInfo) {
-        unsafe { ext.sync2.cmd_pipeline_barrier2(self.handle(), dependency_info) };
+    pub fn pipeline_barrier2(&mut self, device: &Device, dependency_info: &vk::DependencyInfo) {
+        unsafe {
+            device
+                .extensions()
+                .sync2
+                .cmd_pipeline_barrier2(self.handle(), dependency_info)
+        };
     }
 }
 

@@ -338,7 +338,7 @@ impl GalaxyEngine {
         let recording = gfx_cmd_buffer.begin()?;
         let dependency_info =
             vk::DependencyInfo::default().image_memory_barriers(slice::from_ref(&color_optimal_transition));
-        recording.pipeline_barrier2(ext, &dependency_info);
+        recording.pipeline_barrier2(&self.device, &dependency_info);
 
         let mut color_attachment_info = vk::RenderingAttachmentInfo::default()
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
@@ -407,7 +407,7 @@ impl GalaxyEngine {
 
         let dependency_info = vk::DependencyInfo::default()
             .image_memory_barriers(slice::from_ref(&color_optimal_to_present_src_transition));
-        recording.pipeline_barrier2(ext, &dependency_info);
+        recording.pipeline_barrier2(&self.device, &dependency_info);
 
         gfx_cmd_buffer.end()?;
 
