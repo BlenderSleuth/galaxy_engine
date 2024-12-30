@@ -1,5 +1,6 @@
 // Copyright (c) 2024 Ben Sutherland.
 
+mod alloc;
 pub mod app;
 pub mod camera;
 pub mod engine;

@@ -42,6 +42,7 @@ zstd.workspace = true
 basis-universal = { path = "../crates/basis-universal-rs/basis-universal" }
 self_cell = "1.1.0"
 path-slash = "0.2.1"
+bump-scope = { version = "0.14.0", features = ["zerocopy"] }
 
 [build-dependencies]
 galaxy_engine_build = { path = "../galaxy_engine_build" }

@@ -2,17 +2,19 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::slice;
 use std::sync::Arc;
 
 use ash::prelude::VkResult;
 use ash::vk;
+use bump_scope::{BumpScope, BumpString};
 use const_format::concatcp;
 use glob::glob;
-use itertools::{Either, Itertools};
+use itertools::Either;
 use path_slash::PathExt;
 
+use crate::alloc::AllocIterator;
 use crate::engine::GalaxyEngine;
 use crate::pipelines::config::{ComputeResourceType, PipelineConfig, PushConstantBinding};
 use crate::pipelines::pipeline::{
@@ -145,7 +147,10 @@ impl PipelineManager {
     pub const SHADER_PATH: &'static str = concatcp!(GalaxyEngine::CONTENT_PATH, PipelineManager::SHADER_DIR);
     pub const BUILT_SHADER_PATH: &'static str = concatcp!(GalaxyEngine::BUILT_PATH, PipelineManager::SHADER_DIR);
     const PIPELINE_CONFIG_GLOB: &'static str = "**/*.pipeline.ron";
-    //pub const MAX_PIPELINES_PER_LAYOUT: usize = 512;
+
+    // TODO: Add support for game-specific pipeline configs.
+    const ENGINE_PIPELINE_CONFIG_GLOB: &'static str =
+        concatcp!(PipelineManager::SHADER_PATH, PipelineManager::PIPELINE_CONFIG_GLOB);
 
     fn scene_descriptor_set_layout_bindings() -> [vk::DescriptorSetLayoutBinding<'static>; 5] {
         [
@@ -186,160 +191,164 @@ impl PipelineManager {
         // Create scene descriptor set layout.
         let scene_set_layout = create_descriptor_set_layout(device, &Self::scene_descriptor_set_layout_bindings())?;
 
-        // Find and load pipeline configs. TODO: Add support for game-specific pipeline configs.
-        let config_strings = glob(
-            Path::new(Self::SHADER_PATH)
-                .join(Self::PIPELINE_CONFIG_GLOB)
-                .to_str()
-                .unwrap(),
-        )
-        .expect("Failed to read pipeline glob pattern")
-        .filter_map(|path| {
-            let unwrapped_path = match path.as_ref() {
-                Ok(path) => path,
-                Err(err) => err.path(),
-            };
-            let id = unwrapped_path.strip_prefix(Self::SHADER_PATH).ok()?;
+        crate::alloc::borrow_arenas(|arena_a, arena_b| {
+            // Find and load pipeline configs.
+            let config_strings = arena_a.alloc_iter_mut(
+                glob(Self::ENGINE_PIPELINE_CONFIG_GLOB)
+                    .expect("Failed to read pipeline glob pattern")
+                    .filter_map(|path| {
+                        let unwrapped_path = match path.as_ref() {
+                            Ok(path) => path,
+                            Err(err) => err.path(),
+                        };
+                        let id = unwrapped_path.strip_prefix(Self::SHADER_PATH).ok()?;
 
-            // A bunch of string allocations going on here. An arena would be nice.
-            let mut id = PathBuf::from("/engine").join(id).to_slash()?.to_string();
-            // Remove file extensions.
-            if let Some(index) = id.find('.') {
-                id.truncate(index);
-            }
-            let id = Arc::<str>::from(id);
+                        // A bunch of string allocations going on here.
+                        let mut id = Path::new("/engine").join(id).to_slash()?.to_string();
+                        // Remove file extensions.
+                        if let Some(index) = id.find('.') {
+                            id.truncate(index);
+                        }
+                        let id = Arc::<str>::from(id);
 
-            // Nested function for error-handling.
-            fn load_config(path: glob::GlobResult) -> Result<String, PipelineManagerError> {
-                Ok(std::fs::read_to_string(&path.map_err(|e| e.into_error())?)?)
-            }
+                        // Nested function for error-handling.
+                        fn load_config<'a>(
+                            path: glob::GlobResult,
+                            arena: &'a BumpScope,
+                        ) -> Result<BumpString<&'a BumpScope<'a>>, PipelineManagerError> {
+                            Ok(crate::alloc::read_to_arena_string(
+                                &path.map_err(|e| e.into_error())?,
+                                arena,
+                            )?)
+                        }
 
-            let config_str = match load_config(path) {
-                Ok(config) => Some(config),
-                Err(err) => {
-                    log::error!("Failed to read pipeline config for pipeline {id} ({err}).");
-                    None
+                        let config_str = match load_config(path, arena_b) {
+                            Ok(config) => Some(config),
+                            Err(err) => {
+                                log::error!("Failed to read pipeline config for pipeline {id} ({err}).");
+                                None
+                            }
+                        }?;
+
+                        Some((id, config_str))
+                    }),
+            );
+
+            let (graphics_configs, compute_configs) = config_strings
+                .iter()
+                .filter_map(
+                    |(id, config_str)| match crate::utils::load_ron_config::<PipelineConfig>(config_str) {
+                        Ok(config) => Some(config.with_id(id)),
+                        Err(err) => {
+                            log::error!("Failed to parse pipeline config for pipeline {id} ({err})");
+                            None
+                        }
+                    },
+                )
+                .arena_partition_map(arena_a, arena_b, |config| match config {
+                    PipelineConfig::Graphics(graphics) => Either::Left(graphics),
+                    PipelineConfig::Compute(compute) => Either::Right(compute),
+                });
+
+            let mut pipeline_layouts = PipelineLayoutCache::new();
+
+            // Compile graphics pipelines. For lots of graphics pipelines, could use a graphics pipeline library for speedup:
+            // https://www.khronos.org/blog/reducing-draw-time-hitching-with-vk-ext-graphics-pipeline-library.
+            let mut bind_point_id_cache = HashSet::new();
+            let graphics_pipelines = {
+                // Load shaders.
+                let mut vertex_shaders = ShaderModuleCache::<shader_stage::Vertex>::new();
+                let mut fragment_shaders = ShaderModuleCache::<shader_stage::Fragment>::new();
+                for config in graphics_configs.iter() {
+                    vertex_shaders
+                        .entry(config.shaders.vertex.id)
+                        .try_or_insert_with(|| ShaderModule::new(device, config.shaders.vertex.id))?;
+                    fragment_shaders
+                        .entry(config.shaders.fragment.id)
+                        .try_or_insert_with(|| ShaderModule::new(device, config.shaders.fragment.id))?;
                 }
-            }?;
 
-            Some((id, config_str))
-        })
-        .collect::<Vec<_>>();
+                let create_resources = graphics_configs
+                    .into_iter()
+                    .map(|config| {
+                        // Find or construct pipeline layout.
+                        let pipeline_layout = get_or_create_pipeline_layout(
+                            device,
+                            &mut pipeline_layouts,
+                            config.layout.push_constant,
+                            scene_set_layout,
+                        )?;
 
-        let (graphics_configs, compute_configs): (Vec<_>, Vec<_>) = config_strings
-            .iter()
-            .filter_map(
-                |(id, config_str)| match crate::utils::load_ron_config::<PipelineConfig>(config_str) {
-                    Ok(config) => Some(config.with_id(id)),
-                    Err(err) => {
-                        log::error!("Failed to parse pipeline config for pipeline {id} ({err})");
-                        None
-                    }
-                },
-            )
-            .partition_map(|config| match config {
-                PipelineConfig::Graphics(graphics) => Either::Left(graphics),
-                PipelineConfig::Compute(compute) => Either::Right(compute),
-            });
-
-        let mut pipeline_layouts = PipelineLayoutCache::new();
-
-        // Compile graphics pipelines. For lots of graphics pipelines, could use a graphics pipeline library for speedup:
-        // https://www.khronos.org/blog/reducing-draw-time-hitching-with-vk-ext-graphics-pipeline-library.
-        let mut bind_point_id_cache = HashSet::new();
-        let graphics_pipelines = {
-            // Load shaders.
-            let mut vertex_shaders = ShaderModuleCache::<shader_stage::Vertex>::new();
-            let mut fragment_shaders = ShaderModuleCache::<shader_stage::Fragment>::new();
-            for config in graphics_configs.iter() {
-                vertex_shaders
-                    .entry(config.shaders.vertex.id)
-                    .try_or_insert_with(|| ShaderModule::new(device, config.shaders.vertex.id))?;
-                fragment_shaders
-                    .entry(config.shaders.fragment.id)
-                    .try_or_insert_with(|| ShaderModule::new(device, config.shaders.fragment.id))?;
-            }
-
-            let create_resources = graphics_configs
-                .into_iter()
-                .map(|config| {
-                    // Find or construct pipeline layout.
-                    let pipeline_layout = get_or_create_pipeline_layout(
-                        device,
-                        &mut pipeline_layouts,
-                        config.layout.push_constant,
-                        scene_set_layout,
-                    )?;
-
-                    Ok(GraphicsPipelineCreateResources {
-                        pipeline_layout,
-                        vertex_shader: &vertex_shaders[config.shaders.vertex.id],
-                        fragment_shader: &fragment_shaders[config.shaders.fragment.id],
-                        config,
+                        Ok(GraphicsPipelineCreateResources {
+                            pipeline_layout,
+                            vertex_shader: &vertex_shaders[config.shaders.vertex.id],
+                            fragment_shader: &fragment_shaders[config.shaders.fragment.id],
+                            config,
+                        })
                     })
-                })
-                .collect::<VkResult<Vec<_>>>()?;
+                    .collect::<VkResult<Vec<_>>>()?;
 
-            log::info!("Compiling graphics pipelines...");
-            let compilation_start = std::time::Instant::now();
-            let graphics_pipelines =
-                GraphicsPipeline::batch_new(device, create_resources, msaa_samples, &mut bind_point_id_cache)?;
-            log::info!("Compiled graphics pipelines in {:?}", compilation_start.elapsed());
-            graphics_pipelines
-        };
+                log::info!("Compiling graphics pipelines...");
+                let compilation_start = std::time::Instant::now();
+                let graphics_pipelines =
+                    GraphicsPipeline::batch_new(device, create_resources, msaa_samples, &mut bind_point_id_cache)?;
+                log::info!("Compiled graphics pipelines in {:?}", compilation_start.elapsed());
+                graphics_pipelines
+            };
 
-        // Compile compute pipelines.
-        let mut compute_descriptor_set_layouts = ComputeDescriptorSetLayoutCache::new();
-        let compute_pipelines = {
-            // Load shaders.
-            let mut compute_shader_cache = ShaderModuleCache::<shader_stage::Compute>::new();
-            for config in compute_configs.iter() {
-                compute_shader_cache
-                    .entry(config.shader)
-                    .try_or_insert_with(|| ShaderModule::new(device, config.shader))?;
-            }
+            // Compile compute pipelines.
+            let mut compute_descriptor_set_layouts = ComputeDescriptorSetLayoutCache::new();
+            let compute_pipelines = {
+                // Load shaders.
+                let mut compute_shader_cache = ShaderModuleCache::<shader_stage::Compute>::new();
+                for config in compute_configs.iter() {
+                    compute_shader_cache
+                        .entry(config.shader)
+                        .try_or_insert_with(|| ShaderModule::new(device, config.shader))?;
+                }
 
-            let create_resources = compute_configs
-                .into_iter()
-                .map(|config| {
-                    // Get or create descriptor set layout.
-                    let descriptor_set_layout = get_or_create_compute_descriptor_set_layout(
-                        device,
-                        &mut compute_descriptor_set_layouts,
-                        config.layout.binding_types(),
-                    )?;
+                let create_resources = compute_configs
+                    .into_iter()
+                    .map(|config| {
+                        // Get or create descriptor set layout.
+                        let descriptor_set_layout = get_or_create_compute_descriptor_set_layout(
+                            device,
+                            &mut compute_descriptor_set_layouts,
+                            config.layout.binding_types(),
+                        )?;
 
-                    // Construct pipeline layout.
-                    let pipeline_layout = get_or_create_pipeline_layout(
-                        device,
-                        &mut pipeline_layouts,
-                        config.layout.push_constant,
-                        descriptor_set_layout,
-                    )?;
+                        // Construct pipeline layout.
+                        let pipeline_layout = get_or_create_pipeline_layout(
+                            device,
+                            &mut pipeline_layouts,
+                            config.layout.push_constant,
+                            descriptor_set_layout,
+                        )?;
 
-                    Ok(ComputePipelineCreateResources {
-                        pipeline_layout,
-                        shader: &compute_shader_cache[config.shader],
-                        config,
+                        Ok(ComputePipelineCreateResources {
+                            pipeline_layout,
+                            shader: &compute_shader_cache[config.shader],
+                            config,
+                        })
                     })
-                })
-                .collect::<VkResult<Vec<_>>>()?;
+                    .collect::<VkResult<Vec<_>>>()?;
 
-            log::info!("Compiling compute pipelines...");
-            let compilation_start = std::time::Instant::now();
-            let compute_pipelines = ComputePipeline::batch_new(device, create_resources)?;
-            log::info!("Compiled compute pipelines in {:?}", compilation_start.elapsed());
-            compute_pipelines
-        };
+                log::info!("Compiling compute pipelines...");
+                let compilation_start = std::time::Instant::now();
+                let compute_pipelines = ComputePipeline::batch_new(device, create_resources)?;
+                log::info!("Compiled compute pipelines in {:?}", compilation_start.elapsed());
+                compute_pipelines
+            };
 
-        Ok(Self {
-            loader: device.cloned_loader(),
-            scene_set_layout,
-            pipeline_layouts,
-            compute_descriptor_set_layouts,
-            graphics_pipelines: to_pipeline_table(graphics_pipelines),
-            compute_pipelines: to_pipeline_table(compute_pipelines),
-            bind_point_id_cache,
+            Ok(Self {
+                loader: device.cloned_loader(),
+                scene_set_layout,
+                pipeline_layouts,
+                compute_descriptor_set_layouts,
+                graphics_pipelines: to_pipeline_table(graphics_pipelines),
+                compute_pipelines: to_pipeline_table(compute_pipelines),
+                bind_point_id_cache,
+            })
         })
     }
 
