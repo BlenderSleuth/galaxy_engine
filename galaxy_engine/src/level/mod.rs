@@ -436,20 +436,16 @@ impl Level {
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32),
-            // Scene transforms + elements offsets buffers.
+            // Transforms + draw data + material constants.
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32 * 2),
+                .descriptor_count(GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32 * 3),
             // Scene texture descriptor array.
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(
                     (GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32 * level.texture_manager.num_textures()).max(1),
                 ),
-            // Material data buffers. TODO: When we have more than one incompatible pipeline layout, allocate pipeline material data buffers per layout.
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32 * level.material_manager.num_pipelines()),
         ];
         let mut descriptor_pool = DescriptorPool::new(&engine.device, &descriptor_pool_sizes)?;
 
@@ -490,44 +486,56 @@ impl Level {
         let transform_buffer_info = scene_transforms_buffer.descriptor_buffer_infos();
         let draw_data_buffer_info = draw_data_buffer.descriptor_buffer_infos();
         let texture_image_infos = level.texture_manager.get_image_infos();
-        let material_buffer_info = material_manager.material_data_addresses_info();
+        //let material_buffer_info = material_manager.material_data_addresses_info();
+        let material_constant_buffer_info = material_manager.material_constant_buffer_info();
 
-        const NUM_WRITES: usize = 5;
-        let mut descriptor_writes: ArrayVec<_, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT * NUM_WRITES }> = descriptor_pool
+        let mut descriptor_writes: ArrayVec<
+            _,
+            { GalaxyEngine::MAX_FRAMES_IN_FLIGHT * PipelineManager::NUM_SCENE_DESCRIPTOR_SET_BINDINGS },
+        > = descriptor_pool
             .iter()
             .enumerate()
-            .flat_map(|(frame, set)| -> [vk::WriteDescriptorSet; NUM_WRITES - 1] {
-                [
-                    // Uniform buffer:
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(*set)
-                        .dst_binding(0)
-                        .dst_array_element(0)
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .buffer_info(slice::from_ref(&uniform_buffer_info[frame])),
-                    // Transforms buffer:
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(*set)
-                        .dst_binding(1)
-                        .dst_array_element(0)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(slice::from_ref(&transform_buffer_info[frame])),
-                    // Draw data buffer.
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(*set)
-                        .dst_binding(2)
-                        .dst_array_element(0)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(slice::from_ref(&draw_data_buffer_info[frame])),
-                    // Material buffers.
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(*set)
-                        .dst_binding(3)
-                        .dst_array_element(0)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(slice::from_ref(&material_buffer_info)),
-                ]
-            })
+            .flat_map(
+                |(frame, set)| -> [vk::WriteDescriptorSet; PipelineManager::NUM_SCENE_DESCRIPTOR_SET_BINDINGS - 1] {
+                    [
+                        // Uniform buffer:
+                        vk::WriteDescriptorSet::default()
+                            .dst_set(*set)
+                            .dst_binding(0)
+                            .dst_array_element(0)
+                            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                            .buffer_info(slice::from_ref(&uniform_buffer_info[frame])),
+                        // Transforms buffer:
+                        vk::WriteDescriptorSet::default()
+                            .dst_set(*set)
+                            .dst_binding(1)
+                            .dst_array_element(0)
+                            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                            .buffer_info(slice::from_ref(&transform_buffer_info[frame])),
+                        // Draw data buffer.
+                        vk::WriteDescriptorSet::default()
+                            .dst_set(*set)
+                            .dst_binding(2)
+                            .dst_array_element(0)
+                            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                            .buffer_info(slice::from_ref(&draw_data_buffer_info[frame])),
+                        // Material buffers.
+                        //vk::WriteDescriptorSet::default()
+                        //    .dst_set(*set)
+                        //    .dst_binding(3)
+                        //    .dst_array_element(0)
+                        //    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        //    .buffer_info(slice::from_ref(&material_buffer_info)),
+                        // Material constants.
+                        vk::WriteDescriptorSet::default()
+                            .dst_set(*set)
+                            .dst_binding(3)
+                            .dst_array_element(0)
+                            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                            .buffer_info(slice::from_ref(&material_constant_buffer_info)),
+                    ]
+                },
+            )
             .collect();
 
         if !texture_image_infos.is_empty() {

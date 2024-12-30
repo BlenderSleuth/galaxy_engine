@@ -33,27 +33,34 @@ pub(super) struct RasteriserConfig {
     pub depth_enable: bool,
 }
 
-bitflags::bitflags! {
-    #[derive(serde::Serialize, serde::Deserialize, Debug, Hash, PartialEq, Eq, Copy, Clone)]
-    #[serde(transparent)]
-    pub struct GraphicsShaderStageFlags: u8 {
-        const Vertex = 1;
-        const Fragment = 2;
-    }
-}
+//bitflags::bitflags! {
+//    #[derive(serde::Serialize, serde::Deserialize, Debug, Hash, PartialEq, Eq, Copy, Clone)]
+//    #[serde(transparent)]
+//    pub struct GraphicsShaderStageFlags: u8 {
+//        const Vertex = 1;
+//        const Fragment = 2;
+//    }
+//}
+//
+//impl GraphicsShaderStageFlags {
+//    pub fn vk(&self) -> vk::ShaderStageFlags {
+//        let mut flags = vk::ShaderStageFlags::empty();
+//        if self.contains(Self::Vertex) {
+//            flags |= vk::ShaderStageFlags::VERTEX;
+//        }
+//        if self.contains(Self::Vertex) {
+//            flags |= vk::ShaderStageFlags::FRAGMENT;
+//        }
+//        flags
+//    }
+//}
 
-impl GraphicsShaderStageFlags {
-    pub fn vk(&self) -> vk::ShaderStageFlags {
-        let mut flags = vk::ShaderStageFlags::empty();
-        if self.contains(Self::Vertex) {
-            flags |= vk::ShaderStageFlags::VERTEX;
-        }
-        if self.contains(Self::Vertex) {
-            flags |= vk::ShaderStageFlags::FRAGMENT;
-        }
-        flags
-    }
-}
+//#[derive(serde::Deserialize, Debug, Copy, Clone)]
+//pub struct GraphicsPipelineBinding {
+//    #[serde(rename = "type")]
+//    pub ty: PipelineBindingDataSize,
+//    pub stages: GraphicsShaderStageFlags,
+//}
 
 #[derive(serde::Deserialize, Debug, Copy, Clone)]
 pub enum PipelineBindingDataSize {
@@ -65,51 +72,21 @@ pub enum PipelineBindingDataSize {
 }
 
 impl PipelineBindingDataSize {
-    const FLOAT_SIZE: usize = std::mem::size_of::<f32>();
-
-    pub const fn layout(&self) -> std::alloc::Layout {
-        match std::alloc::Layout::from_size_align(self.size(), self.align()) {
-            Ok(layout) => layout,
-            Err(_) => panic!("Alignment must be a power of 2."),
+    pub const fn len(&self) -> usize {
+        match self {
+            Self::Float => 1,
+            Self::Float2 => 2,
+            Self::Float3 | Self::Normal => 3,
+            Self::Float4 => 4,
         }
     }
-
-    pub const fn size(&self) -> usize {
-        Self::FLOAT_SIZE
-            * match self {
-                Self::Float => 1,
-                Self::Float2 => 2,
-                Self::Float3 | Self::Normal => 3,
-                Self::Float4 => 4,
-            }
-    }
-
-    pub const fn align(&self) -> usize {
-        Self::FLOAT_SIZE
-            * match self {
-                Self::Float => 1,
-                Self::Float2 => 2,
-                Self::Float3 | Self::Normal => 4, // Float3 uses Float4 (16 byte) alignment.
-                Self::Float4 => 4,
-            }
-    }
 }
 
-#[derive(serde::Deserialize, Debug, Copy, Clone)]
-pub struct GraphicsPipelineBinding {
-    #[serde(rename = "type")]
-    pub ty: PipelineBindingDataSize,
-    // TODO: These are not currently used.
-    pub stages: GraphicsShaderStageFlags,
-}
-
-pub type PipelineBindingMap<S = Arc<str>> = IndexMap<S, GraphicsPipelineBinding>;
+pub type PipelineBindingMap<S = Arc<str>> = IndexMap<S, PipelineBindingDataSize>;
 
 // Todo: better push constant management. List of sizes and shader stages.
 #[derive(serde::Deserialize, Debug, Hash, Copy, Clone, PartialEq, Eq)]
 pub enum PushConstantBinding {
-    //DrawData,
-    //PipelineIndex,
     DrawOffset,
     ComputeInt,
     ComputeInt2,
@@ -118,16 +95,8 @@ pub enum PushConstantBinding {
 
 impl PushConstantBinding {
     pub fn push_constant_range(&self) -> vk::PushConstantRange {
-        // TODO: Only access push constant in one shader.
+        // Note: Generally only access push constant in one shader stage.
         match self {
-            //Self::DrawData => vk::PushConstantRange::default()
-            //    .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
-            //    .offset(0)
-            //    .size(size_of::<DrawData>() as u32),
-            //Self::PipelineIndex => vk::PushConstantRange::default()
-            //    .stage_flags(vk::ShaderStageFlags::FRAGMENT)
-            //    .offset(0)
-            //    .size(size_of::<u32>() as u32),
             Self::DrawOffset => vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::VERTEX)
                 .offset(0)

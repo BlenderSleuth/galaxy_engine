@@ -9,31 +9,10 @@ use ash::vk;
 use ash::vk::Handle;
 use itertools::izip;
 
-use crate::pipelines::config::{
-    ComputePipelineConfig, GraphicsPipelineBinding, GraphicsPipelineConfig, GraphicsShaderStageFlags,
-    PipelineBindingMap,
-};
-use crate::pipelines::PipelineBindingDataSize;
-use crate::utils::CStructLayout;
+use crate::pipelines::config::{ComputePipelineConfig, GraphicsPipelineConfig, PipelineBindingMap};
 use crate::vertex_input::{BindableVertex, PositionColourTexCoordVertex, PositionTexCoordVertex, VertexInputType};
 use crate::vulkan::device::Device;
 use crate::vulkan::shader::{shader_stage, ShaderModule};
-
-//#[derive(serde::Deserialize, Debug)]
-//#[serde(rename_all = "lowercase")]
-//pub enum PipelineType {
-//    Graphics,
-//    Compute,
-//}
-
-//impl PipelineType {
-//    pub fn bind_point(&self) -> vk::PipelineBindPoint {
-//        match self {
-//            Self::Graphics => vk::PipelineBindPoint::GRAPHICS,
-//            Self::Compute => vk::PipelineBindPoint::COMPUTE,
-//        }
-//    }
-//}
 
 fn handle_pipeline_create(
     device: &Device,
@@ -49,7 +28,7 @@ fn handle_pipeline_create(
                     unsafe { device.loader().destroy_pipeline(handle, None) };
                 }
             }
-            return Err(err_code);
+            Err(err_code)
         }
     }
 }
@@ -226,20 +205,6 @@ impl GraphicsPipeline {
     }
     pub fn bindings(&self) -> &PipelineBindingMap {
         &self.bindings
-    }
-    pub fn bindings_layout(&self) -> CStructLayout {
-        // Flags binding goes on the end.
-        const FLAGS_BINDING: GraphicsPipelineBinding = GraphicsPipelineBinding {
-            ty: PipelineBindingDataSize::Float,
-            stages: GraphicsShaderStageFlags::all(),
-        };
-        CStructLayout::new(
-            self.bindings()
-                .values()
-                .chain(std::iter::once(&FLAGS_BINDING))
-                .map(|binding| binding.ty.layout()),
-        )
-        .unwrap()
     }
 }
 

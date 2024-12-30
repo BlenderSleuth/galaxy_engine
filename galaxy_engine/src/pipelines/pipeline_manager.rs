@@ -2,7 +2,7 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::slice;
 use std::sync::Arc;
 
@@ -145,9 +145,15 @@ impl PipelineManager {
     pub const SHADER_PATH: &'static str = concatcp!(GalaxyEngine::CONTENT_PATH, PipelineManager::SHADER_DIR);
     pub const BUILT_SHADER_PATH: &'static str = concatcp!(GalaxyEngine::BUILT_PATH, PipelineManager::SHADER_DIR);
     const PIPELINE_CONFIG_GLOB: &'static str = "**/*.pipeline.ron";
-    //pub const MAX_PIPELINES_PER_LAYOUT: usize = 512;
 
-    fn scene_descriptor_set_layout_bindings() -> [vk::DescriptorSetLayoutBinding<'static>; 5] {
+    // TODO: Add support for game-specific pipeline configs.
+    const ENGINE_PIPELINE_CONFIG_GLOB: &'static str =
+        concatcp!(PipelineManager::SHADER_PATH, PipelineManager::PIPELINE_CONFIG_GLOB);
+
+    pub const NUM_SCENE_DESCRIPTOR_SET_BINDINGS: usize = 5;
+
+    fn scene_descriptor_set_layout_bindings(
+    ) -> [vk::DescriptorSetLayoutBinding<'static>; Self::NUM_SCENE_DESCRIPTOR_SET_BINDINGS] {
         [
             // Scene uniforms:
             vk::DescriptorSetLayoutBinding::default()
@@ -168,6 +174,12 @@ impl PipelineManager {
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
             // Material data storage:
+            //vk::DescriptorSetLayoutBinding::default()
+            //    .binding(3)
+            //    .descriptor_count(1)
+            //    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            //    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            // Material constant storage:
             vk::DescriptorSetLayoutBinding::default()
                 .binding(3)
                 .descriptor_count(1)
@@ -186,45 +198,40 @@ impl PipelineManager {
         // Create scene descriptor set layout.
         let scene_set_layout = create_descriptor_set_layout(device, &Self::scene_descriptor_set_layout_bindings())?;
 
-        // Find and load pipeline configs. TODO: Add support for game-specific pipeline configs.
-        let config_strings = glob(
-            Path::new(Self::SHADER_PATH)
-                .join(Self::PIPELINE_CONFIG_GLOB)
-                .to_str()
-                .unwrap(),
-        )
-        .expect("Failed to read pipeline glob pattern")
-        .filter_map(|path| {
-            let unwrapped_path = match path.as_ref() {
-                Ok(path) => path,
-                Err(err) => err.path(),
-            };
-            let id = unwrapped_path.strip_prefix(Self::SHADER_PATH).ok()?;
+        // Find and load pipeline configs.
+        let config_strings = glob(Self::ENGINE_PIPELINE_CONFIG_GLOB)
+            .expect("Failed to read pipeline glob pattern")
+            .filter_map(|path| {
+                let unwrapped_path = match path.as_ref() {
+                    Ok(path) => path,
+                    Err(err) => err.path(),
+                };
+                let id = unwrapped_path.strip_prefix(Self::SHADER_PATH).ok()?;
 
-            // A bunch of string allocations going on here. An arena would be nice.
-            let mut id = PathBuf::from("/engine").join(id).to_slash()?.to_string();
-            // Remove file extensions.
-            if let Some(index) = id.find('.') {
-                id.truncate(index);
-            }
-            let id = Arc::<str>::from(id);
-
-            // Nested function for error-handling.
-            fn load_config(path: glob::GlobResult) -> Result<String, PipelineManagerError> {
-                Ok(std::fs::read_to_string(&path.map_err(|e| e.into_error())?)?)
-            }
-
-            let config_str = match load_config(path) {
-                Ok(config) => Some(config),
-                Err(err) => {
-                    log::error!("Failed to read pipeline config for pipeline {id} ({err}).");
-                    None
+                // A bunch of string allocations going on here. An arena would be nice.
+                let mut id = PathBuf::from("/engine").join(id).to_slash()?.to_string();
+                // Remove file extensions.
+                if let Some(index) = id.find('.') {
+                    id.truncate(index);
                 }
-            }?;
+                let id = Arc::<str>::from(id);
 
-            Some((id, config_str))
-        })
-        .collect::<Vec<_>>();
+                // Nested function for error-handling.
+                fn load_config(path: glob::GlobResult) -> Result<String, PipelineManagerError> {
+                    Ok(std::fs::read_to_string(&path.map_err(|e| e.into_error())?)?)
+                }
+
+                let config_str = match load_config(path) {
+                    Ok(config) => Some(config),
+                    Err(err) => {
+                        log::error!("Failed to read pipeline config for pipeline {id} ({err}).");
+                        None
+                    }
+                }?;
+
+                Some((id, config_str))
+            })
+            .collect::<Vec<_>>();
 
         let (graphics_configs, compute_configs): (Vec<_>, Vec<_>) = config_strings
             .iter()

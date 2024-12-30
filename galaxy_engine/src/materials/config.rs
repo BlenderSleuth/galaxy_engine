@@ -5,10 +5,19 @@ use std::collections::HashMap;
 use self_cell::self_cell;
 
 use crate::engine::GalaxyEngine;
-use crate::materials::material::ResourceConstant;
 use crate::resource_paths::{resource_type, ResourcePath, SubresourcePath};
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug)]
+#[derive(serde::Deserialize, Debug, Copy, Clone)]
+pub enum ResourceConstant {
+    Int(i32),
+    RGB(u8, u8, u8),
+    Float(f32),
+    Float2(f32, f32),
+    Float3(f32, f32, f32),
+    Float4(f32, f32, f32, f32),
+}
+
+#[derive(serde::Deserialize, Clone, Copy, Debug)]
 pub enum ResourceBindingConfig<'a> {
     Texture(&'a str),
     Constant(ResourceConstant),
@@ -26,7 +35,7 @@ pub enum MaterialConfigError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Failed to load material config (map: {:?}, single: {:?})", .0.0, 0.1)]
-    Parse(Box<(ron::de::SpannedError, ron::de::SpannedError)>),
+    Parse(Box<(SubresourcePath, ron::de::SpannedError, ron::de::SpannedError)>),
     #[error("Subresource not found: {0}")]
     Resource(String),
 }
@@ -88,7 +97,11 @@ impl MaterialConfigsCache {
                             in_single_cache = true;
                         }
                         Err(err_single) => {
-                            return Err(MaterialConfigError::Parse(Box::new((err_map, err_single))));
+                            return Err(MaterialConfigError::Parse(Box::new((
+                                subresource.clone(),
+                                err_map,
+                                err_single,
+                            ))));
                         }
                     }
                 }

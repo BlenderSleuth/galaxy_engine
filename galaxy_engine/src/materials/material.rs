@@ -4,10 +4,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ash::vk;
-use ultraviolet::{Vec2, Vec3, Vec4};
 
 use crate::engine::GalaxyEngine;
 use crate::materials::config::{MaterialConfig, MaterialConfigError, ResourceBindingConfig};
+use crate::materials::ResourceBinding;
 use crate::pipelines::{GraphicsPipeline, Pipeline};
 use crate::resource_paths::ResourcePath;
 use crate::textures::{TextureError, TextureManager};
@@ -30,40 +30,7 @@ pub enum MaterialError {
     ResourceError(String),
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Copy, Clone)]
-pub enum ResourceConstant {
-    RGB(u8, u8, u8),
-}
-
-impl ResourceConstant {
-    pub fn as_f32(&self) -> f32 {
-        match *self {
-            ResourceConstant::RGB(r, g, b) => (r as f32 + g as f32 + b as f32) / 3.0 / 255.0,
-        }
-    }
-    pub fn as_vec2(&self) -> Vec2 {
-        match *self {
-            ResourceConstant::RGB(r, g, b) => Vec2::new(r as f32 / 255.0, g as f32 / 255.0),
-        }
-    }
-    pub fn as_vec3(&self) -> Vec3 {
-        match *self {
-            ResourceConstant::RGB(r, g, b) => Vec3::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0),
-        }
-    }
-    pub fn as_vec4(&self) -> Vec4 {
-        match self {
-            ResourceConstant::RGB(_, _, _) => self.as_vec3().into_homogeneous_point(),
-        }
-    }
-}
-
-pub enum ResourceBinding {
-    Texture(u32),
-    Constant(ResourceConstant),
-}
-
-pub type ResourceBindingMap = HashMap<Arc<str>, ResourceBinding>;
+type ResourceBindingMap = HashMap<Arc<str>, ResourceBinding>;
 
 pub struct Material {
     pipeline: Arc<GraphicsPipeline>,
@@ -131,8 +98,8 @@ impl Material {
         self.pipeline.layout()
     }
 
-    pub fn resource_bindings(&self) -> &ResourceBindingMap {
-        &self.resource_bindings
+    pub fn get_resource_binding(&self, bind_point: &str) -> Option<&ResourceBinding> {
+        self.resource_bindings.get(bind_point)
     }
 
     pub fn iter_resource_bindings(&self) -> impl Iterator<Item = &ResourceBinding> {

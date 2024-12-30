@@ -16,18 +16,7 @@ GraphicsPipeline(
     layout: (
         push_constant: DrawOffset, 
         bindings: {
-            "base_colour": (
-                type: Float3, 
-                stages: "Fragment",
-            ),
-            "roughness": (
-                type: Float, 
-                stages: "Fragment",
-            ),
-            "normal": (
-                type: Float2, 
-                stages: "Fragment",
-            ),
+            "base_colour": Float3, 
         }
     ),
 )

@@ -357,7 +357,7 @@ impl PhysicalDevice {
 
         // Require scalar block layout support.
         check_and_enable_feature!(features12.scalar_block_layout);
-        check_and_enable_feature!(features12.uniform_buffer_standard_layout);
+        //check_and_enable_feature!(features12.uniform_buffer_standard_layout);
 
         // Require descriptor indexing support.
         //check_and_enable_feature!(features12.descriptor_indexing);
