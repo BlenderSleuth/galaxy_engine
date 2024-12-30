@@ -78,21 +78,16 @@ pub enum PhysicalDeviceIncompatibility {
 
 pub struct PhysicalDeviceProperties {
     pub base: vk::PhysicalDeviceProperties,
-    pub descriptor_buffer: vk::PhysicalDeviceDescriptorBufferPropertiesEXT<'static>,
 }
 
 impl PhysicalDeviceProperties {
     pub fn new(instance: &ash::Instance, handle: vk::PhysicalDevice) -> PhysicalDeviceProperties {
-        let mut descriptor_buffer_properties = vk::PhysicalDeviceDescriptorBufferPropertiesEXT::default();
-
         // Require compatible physical device properties.
-        let mut physical_device_properties =
-            vk::PhysicalDeviceProperties2::default().push_next(&mut descriptor_buffer_properties);
+        let mut physical_device_properties = vk::PhysicalDeviceProperties2::default();
         unsafe { instance.get_physical_device_properties2(handle, &mut physical_device_properties) };
 
         PhysicalDeviceProperties {
             base: physical_device_properties.properties,
-            descriptor_buffer: descriptor_buffer_properties,
         }
     }
 }
@@ -120,6 +115,7 @@ pub struct PhysicalDevice {
     pub max_msaa_samples: vk::SampleCountFlags,
     // Memory type that can be used for buffers that are written to every frame (all of Host Visible, Host Coherent and Device Local).
     pub volatile_memory_type: MemoryType,
+    // Memory type that should be used for staging buffers (Host Visible, Host Coherent and not Device Local).
     pub staging_memory_type: MemoryType,
     pub mem_properties: vk::PhysicalDeviceMemoryProperties,
     pub enabled_extensions: Vec<&'static CStr>,
@@ -368,8 +364,14 @@ impl PhysicalDevice {
 
         // Require multi-draw indirect support.
         check_and_enable_feature!(features.multi_draw_indirect);
+        // Every mainstream GPU supports at least 2^16 draw indirect commands according to the database.
+        if physical_device_properties.base.limits.max_draw_indirect_count <= u16::MAX as u32 {
+            return Err(PhysicalDeviceIncompatibility::FeatureNotSupported(
+                "Max draw indirect count is too low",
+            ));
+        }
 
-        // Require draw indirect count.
+        // Require draw indirect count (not supported on MoltenVK).
         //check_and_enable_feature!(features12.draw_indirect_count);
 
         let mem_properties = unsafe { instance.get_physical_device_memory_properties(handle) };

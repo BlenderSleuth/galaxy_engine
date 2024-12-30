@@ -37,7 +37,7 @@ impl Instance {
         let entry = unsafe { ash::Entry::load() }?;
 
         // Check Vulkan API version.
-        let api_version = unsafe { entry.try_enumerate_instance_version() }?.unwrap_or_else(|| vk::API_VERSION_1_0);
+        let api_version = unsafe { entry.try_enumerate_instance_version() }?.unwrap_or(vk::API_VERSION_1_0);
 
         // Require minimum VK version.
         if api_version < super::MIN_VK_VERSION {
