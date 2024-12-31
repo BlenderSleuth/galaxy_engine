@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Ben Sutherland.
+// Copyright (c) 2024-2025 Ben Sutherland.
 
 use std::collections::hash_map::Entry;
 

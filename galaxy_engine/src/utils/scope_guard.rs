@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Ben Sutherland.
+// Copyright (c) 2024-2025 Ben Sutherland.
 
 pub struct ScopeGuard<F: FnOnce()> {
     f: Option<F>,

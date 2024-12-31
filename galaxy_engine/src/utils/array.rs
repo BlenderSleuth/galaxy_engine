@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Ben Sutherland.
+// Copyright (c) 2024-2025 Ben Sutherland.
 
 //struct AssertLessThanOrEqual<const N1: usize, const N2: usize>;
 //impl<const N1: usize, const N2: usize> AssertLessThanOrEqual<N1, N2> {

@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Ben Sutherland.
+// Copyright (c) 2024-2025 Ben Sutherland.
 
 #[cfg(feature = "ron")]
 pub fn load_ron_config<'de, T: serde::Deserialize<'de>>(config_str: &'de str) -> ron::error::SpannedResult<T> {
