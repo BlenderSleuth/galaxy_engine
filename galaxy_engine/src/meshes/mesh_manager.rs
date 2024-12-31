@@ -66,6 +66,14 @@ impl LoadingMeshManager {
             Ok(mesh)
         }
     }
+
+    pub(crate) fn finalise_loading(
+        self,
+        engine: &GalaxyEngine,
+        cmd_pool: &mut TransientPrimaryCommandPool,
+    ) -> MemResult<MeshManager> {
+        MeshManager::new(self, engine, cmd_pool)
+    }
 }
 
 #[repr(C)]
@@ -102,7 +110,7 @@ impl MeshManager {
     const VERTEX_COPY_PIPELINE_ID: &'static str = "/engine/megabuffer/vertex_copy";
     const INDEX_COPY_PIPELINE_ID: &'static str = "/engine/megabuffer/index_copy";
 
-    pub(crate) fn new(
+    fn new(
         loading: LoadingMeshManager,
         engine: &GalaxyEngine,
         cmd_pool: &mut TransientPrimaryCommandPool,

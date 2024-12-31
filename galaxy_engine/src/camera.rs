@@ -16,7 +16,7 @@ pub struct CameraConfig {
 
 impl ComponentConfig for CameraConfig {
     fn load(
-        &self,
+        &mut self,
         entity_id: EntityId,
         level: &mut LoadingLevel,
         engine: &GalaxyEngine,

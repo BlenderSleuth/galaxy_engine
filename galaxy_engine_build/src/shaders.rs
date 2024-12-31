@@ -51,6 +51,11 @@ impl ShaderStages {
         //let frag_output_path = input_file_path.with_extension("frag.spv");
         //let comp_output_path = input_file_path.with_extension("comp.spv");
 
+        //let global_session = slang::GlobalSession::new().unwrap();
+        //let options = slang::OptionsBuilder::new()
+        //    .optimization(slang::OptimizationLevel::Maximal)
+        //    .matrix_layout_row(true);
+
         let mut file_stage_args = Vec::new();
         if self.vertex {
             file_stage_args.extend(["-entry", "mainVS", "-stage", "vertex"]);
@@ -87,7 +92,7 @@ impl ShaderStages {
             .args(["-o", output_file_path.to_str().unwrap()]);
 
         if cfg!(feature = "packaged") {
-            command.arg("-g0").arg("-O2");
+            command.arg("-g0").arg("-O3");
         } else {
             command
                 .arg("-g2")

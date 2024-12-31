@@ -11,10 +11,12 @@ pub(crate) use config::*;
 mod extensions;
 pub use extensions::*;
 mod layout;
+mod scope_guard;
 use std::ffi::{c_char, CStr};
 
 use ash::vk;
-pub(crate) use layout::*;
+pub use layout::align_up;
+pub use scope_guard::ScopeGuard;
 
 pub(crate) fn cstr_to_ptrs(c_strs: &[&'static CStr]) -> Vec<*const c_char> {
     c_strs.iter().map(|cstr| cstr.as_ptr()).collect()

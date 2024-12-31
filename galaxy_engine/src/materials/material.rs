@@ -9,7 +9,7 @@ use crate::engine::GalaxyEngine;
 use crate::materials::config::{MaterialConfig, MaterialConfigError, ResourceBindingConfig};
 use crate::materials::ResourceBinding;
 use crate::pipelines::{GraphicsPipeline, Pipeline};
-use crate::resource_paths::ResourcePath;
+use crate::resource_paths::{ResourcePath, SubresourcePath};
 use crate::textures::{TextureError, TextureManager};
 use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::gpu_alloc::MemoryError;
@@ -33,6 +33,7 @@ pub enum MaterialError {
 type ResourceBindingMap = HashMap<Arc<str>, ResourceBinding>;
 
 pub struct Material {
+    path: SubresourcePath,
     pipeline: Arc<GraphicsPipeline>,
     resource_bindings: ResourceBindingMap,
     level_index: u32,
@@ -44,7 +45,7 @@ impl Material {
         engine: &GalaxyEngine,
         texture_manager: &mut TextureManager,
         config: &MaterialConfig,
-        resource_path: &ResourcePath,
+        path: SubresourcePath,
         //buffer_index: u32,
         level_index: u32,
         cmd_pool: &mut TransientPrimaryCommandPool,
@@ -64,11 +65,12 @@ impl Material {
                     .expect("Unknown pipeline bind point."),
             );
             match binding {
-                ResourceBindingConfig::Texture(path) => {
+                ResourceBindingConfig::Texture(texture_path_str) => {
                     // Load texture.
-                    let texture_path = ResourcePath::new(path, Some(resource_path))
-                        .ok_or(MaterialError::ResourceError(path.to_owned()))?;
-                    let texture_index = texture_manager.load_texture(path, &texture_path, engine, cmd_pool)?;
+                    let texture_path = ResourcePath::new(texture_path_str, Some(path.resource()))
+                        .ok_or(MaterialError::ResourceError(texture_path_str.to_owned()))?;
+                    let texture_index =
+                        texture_manager.load_texture(texture_path_str, &texture_path, engine, cmd_pool)?;
                     // Add to resource bindings.
                     resource_bindings.insert(id, ResourceBinding::Texture(texture_index));
                 }
@@ -79,11 +81,16 @@ impl Material {
         }
 
         Ok(Self {
+            path,
             pipeline,
             resource_bindings,
             level_index,
             //buffer_index,
         })
+    }
+
+    pub fn path(&self) -> &SubresourcePath {
+        &self.path
     }
 
     pub fn pipeline(&self) -> &GraphicsPipeline {
@@ -113,29 +120,4 @@ impl Material {
     pub fn level_index(&self) -> u32 {
         self.level_index
     }
-
-    //pub fn buffer_index(&self) -> u32 {
-    //    self.buffer_index
-    //}
-
-    // pub fn shader_stages(&self) -> GraphicsPipelineShaderStages {
-    //     utils::arrayvec_from_array([
-    //         self.vertex_shader_module.stage_info(),
-    //         self.fragment_shader_module.stage_info(),
-    //     ])
-    // }
-
-    // pub fn texture_image(&self) -> &Image {
-    //     &self.texture_image.image()
-    // }
-
-    // pub fn sampler(&self) -> vk::Sampler {
-    //     self.texture_image.sampler()
-    // }
-
-    // pub fn descriptor_set_layout(&self) -> vk::DescriptorSetLayout {
-    //     self.descriptor_set_layout
-    // }
-
-    // pub fn descriptor_set_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding> {}
 }

@@ -9,6 +9,7 @@ use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme};
 use gpu_allocator::MemoryLocation;
 use presser::Slab;
 
+use crate::utils::ScopeGuard;
 use crate::vulkan::command_buffer::RecordingCmdBuf;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
@@ -114,6 +115,7 @@ impl<L: MemLocation> Buffer<L> {
             .usage(usage | L::extra_usage_flags())
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
         let handle = unsafe { device.loader().create_buffer(&buffer_info, None) }?;
+        let mut guard = ScopeGuard::new(|| unsafe { device.loader().destroy_buffer(handle, None) });
 
         // Debug name object.
         debug::set_object_name(device, handle, name)?;
@@ -154,6 +156,8 @@ impl<L: MemLocation> Buffer<L> {
             allocation_scheme,
         };
         let allocation = device.allocate_and_bind_memory(&desc, handle)?;
+
+        guard.defuse();
 
         Ok(Self {
             loader: device.cloned_loader(),

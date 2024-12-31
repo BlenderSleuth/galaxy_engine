@@ -6,8 +6,8 @@ bool is_texture(uint resource_ref) {
     return (resource_ref & TEXTURE_BIT) > 0;
 }
 
-uint resource_index(uint resource_ref) {
-    return resource_ref & ~TEXTURE_BIT;
+int resource_index(uint resource_ref) {
+    return int(resource_ref & ~TEXTURE_BIT);
 }
 
 public struct SceneUniforms {
@@ -27,15 +27,18 @@ public struct SceneData<M = void> {
     public ConstantBuffer<SceneUniforms> scene;
     public StructuredBuffer<float4x4> transforms;
     public StructuredBuffer<DrawData<M>> draw_data;
-    public ByteAddressBuffer constants;
+    public StructuredBuffer<uint4> constants;
     public Sampler2D<float4> textures[];
 
     public vector<float, N> load_resource<let N: uint>(uint resource_ref, float2 tex_coord) {
         let index = resource_index(resource_ref);
+        float4 result;
         if (is_texture(resource_ref)) {
-            return __vectorReshape<N, float, 4>(textures[index].Sample(tex_coord));
+            result = textures[index].Sample(tex_coord);
+        } else {
+            result = asfloat(constants[index]);
         }
-        return constants.LoadAligned<vector<float, N>>(index * 4);
+        return __vectorReshape<N, float, 4>(result);
     }
 
     public float3 load_normal(uint resource_ref, float2 tex_coord) {
@@ -47,7 +50,7 @@ public struct SceneData<M = void> {
             normal.xy = normal.xy * 2. - 1.;
             normal.z = sqrt(1. - dot(normal.xy, normal.xy));
         } else {
-            normal = normalize(constants.Load3Aligned(index * 4));
+            normal = normalize(constants[index].xyz);
         }
 
         return normal;

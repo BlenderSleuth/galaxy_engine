@@ -16,3 +16,4 @@ image = "0.23.5"
 normal-heights = "0.1.2"
 sha3 = "0.10.0"
 bincode.workspace = true
+slang = { git = "https://github.com/FloatyMonkey/slang-rs.git" }

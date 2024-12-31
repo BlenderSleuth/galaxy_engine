@@ -27,7 +27,7 @@ struct GravitySourceConfig {
 
 impl ComponentConfig for GravitySourceConfig {
     fn load(
-        &self,
+        &mut self,
         _entity_id: EntityId,
         _level: &mut LoadingLevel,
         _engine: &GalaxyEngine,

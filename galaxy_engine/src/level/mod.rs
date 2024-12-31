@@ -28,7 +28,7 @@ use crate::vulkan::queue::queue_type::PrimaryQueue;
 #[enum_delegate::register]
 pub trait ComponentConfig {
     fn load(
-        &self, // use self: Box<Self>, if going the boxed route with a custom deserialiser.
+        &mut self, // use self: Box<Self>, if going the boxed route with a custom deserialiser.
         entity_id: EntityId,
         level: &mut LoadingLevel,
         engine: &GalaxyEngine,
@@ -42,7 +42,7 @@ where
     T: Component + Clone + Serialize + for<'a> Deserialize<'a>,
 {
     fn load(
-        &self,
+        &mut self,
         entity_id: EntityId,
         level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
@@ -64,7 +64,7 @@ pub struct LightConfig {
 
 impl ComponentConfig for LightConfig {
     fn load(
-        &self,
+        &mut self,
         _entity_id: EntityId,
         _level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
@@ -111,7 +111,7 @@ pub struct TransformComponent {
 
 impl ComponentConfig for Transform {
     fn load(
-        &self,
+        &mut self,
         entity_id: EntityId,
         level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
@@ -153,7 +153,7 @@ pub struct Scale(f32);
 
 impl ComponentConfig for Scale {
     fn load(
-        &self,
+        &mut self,
         entity_id: EntityId,
         level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
@@ -174,7 +174,7 @@ pub struct AnglePlaneRotor {
 
 impl ComponentConfig for AnglePlaneRotor {
     fn load(
-        &self,
+        &mut self,
         entity_id: EntityId,
         level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
@@ -203,14 +203,15 @@ pub struct Model {
 
 impl ComponentConfig for ModelConfig {
     fn load(
-        &self,
+        &mut self,
         entity_id: EntityId,
         level: &mut LoadingLevel,
         engine: &GalaxyEngine,
         cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> LoadResult<()> {
         if self.materials.is_empty() {
-            return Ok(()); // No materials, nothing to do.
+            self.materials
+                .push(LoadingMaterialManager::DEFAULT_MATERIAL.to_string());
         }
 
         // Load mesh.
@@ -229,7 +230,7 @@ impl ComponentConfig for ModelConfig {
                     engine,
                     &mut level.texture_manager,
                     cmd_pool,
-                    &material_path,
+                    material_path,
                 )?)
             })
             .collect::<LoadResult<Vec<_>>>()?;
@@ -407,13 +408,14 @@ impl Level {
     ) -> Result<Self, LoadError> {
         // TODO: Unload previous level and resources.
 
+        let mut texture_manager = TextureManager::new(&engine.device)?;
         let mut level = LoadingLevel {
             config_path,
             world: World::new(),
             camera_entity: EntityId::dead(),
             mesh_manager: LoadingMeshManager::new(),
-            material_manager: LoadingMaterialManager::new(),
-            texture_manager: TextureManager::new(&engine.device)?,
+            material_manager: LoadingMaterialManager::new(engine, &mut texture_manager, cmd_pool)?,
+            texture_manager,
         };
 
         // Parse level config.
@@ -423,7 +425,7 @@ impl Level {
         // Load level.
         for entity_config in config.entities {
             let id = level.world.add_entity(Name::new(entity_config.name));
-            for component_config in entity_config.components.into_iter() {
+            for mut component_config in entity_config.components.into_iter() {
                 component_config.load(id, &mut level, engine, cmd_pool)?;
             }
         }
@@ -475,8 +477,8 @@ impl Level {
         )?;
 
         // Finish material and mesh loading.
-        let material_manager = MaterialManager::new(level.material_manager, engine, cmd_pool)?;
-        let mesh_manager = MeshManager::new(level.mesh_manager, engine, cmd_pool)?;
+        let material_manager = level.material_manager.finalise_loading(engine, cmd_pool)?;
+        let mesh_manager = level.mesh_manager.finalise_loading(engine, cmd_pool)?;
 
         let draw_data_buffer =
             VolatileBuffer::new_array("Draw data buffer", num_draws, device, VolatileBufferType::Storage)?;
@@ -668,7 +670,8 @@ impl Level {
                 time.sin().abs() as f32,
                 (time + 0.3).sin().abs() as f32,
                 (time + 0.6).sin().abs() as f32,
-            ),
+            )
+            .normalized(),
             delta_time,
         };
 
@@ -730,14 +733,22 @@ impl Level {
                 self.pipeline_draw_ranges = scene_draws
                     .iter()
                     .enumerate()
+                    .peekable()
                     .batching(|scene_draws| {
-                        let mut peekable = scene_draws.peekable();
-                        let (start, start_draw) = peekable.peek()?;
+                        let (start, start_draw) = scene_draws.peek()?;
                         let offset = *start as u32;
                         let pipeline = start_draw.material.cloned_pipeline();
 
-                        let len = peekable.take_while(|(_, sd)| sd.pipeline_id == pipeline.id()).count() as u32;
-                        Some(PipelineDrawSlice { pipeline, offset, len })
+                        let len = scene_draws
+                            .clone()
+                            .take_while(|(_, sd)| sd.pipeline_id == pipeline.id())
+                            .count();
+                        scene_draws.nth(len - 1);
+                        Some(PipelineDrawSlice {
+                            pipeline,
+                            offset,
+                            len: len as u32,
+                        })
                     })
                     .collect();
 

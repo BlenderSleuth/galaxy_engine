@@ -15,7 +15,7 @@ pub mod prelude;
 pub mod resource_paths;
 pub mod static_resources;
 pub mod textures;
-mod utils;
+pub mod utils;
 mod vertex_input;
 pub mod volatile_buffer;
 pub mod vulkan;
