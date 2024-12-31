@@ -96,7 +96,6 @@ impl LoadingMaterialManager {
         texture_manager: &mut TextureManager,
         cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> Result<Self, MaterialError> {
-        // TODO: Upload debug error material to known index.
         let mut material_manager = Self {
             resource_path_map: HashMap::new(),
             materials: Vec::new(),

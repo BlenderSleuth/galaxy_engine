@@ -10,7 +10,7 @@ use ash::vk::Handle;
 use itertools::izip;
 
 use crate::pipelines::config::{ComputePipelineConfig, GraphicsPipelineConfig, PipelineBindingMap};
-use crate::vertex_input::{BindableVertex, PositionColourTexCoordVertex, PositionTexCoordVertex, VertexInputType};
+use crate::vertex_input::{BindableVertex, MeshVertex, PositionTexCoordVertex, VertexInputType};
 use crate::vulkan::device::Device;
 use crate::vulkan::shader::{shader_stage, ShaderModule};
 
@@ -127,7 +127,7 @@ impl GraphicsPipeline {
                     // Vertex input state.
                     match resources.config.shaders.vertex.input_type {
                         VertexInputType::PositionTexCoord => PositionTexCoordVertex::vertex_input_state(),
-                        VertexInputType::PositionColourTexCoord => PositionColourTexCoordVertex::vertex_input_state(),
+                        VertexInputType::Mesh => MeshVertex::vertex_input_state(),
                     },
                     // Multisampling.
                     vk::PipelineMultisampleStateCreateInfo::default()
@@ -145,7 +145,7 @@ impl GraphicsPipeline {
                         .stencil_test_enable(false)
                         .front(Default::default())
                         .back(Default::default()),
-                    dynamic_pipeline_info.clone(),
+                    dynamic_pipeline_info,
                 )
             })
             .collect();

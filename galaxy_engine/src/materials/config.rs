@@ -34,7 +34,7 @@ pub struct MaterialConfig<'a> {
 pub enum MaterialConfigError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("Failed to load material config (map: {:?}, single: {:?})", .0.0, 0.1)]
+    #[error("Failed to parse material config (resource: {:?}, map: {:?}, single: {:?})", .0.0, .0.1, .0.2)]
     Parse(Box<(SubresourcePath, ron::de::SpannedError, ron::de::SpannedError)>),
     #[error("Subresource not found: {0}")]
     Resource(String),

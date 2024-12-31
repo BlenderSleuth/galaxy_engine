@@ -124,14 +124,14 @@ impl<'a> Texture<'a> {
 
                 input_texture_path = cached_normal_path;
                 command
-                    .args(["--assign-oetf", "linear"])
+                    .args(["--assign-oetf", "srgb"])
                     .args(["--format", "R8G8B8_UNORM"])
                     .arg("--normal-mode");
             }
             TextureType::Normal => {
                 command
                     //.args(["--assign-primaries", "BT709"])
-                    //.args(["--assign-oetf", "linear"])
+                    .args(["--assign-oetf", "srgb"])
                     .args(["--format", "R8G8B8_UNORM"])
                     .arg("--normal-mode");
             }

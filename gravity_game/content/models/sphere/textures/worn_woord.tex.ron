@@ -1,0 +1,19 @@
+{
+    //"worn_wood_alb": Texture(
+    //    path: "whnfbg3_8K_Albedo.jpg",
+    //    type: Colour(RGB),
+    //),
+    //"worn_wood_nrm": Texture(
+    //    path: "whnfbg3_8K_Normal.jpg",
+    //    type: Normal,
+    //),
+    "worn_wood_alb": Texture(
+        path: "Albedo_2K__whnfbg3.png",
+        type: Colour(RGB),
+    ),
+    "worn_wood_nrm": Texture(
+        path: "Normal_2K__whnfbg3.png",
+        type: Normal,
+    ),
+}
+

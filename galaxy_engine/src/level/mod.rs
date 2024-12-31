@@ -385,6 +385,13 @@ impl PipelineDrawSlice {
     }
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
+struct SceneTransform {
+    mvp: Mat4,
+    inverse_transpose: Mat4,
+}
+
 pub struct Level {
     pub world: World,
     pub camera_entity: EntityId,
@@ -393,7 +400,7 @@ pub struct Level {
     pub texture_manager: TextureManager,
     scene_descriptor_pool: DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     scene_uniform_buffer: VolatileBuffer<SceneUniformData>,
-    scene_transforms_buffer: VolatileBuffer<Mat4>,
+    scene_transforms_buffer: VolatileBuffer<SceneTransform>,
     draw_data_buffer: VolatileBuffer<DrawData>,
     draw_indirect_buffer: VolatileBuffer<crate::pod::vk::DrawIndexedIndirectCommand>,
     pipeline_draw_ranges: Vec<PipelineDrawSlice>,
@@ -666,12 +673,8 @@ impl Level {
         *self.scene_uniform_buffer.get_mut(frame_index) = SceneUniformData {
             view: view_info.view,
             proj: view_info.projection,
-            sun_direction: Vec3::new(
-                time.sin().abs() as f32,
-                (time + 0.3).sin().abs() as f32,
-                (time + 0.6).sin().abs() as f32,
-            )
-            .normalized(),
+            sun_direction: Vec3::new(time.sin() as f32, (time + 0.3).sin() as f32, (time + 0.6).sin() as f32)
+                .normalized(),
             delta_time,
         };
 
@@ -692,7 +695,10 @@ impl Level {
                         .zip(transform_buffer.iter_mut())
                         .enumerate()
                     {
-                        *transform_mat = view_info.mvp_from_transform(&transform_comp.transform);
+                        let transform = &transform_comp.transform;
+                        transform_mat.mvp = view_info.mvp_from_transform(transform);
+                        transform_mat.inverse_transpose = transform.to_inverse_transpose_matrix();
+
                         transform_comp.scene_index = Some(i as u32);
                     }
                 }

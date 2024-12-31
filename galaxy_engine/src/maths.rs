@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 pub use ultraviolet::{Bivec3, Isometry3, Mat3, Mat4, Rotor3, Similarity3, Vec2, Vec3, Vec4};
 
+pub const SMALL_NUMBER: f32 = 1e-8;
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Transform {
     pub translation: Vec3,
@@ -25,6 +27,26 @@ impl Transform {
         (self.rotation.into_matrix() * Mat3::from_nonuniform_scale(self.scale))
             .into_homogeneous()
             .translated(&self.translation)
+    }
+    pub fn inverse(&self) -> Self {
+        // Ensure invertible.
+        assert!(
+            self.scale.x.abs() > f32::EPSILON && self.scale.y.abs() > f32::EPSILON && self.scale.z.abs() > f32::EPSILON
+        );
+
+        let inv_rotation = self.rotation.reversed();
+        let inv_scale = Vec3::new(1. / self.scale.x, 1. / self.scale.y, 1. / self.scale.z);
+        let mut inv_translation = self.translation * inv_scale;
+        inv_rotation.rotate_vec(&mut inv_translation);
+        inv_translation = -inv_translation;
+        Self {
+            translation: inv_translation,
+            rotation: inv_rotation,
+            scale: inv_scale,
+        }
+    }
+    pub fn to_inverse_transpose_matrix(&self) -> Mat4 {
+        self.inverse().to_matrix().transposed()
     }
 }
 

@@ -17,6 +17,11 @@ public struct SceneUniforms {
     public float delta_time;
 };
 
+public struct SceneTransform {
+    public float4x4 mvp;
+    public float4x4 inverse_transpose;
+}
+
 public struct DrawData<M> {
     public Ptr<M> material;
     public uint transform_index;
@@ -25,7 +30,7 @@ public struct DrawData<M> {
 
 public struct SceneData<M = void> {
     public ConstantBuffer<SceneUniforms> scene;
-    public StructuredBuffer<float4x4> transforms;
+    public StructuredBuffer<SceneTransform> transforms;
     public StructuredBuffer<DrawData<M>> draw_data;
     public StructuredBuffer<uint4> constants;
     public Sampler2D<float4> textures[];

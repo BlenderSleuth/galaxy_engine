@@ -1,8 +1,9 @@
 module vertex_input_types;
 
-//~vertex_input: position_texcoord
-public struct PositionTexCoord {
+public struct MeshVertex {
     public float3 position: POSITION;
-    public uint element_index: ELEMENT_INDEX;
-    public float2 tex_coord: TEXCOORD0;
+    public float tex_coord_u: TEXCOORD0;
+    public float3 normal: NORMAL;
+    public float tex_coord_v: TEXCOORD1;
+    public float4 tangent: TANGENT;
 };

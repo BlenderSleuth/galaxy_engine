@@ -5,7 +5,7 @@ GraphicsPipeline(
             input_type: Mesh,
         ),
         fragment: (
-            id: "simple/unlit",
+            id: "simple/lambertian",
         ),
     ),
     //phase: Opaque,
@@ -17,6 +17,7 @@ GraphicsPipeline(
         push_constant: DrawOffset, 
         bindings: {
             "base_colour": Float3, 
+            "normal": Normal,
         }
     ),
 )

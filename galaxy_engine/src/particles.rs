@@ -9,7 +9,7 @@ use crate::engine::GalaxyEngine;
 use crate::meshes::MeshBuffer;
 use crate::pipelines::{ComputePipeline, GraphicsPipeline, Pipeline};
 use crate::prelude::*;
-use crate::vertex_input::{binding_description_for_type, BindableVertex, PositionTexCoordVertex};
+use crate::vertex_input::{binding_description_for_type, BindableVertex, MeshVertex};
 use crate::vulkan::buffer::{Buffer, GpuOnly};
 use crate::vulkan::command_buffer::{CommandPool, RecordingCmdBuf, RenderingCmdBuf, Transient};
 use crate::vulkan::descriptors::DescriptorPool;
@@ -61,7 +61,7 @@ pub struct GpuParticleSystem {
     _descriptor_pool: DescriptorPool<{ GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     compute_descriptor_set_layout: vk::DescriptorSetLayout,
     compute_descriptor_set: vk::DescriptorSet,
-    mesh_buffer: Arc<MeshBuffer<PositionTexCoordVertex>>,
+    mesh_buffer: Arc<MeshBuffer<MeshVertex>>,
 }
 
 impl GpuParticleSystem {

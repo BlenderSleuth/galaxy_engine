@@ -12,7 +12,7 @@ use crate::maths::grid_size_for_count;
 use crate::meshes::{Mesh, MeshError};
 use crate::pipelines::{ComputeResourceType, Pipeline};
 use crate::resource_paths::ResourcePath;
-use crate::vertex_input::PositionTexCoordVertex;
+use crate::vertex_input::MeshVertex;
 use crate::volatile_buffer::{VolatileBuffer, VolatileBufferType};
 use crate::vulkan::buffer::{Buffer, GpuOnly};
 use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingState, TransientPrimaryCommandPool};
@@ -199,7 +199,7 @@ impl MeshManager {
                 *index_buffer_addr = mesh.buffer().indices_addr();
             }
 
-            let vertices_size = (num_vertices as usize * size_of::<PositionTexCoordVertex>()) as vk::DeviceSize;
+            let vertices_size = (num_vertices as usize * size_of::<MeshVertex>()) as vk::DeviceSize;
             let vertex_megabuffer = Buffer::new(
                 "Level vertex megabuffer",
                 &engine.device,
