@@ -66,6 +66,7 @@ impl Device {
 
         let mut required_device_extensions = vec![
             khr::swapchain::NAME,
+            khr::swapchain_mutable_format::NAME,
             khr::synchronization2::NAME,
             khr::dynamic_rendering::NAME,
         ];

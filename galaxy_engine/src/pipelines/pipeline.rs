@@ -10,7 +10,6 @@ use ash::vk::Handle;
 use itertools::izip;
 
 use crate::pipelines::config::{ComputePipelineConfig, GraphicsPipelineConfig, PipelineBindingMap};
-use crate::vertex_input::{BindableVertex, MeshVertex, PositionTexCoordVertex, VertexInputType};
 use crate::vulkan::device::Device;
 use crate::vulkan::shader::{shader_stage, ShaderModule};
 
@@ -90,20 +89,6 @@ impl GraphicsPipeline {
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .viewport_count(1)
             .scissor_count(1);
-        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
-            .depth_clamp_enable(false)
-            .rasterizer_discard_enable(false)
-            .polygon_mode(vk::PolygonMode::FILL)
-            .line_width(1.0)
-            .cull_mode(vk::CullModeFlags::BACK)
-            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-            .depth_bias_enable(false);
-        let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
-            .color_write_mask(vk::ColorComponentFlags::RGBA)
-            .blend_enable(false);
-        let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
-            .logic_op_enable(false)
-            .attachments(slice::from_ref(&color_blend_attachment));
         let dynamic_pipeline_info = vk::PipelineRenderingCreateInfo::default()
             .color_attachment_formats(slice::from_ref(&device_properties.swapchain_format.format))
             .depth_attachment_format(device.physical_device().depth_stencil_format);
@@ -119,16 +104,47 @@ impl GraphicsPipeline {
             })
             .collect();
 
-        // Store all prerequisite create info for pipeline creation in a separate buffer (that can be referenced by the main one).
-        let mut create_infos: Vec<_> = create_resources
+        let blend_states: Vec<_> = create_resources
             .iter()
             .map(|resources| {
+                let transparent = resources.config.rasteriser.transparent;
+                let mut colour_blend_state = vk::PipelineColorBlendAttachmentState::default()
+                    .color_write_mask(vk::ColorComponentFlags::RGBA)
+                    .blend_enable(transparent);
+                if transparent {
+                    colour_blend_state = colour_blend_state
+                        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+                        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                        .color_blend_op(vk::BlendOp::ADD)
+                        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+                        .alpha_blend_op(vk::BlendOp::ADD)
+                }
+                colour_blend_state
+            })
+            .collect();
+
+        // Store all prerequisite create info for pipeline creation in a separate buffer (that can be referenced by the main one).
+        // TODO: Struct rather than tuple.
+        let mut create_infos: Vec<_> = create_resources
+            .iter()
+            .zip(&blend_states)
+            .map(|(resources, blend_state)| {
                 (
                     // Vertex input state.
-                    match resources.config.shaders.vertex.input_type {
-                        VertexInputType::PositionTexCoord => PositionTexCoordVertex::vertex_input_state(),
-                        VertexInputType::Mesh => MeshVertex::vertex_input_state(),
-                    },
+                    resources.config.shaders.vertex.input_type.state_info(),
+                    // Rasterisation.
+                    vk::PipelineRasterizationStateCreateInfo::default()
+                        .depth_clamp_enable(false)
+                        .rasterizer_discard_enable(false)
+                        .polygon_mode(vk::PolygonMode::FILL)
+                        .line_width(1.0)
+                        .cull_mode(resources.config.rasteriser.backface_cull_mode.vk())
+                        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                        .depth_bias_enable(false),
+                    vk::PipelineColorBlendStateCreateInfo::default()
+                        .logic_op_enable(false)
+                        .attachments(slice::from_ref(blend_state)),
                     // Multisampling.
                     vk::PipelineMultisampleStateCreateInfo::default()
                         .sample_shading_enable(false)
@@ -157,13 +173,13 @@ impl GraphicsPipeline {
                     .vertex_input_state(&infos.0)
                     .input_assembly_state(&input_assembly)
                     .viewport_state(&viewport_state)
-                    .rasterization_state(&rasterizer)
-                    .multisample_state(&infos.1)
-                    .color_blend_state(&color_blend_state)
-                    .depth_stencil_state(&infos.2)
+                    .rasterization_state(&infos.1)
+                    .multisample_state(&infos.3)
+                    .color_blend_state(&infos.2)
+                    .depth_stencil_state(&infos.4)
                     .dynamic_state(&pipeline_dynamic_state)
                     .layout(resources.pipeline_layout)
-                    .push_next(&mut infos.3)
+                    .push_next(&mut infos.5)
             })
             .collect::<Vec<_>>();
 

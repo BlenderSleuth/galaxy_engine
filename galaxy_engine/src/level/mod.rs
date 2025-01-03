@@ -554,7 +554,7 @@ impl Level {
                 // Textures array.
                 vk::WriteDescriptorSet::default()
                     .dst_set(*set)
-                    .dst_binding(4) // Texture buffer is index 3 the in scene descriptor set layout.
+                    .dst_binding(4) // Texture buffer is index 3 in the scene descriptor set layout.
                     .dst_array_element(0)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .image_info(&texture_image_infos)
@@ -827,7 +827,7 @@ impl Level {
             cmd_buf.bind_graphics_pipeline(pipeline);
             cmd_buf.push_constants(
                 layout,
-                vk::ShaderStageFlags::VERTEX,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                 0,
                 &pipeline_draw_range.draw_offset_push_constant(),
             );

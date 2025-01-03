@@ -3,7 +3,6 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::slice;
 use std::sync::Arc;
 
 use ash::prelude::VkResult;
@@ -61,7 +60,7 @@ fn get_or_create_compute_descriptor_set_layout(
 
 fn create_pipeline_layout(
     device: &Device,
-    push_constant_range: Option<&vk::PushConstantRange>,
+    push_constant_range: Option<&[vk::PushConstantRange]>,
     descriptor_set_layout: Option<&[vk::DescriptorSetLayout]>,
 ) -> VkResult<vk::PipelineLayout> {
     let mut pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
@@ -69,7 +68,7 @@ fn create_pipeline_layout(
         pipeline_layout_info = pipeline_layout_info.set_layouts(descriptor_set_layout);
     }
     if let Some(push_constant_range) = push_constant_range {
-        pipeline_layout_info = pipeline_layout_info.push_constant_ranges(slice::from_ref(&push_constant_range));
+        pipeline_layout_info = pipeline_layout_info.push_constant_ranges(&push_constant_range);
     }
     let handle = unsafe { device.loader().create_pipeline_layout(&pipeline_layout_info, None) }?;
 
@@ -93,8 +92,9 @@ fn get_or_create_pipeline_layout(
                 device,
                 push_constant
                     .as_ref()
-                    .map(PushConstantBinding::push_constant_range)
-                    .as_ref(),
+                    .map(PushConstantBinding::push_constant_ranges)
+                    .as_ref()
+                    .map(core::slice::from_ref),
                 Some(&[descriptor_set_layout]),
             )
         })

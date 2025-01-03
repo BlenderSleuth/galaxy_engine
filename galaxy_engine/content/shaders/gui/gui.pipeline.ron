@@ -1,0 +1,22 @@
+GraphicsPipeline(
+    shaders: (
+        vertex: (
+            id: "gui/gui_vs",
+            input_type: Gui,
+        ),
+        fragment: (
+            id: "gui/gui_fs",
+        ),
+    ),
+    //phase: Opaque,
+    rasteriser: (
+        multisample_enable: true,
+        depth_enable: false,
+        backface_cull_mode: None,
+        transparent: true,
+    ),
+    layout: (
+        push_constant: DrawOffset, 
+        bindings: {}
+    ),
+)

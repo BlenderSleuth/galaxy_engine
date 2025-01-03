@@ -4,6 +4,7 @@ pub mod app;
 pub mod camera;
 pub mod engine;
 pub mod game;
+mod gui;
 pub mod level;
 pub mod materials;
 pub mod maths;

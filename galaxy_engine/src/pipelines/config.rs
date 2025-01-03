@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use ash::vk;
 use indexmap::IndexMap;
+use ultraviolet::Vec2;
 
 use crate::vertex_input::VertexInputType;
 
@@ -28,9 +29,36 @@ pub(super) struct GraphicsShaderConfig<'a> {
 }
 
 #[derive(serde::Deserialize, Debug)]
+pub enum BackfaceCullMode {
+    None,
+    Front,
+    Back,
+}
+
+impl BackfaceCullMode {
+    pub fn vk(&self) -> vk::CullModeFlags {
+        match self {
+            Self::None => vk::CullModeFlags::NONE,
+            Self::Front => vk::CullModeFlags::FRONT,
+            Self::Back => vk::CullModeFlags::BACK,
+        }
+    }
+}
+
+impl Default for BackfaceCullMode {
+    fn default() -> Self {
+        Self::Back
+    }
+}
+
+#[derive(serde::Deserialize, Debug)]
 pub(super) struct RasteriserConfig {
     pub multisample_enable: bool,
     pub depth_enable: bool,
+    #[serde(default)]
+    pub backface_cull_mode: BackfaceCullMode,
+    #[serde(default)]
+    pub transparent: bool,
 }
 
 //bitflags::bitflags! {
@@ -84,23 +112,65 @@ impl PipelineBindingDataSize {
 
 pub type PipelineBindingMap<S = Arc<str>> = IndexMap<S, PipelineBindingDataSize>;
 
+#[repr(C)]
+#[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct GuiPushConstants {
+    screen_size: Vec2,
+    tex_idx: u32,
+}
+
 // Todo: better push constant management. List of sizes and shader stages.
 #[derive(serde::Deserialize, Debug, Hash, Copy, Clone, PartialEq, Eq)]
 pub enum PushConstantBinding {
     DrawOffset,
+    //Gui,
     ComputeInt,
     ComputeInt2,
     ComputeInt4,
 }
 
 impl PushConstantBinding {
-    pub fn push_constant_range(&self) -> vk::PushConstantRange {
+    //const DRAW_OFFSET: vk::PushConstantRange = vk::PushConstantRange {
+    //    stage_flags: vk::ShaderStageFlags::VERTEX,
+    //    offset: 0,
+    //    size: std::mem::size_of::<u32>() as u32,
+    //};
+    //const GUI: [vk::PushConstantRange; 2] = [
+    //    vk::PushConstantRange {
+    //        stage_flags: vk::ShaderStageFlags::VERTEX,
+    //        offset: std::mem::offset_of!(GuiPushConstants, screen_size) as u32,
+    //        size: std::mem::size_of::<Vec2>() as u32,
+    //    },
+    //    vk::PushConstantRange {
+    //        stage_flags: vk::ShaderStageFlags(vk::ShaderStageFlags::FRAGMENT.0 | vk::ShaderStageFlags::VERTEX.0),
+    //        offset: std::mem::offset_of!(GuiPushConstants, tex_idx) as u32,
+    //        size: std::mem::size_of::<u32>() as u32,
+    //    },
+    //];
+    //const COMPUTE_INT: vk::PushConstantRange = vk::PushConstantRange {
+    //    stage_flags: vk::ShaderStageFlags::COMPUTE,
+    //    offset: 0,
+    //    size: std::mem::size_of::<u32>() as u32,
+    //};
+    //const COMPUTE_INT2: vk::PushConstantRange = vk::PushConstantRange {
+    //    stage_flags: vk::ShaderStageFlags::COMPUTE,
+    //    offset: 0,
+    //    size: std::mem::size_of::<u32>() as u32 * 2,
+    //};
+    //const COMPUTE_INT4: vk::PushConstantRange = vk::PushConstantRange {
+    //    stage_flags: vk::ShaderStageFlags::COMPUTE,
+    //    offset: 0,
+    //    size: std::mem::size_of::<u32>() as u32 * 4,
+    //};
+
+    pub fn push_constant_ranges(&self) -> vk::PushConstantRange {
         // Note: Generally only access push constant in one shader stage.
+        // TODO: Once graphics pipelines are sorted out properly, use draw offset correctly (currently set up for GUI).
         match self {
             Self::DrawOffset => vk::PushConstantRange::default()
-                .stage_flags(vk::ShaderStageFlags::VERTEX)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                 .offset(0)
-                .size(size_of::<u32>() as u32),
+                .size(size_of::<u32>() as u32 * 3),
             Self::ComputeInt => vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::COMPUTE)
                 .offset(0)

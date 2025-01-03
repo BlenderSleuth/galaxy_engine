@@ -18,6 +18,7 @@ use winit::keyboard::{Key, SmolStr};
 use crate::app::AppInfo;
 use crate::engine::MainLoopError::VulkanError;
 use crate::game::Game;
+use crate::gui::GuiRenderer;
 use crate::level::{DeserializableComponentConfig, Level, LoadResult};
 use crate::materials::MaterialError;
 use crate::meshes::MeshError;
@@ -244,7 +245,7 @@ impl GalaxyEngine {
 
     const MAX_FRAME_TIME: f32 = 1.0 / 60.0;
 
-    pub(crate) fn main_loop(&mut self) -> Result<(), MainLoopError> {
+    pub(crate) fn main_loop(&mut self, gui_renderer: &mut GuiRenderer) -> Result<(), MainLoopError> {
         if self.window_resized {
             self.window_resized = false;
             self.recreate_swapchain()?;
@@ -271,6 +272,28 @@ impl GalaxyEngine {
 
         // Run game update.
         self.game.borrow_mut().update(delta_time);
+
+        // Run egui update.
+        let mut name = "Arthur".to_owned();
+        let mut age = 42;
+        gui_renderer.build_ui(|ctx| {
+            let mut visuals = egui::Visuals::dark();
+            visuals.panel_fill = (egui::Color32::from_rgba_unmultiplied(200, 50, 50, 180));
+            ctx.set_visuals(visuals);
+            egui::SidePanel::new(egui::panel::Side::Right, "Panel").show(ctx, |ui| {
+                ui.heading("My egui Application");
+                ui.horizontal(|ui| {
+                    let name_label = ui.label("Your name: ");
+                    ui.text_edit_singleline(&mut name).labelled_by(name_label.id);
+                });
+                ui.add(egui::Slider::new(&mut age, 0..=120).text("age"));
+                if ui.button("Increment").clicked() {
+                    age += 1;
+                }
+                ui.label(format!("Hello '{name}', age {age}"));
+            });
+            self.game.borrow_mut().gui_update(ctx);
+        });
 
         // Wait for fences of the buffered frame.
         self.primary_cmd_pools[frame_index].get_cmd_buffer(0).wait_for_fence()?;
@@ -308,16 +331,7 @@ impl GalaxyEngine {
             }
             Err(err) => Err(err)?,
         };
-
-        let swapchain_extent = self.swapchain.get_extent();
-
-        let viewport = vk::Viewport::default()
-            .width(swapchain_extent.width as f32)
-            .height(swapchain_extent.height as f32)
-            .min_depth(0.0)
-            .max_depth(1.0);
-
-        let scissor = vk::Rect2D::default().extent(swapchain_extent);
+        let framebuffer_size = self.swapchain.get_extent();
 
         let color_optimal_transition = vk::ImageMemoryBarrier2::default()
             .src_access_mask(vk::AccessFlags2::NONE)
@@ -376,21 +390,45 @@ impl GalaxyEngine {
         let rendering_info = vk::RenderingInfo::default()
             .render_area(vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
-                extent: swapchain_extent,
+                extent: framebuffer_size,
             })
             .layer_count(1)
             .color_attachments(slice::from_ref(&color_attachment_info))
             .depth_attachment(&depth_attachment_info);
 
         let rendering = gfx_cmd_buffer.begin_rendering(ext, &rendering_info)?;
+
+        // Set viewport.
+        let viewport = vk::Viewport::default()
+            .width(framebuffer_size.width as f32)
+            .height(framebuffer_size.height as f32)
+            .min_depth(0.0)
+            .max_depth(1.0);
         rendering.set_viewport(viewport);
+
+        // Set scissor.
+        let scissor = vk::Rect2D::default().extent(framebuffer_size);
         rendering.set_scissor(scissor);
+
+        // Render level.
         {
             let pipeline_manager = &self.pipeline_manager;
             let level_lock = self.level.lock().unwrap();
             if let Some(level) = level_lock.deref() {
                 level.render(&self.device, pipeline_manager, rendering, frame_index);
             };
+        }
+
+        // Render GUI.
+        {
+            let mut transient_cmd_pool = self.transient_cmd_pool.lock().unwrap();
+            gui_renderer.render(
+                &self.device,
+                framebuffer_size,
+                frame_index,
+                &mut transient_cmd_pool,
+                rendering,
+            )?;
         }
         let recording = gfx_cmd_buffer.end_rendering(ext)?;
 

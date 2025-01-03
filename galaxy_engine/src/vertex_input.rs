@@ -3,6 +3,7 @@
 use std::slice;
 
 use ash::vk;
+use egui::epaint;
 use ultraviolet::{Vec2, Vec3};
 
 pub const fn binding_description_for_type<T>() -> vk::VertexInputBindingDescription {
@@ -28,6 +29,17 @@ pub trait BindableVertex<const N: usize>: bytemuck::Pod {
 pub enum VertexInputType {
     PositionTexCoord,
     Mesh,
+    Gui,
+}
+
+impl VertexInputType {
+    pub fn state_info(&self) -> vk::PipelineVertexInputStateCreateInfo {
+        match self {
+            VertexInputType::PositionTexCoord => PositionTexCoordVertex::vertex_input_state(),
+            VertexInputType::Mesh => MeshVertex::vertex_input_state(),
+            VertexInputType::Gui => epaint::Vertex::vertex_input_state(),
+        }
+    }
 }
 
 #[repr(C)]
@@ -94,6 +106,36 @@ impl BindableVertex<NUM_MESH_VERTEX_ATTRIBUTES> for MeshVertex {
                 location: 2,
                 format: vk::Format::R32G32_SFLOAT,
                 offset: std::mem::offset_of!(MeshVertex, tex_coord) as u32,
+            },
+        ];
+        &DESCRIPTIONS
+    }
+}
+
+impl BindableVertex<3> for epaint::Vertex {
+    fn binding_description() -> &'static vk::VertexInputBindingDescription {
+        const DESCRIPTION: vk::VertexInputBindingDescription = binding_description_for_type::<epaint::Vertex>();
+        &DESCRIPTION
+    }
+    fn attribute_descriptions() -> &'static [vk::VertexInputAttributeDescription; 3] {
+        const DESCRIPTIONS: [vk::VertexInputAttributeDescription; 3] = [
+            vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 0,
+                format: vk::Format::R32G32_SFLOAT,
+                offset: std::mem::offset_of!(epaint::Vertex, pos) as u32,
+            },
+            vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 1,
+                format: vk::Format::R32G32_SFLOAT,
+                offset: std::mem::offset_of!(epaint::Vertex, uv) as u32,
+            },
+            vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 2,
+                format: vk::Format::R8G8B8A8_UNORM,
+                offset: std::mem::offset_of!(epaint::Vertex, color) as u32,
             },
         ];
         &DESCRIPTIONS

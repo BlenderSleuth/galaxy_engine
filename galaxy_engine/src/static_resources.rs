@@ -4,6 +4,7 @@ use std::f32::consts::FRAC_1_SQRT_2;
 use std::ops::Deref;
 use std::sync::Arc;
 
+use ash::vk;
 use parking_lot::RwLock;
 
 use crate::meshes::MeshBuffer;
@@ -48,6 +49,7 @@ impl StaticResources {
                 &Self::QUAD_INDICES,
                 device,
                 cmd_pool,
+                vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER,
             )?),
             octagon_buffer: Arc::new(MeshBuffer::new_from_vertices_and_indices(
                 "Octagon",
@@ -55,6 +57,7 @@ impl StaticResources {
                 &Self::OCTAGON_INDICES,
                 device,
                 cmd_pool,
+                vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER,
             )?),
         };
 

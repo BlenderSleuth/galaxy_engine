@@ -2,6 +2,7 @@
 
 use std::ffi::CString;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub use ash::vk::make_api_version;
 use bitflags::bitflags;
@@ -15,6 +16,7 @@ use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use crate::engine::GalaxyEngine;
 use crate::game::Game;
+use crate::gui::GuiRenderer;
 use crate::utils;
 
 bitflags! {
@@ -70,10 +72,17 @@ macro_rules! unwrap_or_exit {
     };
 }
 
+// Valid post-resumed event.
+struct ActiveApp {
+    // Importantly dropped in this order.
+    egui_renderer: GuiRenderer,
+    engine: GalaxyEngine,
+    window: Arc<Window>,
+}
+
 pub struct GalaxyApp {
     app_info: AppInfo,
-    window: Option<Window>,
-    engine: Option<GalaxyEngine>,
+    active: Option<ActiveApp>,
     // Temporary storage for the game init data until the engine is created.
     game_temp: Option<Box<dyn Game>>,
     last_frame_time: std::time::Instant,
@@ -83,8 +92,7 @@ impl GalaxyApp {
     pub fn new(app_info: AppInfo, game: Box<dyn Game>) -> Self {
         Self {
             app_info,
-            window: None,
-            engine: None,
+            active: None,
             game_temp: Some(game),
             last_frame_time: std::time::Instant::now(),
         }
@@ -94,13 +102,15 @@ impl GalaxyApp {
 impl ApplicationHandler for GalaxyApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let title = unwrap_or_exit!(self.app_info.name.to_str(), "Title is not valid UTF-8: {}", event_loop);
-        let window_attributes = Window::default_attributes().with_title(title);
+        let viewport_builder = egui::ViewportBuilder::default().with_title(title);
 
-        let window = unwrap_or_exit!(
-            event_loop.create_window(window_attributes),
+        let egui_ctx = egui::Context::default();
+
+        let window = Arc::new(unwrap_or_exit!(
+            egui_winit::create_window(&egui_ctx, event_loop, &viewport_builder,),
             "Failed to create window: {}\nExiting.",
             event_loop
-        );
+        ));
 
         if cfg!(target_os = "macos") {
             window.set_cursor_grab(CursorGrabMode::Locked).unwrap();
@@ -122,7 +132,7 @@ impl ApplicationHandler for GalaxyApp {
 
         let PhysicalSize { width, height } = window.inner_size();
 
-        self.engine = Some(unwrap_or_exit!(
+        let engine = unwrap_or_exit!(
             GalaxyEngine::new(
                 &self.app_info,
                 display_handle,
@@ -133,17 +143,44 @@ impl ApplicationHandler for GalaxyApp {
             ),
             "Failed to create engine: {}.\nExiting.",
             event_loop
-        ));
-        self.window = Some(window);
+        );
+
+        let egui_renderer = unwrap_or_exit!(
+            GuiRenderer::new(egui_ctx, Arc::clone(&window), event_loop, &engine),
+            "Failed to create GUI renderer: {}.\nExiting.",
+            event_loop
+        );
+
+        let active = ActiveApp {
+            window,
+            engine,
+            egui_renderer,
+        };
+
+        self.active = Some(active);
+
         self.last_frame_time = std::time::Instant::now();
 
-        if let Some(engine) = self.engine.as_mut() {
-            unwrap_or_exit!(engine.startup(), "Failed to start engine: {}.\nExiting.", event_loop);
-        }
+        unwrap_or_exit!(
+            self.active.as_mut().unwrap().engine.startup(),
+            "Failed to start engine: {}.\nExiting.",
+            event_loop
+        );
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
         if event_loop.exiting() {
+            return;
+        }
+
+        let Some(active) = self.active.as_mut() else {
+            return;
+        };
+
+        debug_assert_eq!(_window_id, active.window.id());
+
+        // Process egui events. Returns true if the event should be passed along to the game.
+        if !active.egui_renderer.on_window_event(&event) {
             return;
         }
 
@@ -152,14 +189,10 @@ impl ApplicationHandler for GalaxyApp {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
-                if let Some(engine) = self.engine.as_mut() {
-                    engine.notify_window_resize(size.width, size.height);
-                }
+                active.engine.notify_window_resize(size.width, size.height);
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if let Some(engine) = self.engine.as_mut() {
-                    engine.notify_keyboard_input(&event);
-                }
+                active.engine.notify_keyboard_input(&event);
 
                 if let Key::Named(key) = event.logical_key {
                     match key {
@@ -168,23 +201,21 @@ impl ApplicationHandler for GalaxyApp {
                         }
                         NamedKey::F11 => {
                             if event.state.is_pressed() {
-                                if let Some(window) = self.window.as_ref() {
-                                    // TODO: Set up fullscreen options for the user, and prefer borderless on macOS.
-                                    if window.fullscreen().is_none() {
-                                        let monitor = window.current_monitor().unwrap();
-                                        if let Some(video_mode) = monitor.video_modes().max_by(|a, b| {
-                                            a.size()
-                                                .cmp(&b.size())
-                                                .then(a.refresh_rate_millihertz().cmp(&b.refresh_rate_millihertz()))
-                                        }) {
-                                            log::info!("Fullscreen video mode: {:?}", video_mode);
-                                            window.set_fullscreen(Some(Fullscreen::Exclusive(video_mode)));
-                                        } else {
-                                            log::warn!("No fullscreen video modes found.");
-                                        }
+                                // TODO: Set up fullscreen options for the user, and prefer borderless on macOS.
+                                if active.window.fullscreen().is_none() {
+                                    let monitor = active.window.current_monitor().unwrap();
+                                    if let Some(video_mode) = monitor.video_modes().max_by(|a, b| {
+                                        a.size()
+                                            .cmp(&b.size())
+                                            .then(a.refresh_rate_millihertz().cmp(&b.refresh_rate_millihertz()))
+                                    }) {
+                                        log::info!("Fullscreen video mode: {:?}", video_mode);
+                                        active.window.set_fullscreen(Some(Fullscreen::Exclusive(video_mode)));
                                     } else {
-                                        window.set_fullscreen(None);
+                                        log::warn!("No fullscreen video modes found.");
                                     }
+                                } else {
+                                    active.window.set_fullscreen(None);
                                 }
                             }
                         }
@@ -193,14 +224,14 @@ impl ApplicationHandler for GalaxyApp {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if let Some(engine) = self.engine.as_mut() {
-                    engine.notify_mouse_button(state, button);
-                }
+                active.engine.notify_mouse_button(state, button);
             }
             WindowEvent::RedrawRequested => {
-                if let Some(engine) = self.engine.as_mut() {
-                    unwrap_or_exit!(engine.main_loop(), "Main loop error: {}.\nExiting.", event_loop);
-                }
+                unwrap_or_exit!(
+                    active.engine.main_loop(&mut active.egui_renderer),
+                    "Main loop error: {}.\nExiting.",
+                    event_loop
+                );
             }
             _ => {}
         }
@@ -211,16 +242,17 @@ impl ApplicationHandler for GalaxyApp {
             return;
         }
 
+        let Some(active) = self.active.as_mut() else {
+            return;
+        };
+
         match event {
             DeviceEvent::MouseMotion { delta } => {
-                if let Some(engine) = self.engine.as_mut() {
-                    engine.notify_mouse_motion(delta.0 as f32, delta.1 as f32);
-                }
+                active.egui_renderer.on_mouse_motion(delta);
+                active.engine.notify_mouse_motion(delta.0 as f32, delta.1 as f32);
             }
             DeviceEvent::MouseWheel { delta } => {
-                if let Some(engine) = self.engine.as_mut() {
-                    engine.notify_mouse_wheel(delta);
-                }
+                active.engine.notify_mouse_wheel(delta);
             }
             _ => {}
         }
@@ -231,8 +263,8 @@ impl ApplicationHandler for GalaxyApp {
             return;
         }
 
-        if let Some(window) = self.window.as_ref() {
-            window.request_redraw();
+        if let Some(active) = self.active.as_ref() {
+            active.window.request_redraw();
         }
     }
 }

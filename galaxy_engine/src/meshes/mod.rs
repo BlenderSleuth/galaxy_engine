@@ -55,6 +55,7 @@ impl<V: bytemuck::Pod> MeshBuffer<V> {
         indices: &[I],
         device: &Device,
         cmd_pool: &mut TransientPrimaryCommandPool,
+        usage: vk::BufferUsageFlags,
     ) -> MemResult<Self> {
         // Ensure proper alignment.
         let indices_offset = Self::pad_vertices_size::<I>(size_of_val(vertices));
@@ -64,10 +65,7 @@ impl<V: bytemuck::Pod> MeshBuffer<V> {
             debug::debug_only_name!("{name} meshes buffer"),
             device,
             buffer_size,
-            vk::BufferUsageFlags::TRANSFER_DST
-                //| vk::BufferUsageFlags::VERTEX_BUFFER
-                //| vk::BufferUsageFlags::INDEX_BUFFER 
-                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            vk::BufferUsageFlags::TRANSFER_DST | usage,
         )?;
 
         let mut staging_buffer = Buffer::<Staging>::new(
@@ -109,7 +107,6 @@ impl<V: bytemuck::Pod> MeshBuffer<V> {
         self.buffer.device_address() + self.indices_offset
     }
 
-    #[deprecated]
     pub fn bind(&self, cmd_buffer: &mut RecordingCmdBuf<PrimaryQueue, impl RenderingState>) {
         cmd_buffer.bind_vertex_buffer(&self.buffer, 0);
         cmd_buffer.bind_index_buffer(&self.buffer, self.indices_offset, self.index_type);
@@ -161,6 +158,7 @@ impl Mesh {
             &loaded_obj.indices,
             &engine.device,
             cmd_pool,
+            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         )?;
         log::info!(
             "Loaded mesh: {} has {} vertices and {} indices.",

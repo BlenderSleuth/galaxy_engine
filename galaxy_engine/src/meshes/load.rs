@@ -125,7 +125,7 @@ impl MeshData {
             traversed_list[v_idx] = true;
             let mut stack = vec![v_idx as u32];
             while let Some(v_idx) = stack.pop() {
-                for &adj in &adjacency[v_idx as usize] {
+                for &adj in adjacency[v_idx as usize].iter() {
                     if !traversed_list[adj as usize] {
                         traversed_list[adj as usize] = true;
                         if quats[v_idx as usize].dot(quats[adj as usize]) < 0. {
