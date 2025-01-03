@@ -826,6 +826,7 @@ dependencies = [
  "self_cell",
  "serde",
  "shipyard",
+ "smallvec",
  "thiserror 2.0.0",
  "ultraviolet",
  "winit",
@@ -1199,14 +1200,14 @@ dependencies = [
 
 [[package]]
 name = "meshopt"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a278a2ffc00b14e113fa542f08de253c8c989b9eb3588c87c93bbfa0931bbb18"
+checksum = "4b87fa02c060ffe367138c480622816cd627418bec30fec71b20725fb9ba10a5"
 dependencies = [
  "bitflags 2.6.0",
  "cc",
  "float-cmp",
- "thiserror 1.0.66",
+ "thiserror 2.0.0",
 ]
 
 [[package]]

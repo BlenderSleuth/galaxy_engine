@@ -1,8 +1,6 @@
 import common.scene_data;
 import common.vertex_output_types;
-
-// TODO: Lambertian requires a vertex tangent space.
-typedef PositionTexCoordVStoFS VSToFS;
+import common.quat;
 
 struct MaterialData {
     uint base_colour;
@@ -14,19 +12,20 @@ ParameterBlock<SceneData<MaterialData>> scene_data;
 
 [shader("fragment")]
 float4 mainFS(VSToFS vertex_input) : SV_TARGET0 {
+    let qtangent = vertex_input.qtangent.normalised();
+
     let mat = scene_data.draw_data[vertex_input.draw_index].material;
 
+    var tangent_normal = scene_data.load_normal(mat.normal, vertex_input.tex_coord);
+    let world_normal = qtangent.rotate_vec(tangent_normal);
+
     let base_colour = scene_data.load_resource<3>(mat.base_colour, vertex_input.tex_coord);
-
-    let normal = normalize(vertex_input.normal);
-    let tangent = normalize(vertex_input.tangent.xyz);
-    let bitangent = normalize(cross(normal, tangent)) * vertex_input.tangent.w;
-    let tangent_matrix = float3x3(tangent, bitangent, normal);
-
-    let tangent_normal = scene_data.load_normal(mat.normal, vertex_input.tex_coord);
-    let world_normal = normalize(mul(tangent_normal, tangent_matrix));
-
     let lit_colour = base_colour * saturate(dot(world_normal, scene_data.scene.sun_direction));
 
-    return float4(lit_colour, 1.0);
+    //return float4(vertex_input.qtangent.q.xyz, 1.);
+    // return float4(qtangent.q.w);
+    //return float4(vertex_input.tex_coord, 0., 1.);
+    //return float4(vertex_input.tex_coord, vertex_input.vertex_id, 1.);
+    //return float4(vertex_input.vertex_id.xxx, 1.);
+    return float4(lit_colour, 1.);
 }

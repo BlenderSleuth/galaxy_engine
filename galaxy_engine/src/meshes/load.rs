@@ -9,27 +9,172 @@ use std::path::Path;
 use bevy_mikktspace::Geometry;
 use meshopt::VertexDataAdapter;
 use obj::raw::object::Polygon;
-use ultraviolet::{Vec3, Vec4};
+use ultraviolet::{Vec2, Vec3};
 
 use crate::meshes::MeshElementOffset;
+use crate::prelude::*;
 use crate::vertex_input::MeshVertex;
 
-//#[repr(C)]
-//#[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
-//pub struct RawMeshVertex {
-//    position: Vec3,
-//    normal: Vec3,
-//    tex_coord: Vec2,
-//    tangent: Vec4,
-//}
+#[repr(C)]
+#[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
+pub struct RawMeshVertex {
+    position: Vec3,
+    normal: Vec3,
+    tex_coord: Vec2,
+    tangent: Vec3,
+    handedness: f32,
+}
 
-pub struct RawMeshData {
+pub struct RawMeshVertices {
+    pub vertices: Vec<RawMeshVertex>,
+    pub indices: Vec<u32>,
+}
+
+impl RawMeshVertices {
+    fn index_for_face_vertex(&self, face: usize, vert: usize) -> usize {
+        self.indices[face * 3 + vert] as usize
+    }
+
+    fn get_vertex(&self, face: usize, vert: usize) -> &RawMeshVertex {
+        &self.vertices[self.index_for_face_vertex(face, vert)]
+    }
+
+    fn get_vertex_mut(&mut self, face: usize, vert: usize) -> &mut RawMeshVertex {
+        let index = self.index_for_face_vertex(face, vert);
+        &mut self.vertices[index]
+    }
+}
+
+impl Geometry for RawMeshVertices {
+    fn num_faces(&self) -> usize {
+        self.indices.len() / 3
+    }
+
+    fn num_vertices_of_face(&self, _face: usize) -> usize {
+        3
+    }
+
+    fn position(&self, face: usize, vert: usize) -> [f32; 3] {
+        let vertex = self.get_vertex(face, vert);
+        [vertex.position.x, vertex.position.y, vertex.position.z]
+    }
+
+    fn normal(&self, face: usize, vert: usize) -> [f32; 3] {
+        let vertex = self.get_vertex(face, vert);
+        [vertex.normal.x, vertex.normal.y, vertex.normal.z]
+    }
+
+    fn tex_coord(&self, face: usize, vert: usize) -> [f32; 2] {
+        let vertex = self.get_vertex(face, vert);
+        [vertex.tex_coord.x, vertex.tex_coord.y]
+    }
+
+    fn set_tangent_encoded(&mut self, tangent: [f32; 4], face: usize, vert: usize) {
+        let vertex = self.get_vertex_mut(face, vert);
+        vertex.tangent = Vec3::new(tangent[0], tangent[1], tangent[2]).normalized();
+        vertex.handedness = tangent[3];
+    }
+}
+
+pub struct MeshData {
     pub vertices: Vec<MeshVertex>,
     pub indices: Vec<u32>,
     pub elements: Vec<MeshElementOffset>,
 }
 
-impl RawMeshData {
+impl MeshData {
+    fn process_vertices(raw: &[RawMeshVertex], indices: &[u32]) -> Vec<MeshVertex> {
+        //let start = std::time::Instant::now();
+        // Construct adjacency information.
+        let mut adjacency = vec![smallvec::SmallVec::<[u32; 8]>::new(); indices.len()]; // Vertices usually aren't connected to more than 8 neighbours.
+        for tri in indices.chunks_exact(3) {
+            adjacency[tri[0] as usize].push(tri[1]);
+            adjacency[tri[0] as usize].push(tri[2]);
+            adjacency[tri[1] as usize].push(tri[0]);
+            adjacency[tri[1] as usize].push(tri[2]);
+            adjacency[tri[2] as usize].push(tri[0]);
+            adjacency[tri[2] as usize].push(tri[1]);
+        }
+        //log::info!("Constructed adjacency in {:?}", start.elapsed());
+
+        // Calculate quaternion tangent frames.
+        //let start = std::time::Instant::now();
+        let mut quats: Vec<_> = raw
+            .iter()
+            .map(|v| {
+                // Calculate right-handed TBN matrix.
+                let normal = v.normal; // Normal is normalised on load.
+                let tangent = v.tangent; // Tangent is normalised when calculated.
+                let bitangent = normal.cross(tangent).normalized(); // Should panic if something went wrong.
+                let tangent = bitangent.cross(normal); // Ensure orthogonality.
+
+                let tbn_mat = Mat3::new(tangent, bitangent, normal);
+                tbn_mat.into_rotor3().normalized()
+            })
+            .collect();
+        //log::info!("Calculated quaternions in {:?}", start.elapsed());
+
+        // Align quaternions so they interpolate correctly across triangles.
+        //let start = std::time::Instant::now();
+        let mut traversed_list = vec![false; raw.len()];
+        // For each untraversed vertex.
+        for v_idx in 0..raw.len() {
+            if traversed_list[v_idx] {
+                continue;
+            }
+            traversed_list[v_idx] = true;
+            let mut stack = vec![v_idx as u32];
+            while let Some(v_idx) = stack.pop() {
+                for &adj in &adjacency[v_idx as usize] {
+                    if !traversed_list[adj as usize] {
+                        traversed_list[adj as usize] = true;
+                        if quats[v_idx as usize].dot(quats[adj as usize]) < 0. {
+                            quats[adj as usize] *= -1.;
+                        }
+
+                        stack.push(adj);
+                    }
+                }
+            }
+        }
+        //log::info!("Aligned quaternions in {:?}", start.elapsed());
+
+        // Quantise and pack quaternions.
+        //let start = std::time::Instant::now();
+        let result = raw
+            .iter()
+            .zip(quats)
+            .map(|(v, q)| {
+                let quaternion = rotor_to_shader_quat(q);
+                // Quantise quaternion.
+                let mut qtangent = [0u8; 4];
+                qtangent
+                    .iter_mut()
+                    .zip(quaternion.iter())
+                    .take(3)
+                    .for_each(|(snorm, component)| {
+                        *snorm = to_unorm(component * 0.5 + 0.5);
+                    });
+
+                // Pack the w component (see GPU Pro 5, p.361, "Quaternions Revisited").
+                // In the source for that article the high bit encodes whether the handedness is inverted (0 = inverted, 1 = standard).
+                let high_bit: u8 = if v.handedness > 0. { 0x80 } else { 0 };
+                let quantised_w = to_unorm(quaternion[3] * 0.5 + 0.5) >> 1;
+                debug_assert!(quantised_w <= 127);
+                qtangent[3] = high_bit | quantised_w;
+
+                MeshVertex {
+                    position: v.position,
+                    qtangent,
+                    tex_coord: v.tex_coord,
+                }
+            })
+            .collect();
+        //log::info!("Quantised quaternions in {:?}", start.elapsed());
+
+        result
+    }
+
     pub fn load_obj(obj_path: &Path) -> Result<Self, obj::ObjError> {
         let mtl_path = obj_path.with_extension("mtl");
 
@@ -73,12 +218,13 @@ impl RawMeshData {
                     let p = positions[pi];
                     let n = normals[ni];
                     let t = tex_coords[ti];
-                    let vertex = MeshVertex {
+                    let vertex = RawMeshVertex {
                         position: Vec3::new(p.0, p.1, p.2),
-                        tex_coord_u: t.0,
-                        normal: Vec3::new(n.0, n.1, n.2),
-                        tex_coord_v: t.1,
-                        tangent: Vec4::zero(),
+                        tex_coord: Vec2::new(t.0, 1. - t.1),
+                        //tex_coord: Vec2::new(t.0, t.1),
+                        normal: Vec3::new(n.0, n.1, n.2).normalized(),
+                        tangent: Vec3::zero(),
+                        handedness: 1.,
                     };
 
                     let index = u32::try_from(vb.len())
@@ -159,8 +305,8 @@ impl RawMeshData {
             meshopt::optimize_vertex_cache_in_place(&mut element_indices, vertex_count);
             let vertex_data_adapter = VertexDataAdapter::new(
                 bytemuck::must_cast_slice(&element_vertices),
-                std::mem::size_of::<MeshVertex>(),
-                std::mem::offset_of!(MeshVertex, position),
+                std::mem::size_of::<RawMeshVertex>(),
+                std::mem::offset_of!(RawMeshVertex, position),
             )
             .unwrap();
             meshopt::optimize_overdraw_in_place(&mut element_indices, &vertex_data_adapter, 1.05);
@@ -178,59 +324,21 @@ impl RawMeshData {
                 index_count: element_indices.len() as u32,
             });
         }
-
         log::info!("Optimized mesh in {:?}", start.elapsed());
 
-        let mut mesh = Self {
+        let start = std::time::Instant::now();
+        let mut raw_mesh = RawMeshVertices { vertices, indices: ib };
+        assert!(bevy_mikktspace::generate_tangents(&mut raw_mesh));
+        log::info!("Generated tangents in {:?}", start.elapsed());
+
+        let start = std::time::Instant::now();
+        let vertices = Self::process_vertices(&raw_mesh.vertices, &raw_mesh.indices);
+        log::info!("Processed vertices in {:?}", start.elapsed());
+
+        Ok(Self {
             vertices,
-            indices: ib,
+            indices: raw_mesh.indices,
             elements,
-        };
-        assert!(bevy_mikktspace::generate_tangents(&mut mesh));
-
-        Ok(mesh)
-    }
-
-    fn index_for_face_vertex(&self, face: usize, vert: usize) -> usize {
-        self.indices[face * 3 + vert] as usize
-    }
-
-    fn get_vertex(&self, face: usize, vert: usize) -> &MeshVertex {
-        &self.vertices[self.index_for_face_vertex(face, vert)]
-    }
-
-    fn get_vertex_mut(&mut self, face: usize, vert: usize) -> &mut MeshVertex {
-        let index = self.index_for_face_vertex(face, vert);
-        &mut self.vertices[index]
-    }
-}
-
-impl Geometry for RawMeshData {
-    fn num_faces(&self) -> usize {
-        self.indices.len() / 3
-    }
-
-    fn num_vertices_of_face(&self, _face: usize) -> usize {
-        3
-    }
-
-    fn position(&self, face: usize, vert: usize) -> [f32; 3] {
-        let vertex = self.get_vertex(face, vert);
-        [vertex.position.x, vertex.position.y, vertex.position.z]
-    }
-
-    fn normal(&self, face: usize, vert: usize) -> [f32; 3] {
-        let vertex = self.get_vertex(face, vert);
-        [vertex.normal.x, vertex.normal.y, vertex.normal.z]
-    }
-
-    fn tex_coord(&self, face: usize, vert: usize) -> [f32; 2] {
-        let vertex = self.get_vertex(face, vert);
-        [vertex.tex_coord_u, vertex.tex_coord_v]
-    }
-
-    fn set_tangent_encoded(&mut self, tangent: [f32; 4], face: usize, vert: usize) {
-        let vertex = self.get_vertex_mut(face, vert);
-        vertex.tangent = Vec4::from(tangent);
+        })
     }
 }

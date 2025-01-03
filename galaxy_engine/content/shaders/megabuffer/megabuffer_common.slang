@@ -15,8 +15,8 @@ struct PushConstants {
 struct Resources {
     // Vertices:
     StructuredBuffer<MeshBufferOffset> vertex_offsets;
-    StructuredBuffer<Ptr<MeshVertex>> vertex_buffers;
-    RWStructuredBuffer<MeshVertex, ScalarDataLayout> vertex_megabuffer;
+    StructuredBuffer<Ptr<MeshVertexLayout>> vertex_buffers;
+    RWStructuredBuffer<MeshVertexLayout, ScalarDataLayout> vertex_megabuffer;
     // Indices:
     StructuredBuffer<MeshBufferOffset> index_offsets;
     StructuredBuffer<Ptr<uint>> index_buffers;

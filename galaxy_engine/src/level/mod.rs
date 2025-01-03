@@ -160,7 +160,7 @@ impl ComponentConfig for Scale {
         _cmd_pool: &mut TransientPrimaryCommandPool,
     ) -> LoadResult<()> {
         level.world.update_transform_with(entity_id, |transform| {
-            transform.scale = Vec3::broadcast(self.0);
+            transform.scale = self.0;
         });
         Ok(())
     }
@@ -389,7 +389,7 @@ impl PipelineDrawSlice {
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
 struct SceneTransform {
     mvp: Mat4,
-    inverse_transpose: Mat4,
+    quat: [f32; 4],
 }
 
 pub struct Level {
@@ -495,11 +495,10 @@ impl Level {
         let transform_buffer_info = scene_transforms_buffer.descriptor_buffer_infos();
         let draw_data_buffer_info = draw_data_buffer.descriptor_buffer_infos();
         let texture_image_infos = level.texture_manager.get_image_infos();
-        //let material_buffer_info = material_manager.material_data_addresses_info();
         let material_constant_buffer_info = material_manager.material_constant_buffer_info();
 
         let mut descriptor_writes: ArrayVec<
-            _,
+            vk::WriteDescriptorSet,
             { GalaxyEngine::MAX_FRAMES_IN_FLIGHT * PipelineManager::NUM_SCENE_DESCRIPTOR_SET_BINDINGS },
         > = descriptor_pool
             .iter()
@@ -656,6 +655,17 @@ impl Level {
                 cam_transform.translation += camera_velocity * MOVE_SPEED * delta_time;
             }
         }
+
+        // Update scene data.
+        self.world
+            .run(|mut vm_transforms: ViewMut<TransformComponent>, v_names: View<Name>| {
+                (&mut vm_transforms, &v_names).iter().for_each(|(transform, name)| {
+                    if name.name() == "sphere" {
+                        let delta = Rotor3::from_angle_plane(delta_time * (45_f32.to_radians()), Bivec3::unit_xy());
+                        transform.transform.rotation = delta * transform.transform.rotation;
+                    }
+                });
+            });
     }
 
     // Called after the gpu fence, so gpu buffers can be updated.
@@ -697,8 +707,8 @@ impl Level {
                     {
                         let transform = &transform_comp.transform;
                         transform_mat.mvp = view_info.mvp_from_transform(transform);
-                        transform_mat.inverse_transpose = transform.to_inverse_transpose_matrix();
-
+                        let rot = transform.rotation;
+                        transform_mat.quat = rotor_to_shader_quat(rot);
                         transform_comp.scene_index = Some(i as u32);
                     }
                 }

@@ -27,7 +27,7 @@ serde = { workspace = true, features = ["derive"] }
 gpu-allocator = { version = "0.27.0", default-features = false, features = ["vulkan"] }
 presser = "0.3.1"
 obj-rs = "0.7.4"
-meshopt = "0.4.0"
+meshopt = "0.4.1"
 ktx2.workspace = true
 parking_lot = { version = "0.12.3", default-features = false }
 castaway = { version = "0.2.3", default-features = false }
@@ -43,6 +43,7 @@ basis-universal = { path = "../crates/basis-universal-rs/basis-universal" }
 self_cell = "1.1.0"
 path-slash = "0.2.1"
 bevy_mikktspace = "0.15.0"
+smallvec = "1.13.2"
 
 [build-dependencies]
 galaxy_engine_build = { path = "../galaxy_engine_build" }

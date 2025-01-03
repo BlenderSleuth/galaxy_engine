@@ -154,7 +154,7 @@ impl Mesh {
         level_element_offset: u32,
     ) -> Result<Self, MeshError> {
         let obj_path = mesh_path.full_path::<resource_type::Mesh>(engine);
-        let loaded_obj = load::RawMeshData::load_obj(&obj_path)?;
+        let loaded_obj = load::MeshData::load_obj(&obj_path)?;
         let mesh_buffer = MeshBuffer::new_from_vertices_and_indices(
             name,
             &loaded_obj.vertices,

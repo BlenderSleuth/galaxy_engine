@@ -1,9 +1,13 @@
 module vertex_input_types;
 
 public struct MeshVertex {
-    public float3 position: POSITION;
-    public float tex_coord_u: TEXCOORD0;
-    public float3 normal: NORMAL;
-    public float tex_coord_v: TEXCOORD1;
-    public float4 tangent: TANGENT;
+    public float3 position : POSITION;
+    public float4 packed_qtangent: QTANGENT;
+    public float2 tex_coord: TEXCOORD0;
+};
+
+public struct MeshVertexLayout {
+    public float3 position;
+    public uint packed_qtangent;
+    public float2 tex_coord;
 };

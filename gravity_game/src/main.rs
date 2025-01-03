@@ -1,6 +1,6 @@
 // Copyright (c) 2024-2025 Ben Sutherland.
 
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(not(feature = "debug_info"), windows_subsystem = "windows")]
 
 use app::{AppFlags, AppInfo, GalaxyApp};
 use galaxy_engine::engine::GalaxyEngine;

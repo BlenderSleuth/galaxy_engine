@@ -1,8 +1,6 @@
 import common.scene_data;
 import common.vertex_output_types;
 
-typedef PositionTexCoordVStoFS VSToFS;
-
 struct MaterialData {
     uint base_colour;
 }

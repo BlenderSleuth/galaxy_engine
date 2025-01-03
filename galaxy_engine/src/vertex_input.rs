@@ -3,12 +3,12 @@
 use std::slice;
 
 use ash::vk;
-use ultraviolet::{Vec2, Vec3, Vec4};
+use ultraviolet::{Vec2, Vec3};
 
 pub const fn binding_description_for_type<T>() -> vk::VertexInputBindingDescription {
     vk::VertexInputBindingDescription {
         binding: 0,
-        stride: std::mem::size_of::<T>() as u32,
+        stride: size_of::<T>() as u32,
         input_rate: vk::VertexInputRate::VERTEX,
     }
 }
@@ -60,23 +60,23 @@ impl BindableVertex<2> for PositionTexCoordVertex {
         &DESCRIPTIONS
     }
 }
+
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]
 pub struct MeshVertex {
     pub position: Vec3,
-    pub tex_coord_u: f32,
-    pub normal: Vec3,
-    pub tex_coord_v: f32,
-    pub tangent: Vec4,
+    pub qtangent: [u8; 4],
+    pub tex_coord: Vec2,
 }
 
-impl BindableVertex<5> for MeshVertex {
+const NUM_MESH_VERTEX_ATTRIBUTES: usize = 3;
+impl BindableVertex<NUM_MESH_VERTEX_ATTRIBUTES> for MeshVertex {
     fn binding_description() -> &'static vk::VertexInputBindingDescription {
         const DESCRIPTION: vk::VertexInputBindingDescription = binding_description_for_type::<MeshVertex>();
         &DESCRIPTION
     }
-    fn attribute_descriptions() -> &'static [vk::VertexInputAttributeDescription; 5] {
-        const DESCRIPTIONS: [vk::VertexInputAttributeDescription; 5] = [
+    fn attribute_descriptions() -> &'static [vk::VertexInputAttributeDescription; NUM_MESH_VERTEX_ATTRIBUTES] {
+        const DESCRIPTIONS: [vk::VertexInputAttributeDescription; NUM_MESH_VERTEX_ATTRIBUTES] = [
             vk::VertexInputAttributeDescription {
                 binding: 0,
                 location: 0,
@@ -86,26 +86,14 @@ impl BindableVertex<5> for MeshVertex {
             vk::VertexInputAttributeDescription {
                 binding: 0,
                 location: 1,
-                format: vk::Format::R32_SFLOAT,
-                offset: std::mem::offset_of!(MeshVertex, tex_coord_u) as u32,
+                format: vk::Format::R8G8B8A8_UNORM,
+                offset: std::mem::offset_of!(MeshVertex, qtangent) as u32,
             },
             vk::VertexInputAttributeDescription {
                 binding: 0,
                 location: 2,
-                format: vk::Format::R32G32B32_SFLOAT,
-                offset: std::mem::offset_of!(MeshVertex, normal) as u32,
-            },
-            vk::VertexInputAttributeDescription {
-                binding: 0,
-                location: 3,
-                format: vk::Format::R32_SFLOAT,
-                offset: std::mem::offset_of!(MeshVertex, tex_coord_v) as u32,
-            },
-            vk::VertexInputAttributeDescription {
-                binding: 0,
-                location: 4,
-                format: vk::Format::R32G32B32A32_SFLOAT,
-                offset: std::mem::offset_of!(MeshVertex, tangent) as u32,
+                format: vk::Format::R32G32_SFLOAT,
+                offset: std::mem::offset_of!(MeshVertex, tex_coord) as u32,
             },
         ];
         &DESCRIPTIONS

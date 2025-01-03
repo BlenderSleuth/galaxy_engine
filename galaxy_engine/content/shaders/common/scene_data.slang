@@ -1,4 +1,5 @@
 module scene_uniforms;
+import quat;
 
 static const uint TEXTURE_BIT = 0x80000000;
 
@@ -17,9 +18,9 @@ public struct SceneUniforms {
     public float delta_time;
 };
 
-public struct SceneTransform {
+public struct ModelTransform {
     public float4x4 mvp;
-    public float4x4 inverse_transpose;
+    public Quat model_quat;
 }
 
 public struct DrawData<M> {
@@ -30,7 +31,7 @@ public struct DrawData<M> {
 
 public struct SceneData<M = void> {
     public ConstantBuffer<SceneUniforms> scene;
-    public StructuredBuffer<SceneTransform> transforms;
+    public StructuredBuffer<ModelTransform> transforms;
     public StructuredBuffer<DrawData<M>> draw_data;
     public StructuredBuffer<uint4> constants;
     public Sampler2D<float4> textures[];

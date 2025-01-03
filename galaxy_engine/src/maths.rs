@@ -3,13 +3,11 @@
 use serde::{Deserialize, Serialize};
 pub use ultraviolet::{Bivec3, Isometry3, Mat3, Mat4, Rotor3, Similarity3, Vec2, Vec3, Vec4};
 
-pub const SMALL_NUMBER: f32 = 1e-8;
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Transform {
     pub translation: Vec3,
     pub rotation: Rotor3,
-    pub scale: Vec3,
+    pub scale: f32,
 }
 
 impl Default for Transform {
@@ -17,37 +15,62 @@ impl Default for Transform {
         Self {
             translation: Vec3::zero(),
             rotation: Rotor3::identity(),
-            scale: Vec3::one(),
+            scale: 1.,
         }
     }
 }
 
 impl Transform {
+    pub fn invertible(&self) -> bool {
+        //self.scale.x.abs() > f32::EPSILON && self.scale.y.abs() > f32::EPSILON && self.scale.z.abs() > f32::EPSILON
+        self.scale.abs() > f32::EPSILON
+    }
+
     pub fn to_matrix(&self) -> Mat4 {
-        (self.rotation.into_matrix() * Mat3::from_nonuniform_scale(self.scale))
+        (self.rotation.into_matrix() * Mat3::from_scale(self.scale))
             .into_homogeneous()
             .translated(&self.translation)
     }
+
     pub fn inverse(&self) -> Self {
         // Ensure invertible.
-        assert!(
-            self.scale.x.abs() > f32::EPSILON && self.scale.y.abs() > f32::EPSILON && self.scale.z.abs() > f32::EPSILON
-        );
+        assert!(self.invertible());
 
         let inv_rotation = self.rotation.reversed();
-        let inv_scale = Vec3::new(1. / self.scale.x, 1. / self.scale.y, 1. / self.scale.z);
+        //let inv_scale = Vec3::new(1. / self.scale.x, 1. / self.scale.y, 1. / self.scale.z);
+        let inv_scale = self.scale.recip();
         let mut inv_translation = self.translation * inv_scale;
         inv_rotation.rotate_vec(&mut inv_translation);
         inv_translation = -inv_translation;
+
         Self {
             translation: inv_translation,
             rotation: inv_rotation,
             scale: inv_scale,
         }
     }
-    pub fn to_inverse_transpose_matrix(&self) -> Mat4 {
-        self.inverse().to_matrix().transposed()
-    }
+
+    //pub fn to_inverse_transpose_matrix(&self) -> Mat3 {
+    //    // Ensure invertible.
+    //    assert!(self.invertible());
+
+    //    let inv_rotation = self.rotation.reversed();
+    //    let inv_scale = Vec3::new(1. / self.scale.x, 1. / self.scale.y, 1. / self.scale.z);
+    //    (Mat3::from_nonuniform_scale(inv_scale) * inv_rotation.into_matrix()).transposed()
+    //}
+
+    //// Rotor component of the inverse transpose matrix.
+    //pub fn to_inverse_transpose_rotor(&self) -> Rotor3 {
+    //    self.to_inverse_transpose_matrix().into_rotor3()
+    //}
+}
+
+pub fn rotor_to_shader_quat(rotor: Rotor3) -> [f32; 4] {
+    [rotor.bv.xz, rotor.bv.yz, rotor.bv.xy, rotor.s]
+}
+
+pub fn to_unorm(v: f32) -> u8 {
+    (v * 255.).round() as u8
 }
 
 // Euler angles in degrees.
