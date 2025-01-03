@@ -5,6 +5,7 @@ import common.quat;
 struct MaterialData {
     uint base_colour;
     uint normal;
+    uint shininess;
 }
 
 [[vk::binding(0, 0)]] 
@@ -21,12 +22,16 @@ float4 mainFS(VSToFS vertex_input) : SV_TARGET0 {
     var tangent_normal = scene_data.load_normal(mat.normal, vertex_input.tex_coord);
     let world_normal = qtangent.rotate_vec(tangent_normal);
 
-    let lit_colour = base_colour * saturate(dot(world_normal, scene_data.scene.sun_direction));
+    let lambertian = saturate(dot(world_normal, scene_data.scene.sun_direction));
 
-    //return float4(vertex_input.qtangent.q.xyz, 1.);
-    // return float4(qtangent.q.w);
-    //return float4(vertex_input.tex_coord, 0., 1.);
-    //return float4(vertex_input.tex_coord, vertex_input.vertex_id, 1.);
-    //return float4(vertex_input.vertex_id.xxx, 1.);
+    let shininess = scene_data.load_resource<1>(mat.shininess, vertex_input.tex_coord);
+
+    let view_dir = normalize(scene_data.scene.view_position - vertex_input.world_position);
+    let half_dir = normalize(view_dir + scene_data.scene.sun_direction);
+    let specular = pow(saturate(dot(world_normal, half_dir)), shininess);
+
+    let lit_colour = base_colour * lambertian + specular + scene_data.scene.ambient_light;
+
     return float4(lit_colour, 1.);
 }
+

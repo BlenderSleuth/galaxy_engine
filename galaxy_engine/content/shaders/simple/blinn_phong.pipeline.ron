@@ -1,0 +1,24 @@
+GraphicsPipeline(
+    shaders: (
+        vertex: (
+            id: "common/apply_mvp_vs",
+            input_type: Mesh,
+        ),
+        fragment: (
+            id: "simple/blinn_phong",
+        ),
+    ),
+    //phase: Opaque,
+    rasteriser: (
+        multisample_enable: true,
+        depth_enable: true,
+    ),
+    layout: (
+        push_constant: DrawOffset, 
+        bindings: {
+            "base_colour": Float3, 
+            "normal": Normal,
+            "shininess": Float,
+        }
+    ),
+)

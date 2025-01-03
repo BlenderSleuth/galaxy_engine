@@ -82,6 +82,7 @@ pub struct ViewInfo {
     pub view: Mat4,
     pub projection: Mat4,
     pub view_projection: Mat4,
+    pub view_position: Vec3,
 }
 
 impl ViewInfo {
@@ -97,6 +98,7 @@ impl ViewInfo {
             view,
             projection,
             view_projection: projection * view,
+            view_position: transform.translation,
         }
     }
 

@@ -13,8 +13,11 @@ VSToFS mainVS(uniform uint draw_offset, uint draw_index: SV_DrawIndex, MeshVerte
     let draw_index = draw_offset + draw_index;
     output.draw_index = draw_index;
 
+    // TODO: Use a SQT instead of a model matrix (given we're using quats anyway).
     let transform = scene_data.transforms[scene_data.draw_data[draw_index].transform_index];
-    output.position = mul(float4(input.position.xyz, 1.), transform.mvp);
+    let world_position = mul(float4(input.position.xyz, 1.), transform.model);
+    output.world_position = world_position.xyz;
+    output.position = mul(world_position, scene_data.scene.view_projection);
     output.tex_coord = input.tex_coord;
 
     // TODO: This does not take non-uniform scale into account.

@@ -13,13 +13,16 @@ int resource_index(uint resource_ref) {
 
 public struct SceneUniforms {
     public float4x4 view;
-    public float4x4 projection;
-    public float3 sun_direction;
+    public float4x4 view_projection;
+    public float3 view_position;
     public float delta_time;
+    public float3 sun_direction;
+    float padding;
+    public float3 ambient_light;
 };
 
 public struct ModelTransform {
-    public float4x4 mvp;
+    public float4x4 model;
     public Quat model_quat;
 }
 

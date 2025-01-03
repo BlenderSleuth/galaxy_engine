@@ -343,9 +343,12 @@ pub type LoadResult<T> = Result<T, LoadError>;
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
 pub struct SceneUniformData {
     view: Mat4,
-    proj: Mat4,
-    sun_direction: Vec3,
+    view_projection: Mat4,
+    view_position: Vec3,
     delta_time: f32,
+    sun_direction: Vec3,
+    padding: f32,
+    ambient_light: Vec3,
 }
 
 #[repr(C)]
@@ -388,7 +391,7 @@ impl PipelineDrawSlice {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
 struct SceneTransform {
-    mvp: Mat4,
+    model: Mat4,
     quat: [f32; 4],
 }
 
@@ -661,7 +664,7 @@ impl Level {
             .run(|mut vm_transforms: ViewMut<TransformComponent>, v_names: View<Name>| {
                 (&mut vm_transforms, &v_names).iter().for_each(|(transform, name)| {
                     if name.name() == "sphere" {
-                        let delta = Rotor3::from_angle_plane(delta_time * (45_f32.to_radians()), Bivec3::unit_xy());
+                        let delta = Rotor3::from_angle_plane(delta_time * (30_f32.to_radians()), Bivec3::unit_xy());
                         transform.transform.rotation = delta * transform.transform.rotation;
                     }
                 });
@@ -682,10 +685,13 @@ impl Level {
         // Update scene uniforms.
         *self.scene_uniform_buffer.get_mut(frame_index) = SceneUniformData {
             view: view_info.view,
-            proj: view_info.projection,
+            view_projection: view_info.view_projection,
             sun_direction: Vec3::new(time.sin() as f32, (time + 0.3).sin() as f32, (time + 0.6).sin() as f32)
                 .normalized(),
             delta_time,
+            view_position: view_info.view_position,
+            padding: 0.,
+            ambient_light: Vec3::new(0.005, 0.0, 0.01),
         };
 
         // Update scene data.
@@ -706,9 +712,8 @@ impl Level {
                         .enumerate()
                     {
                         let transform = &transform_comp.transform;
-                        transform_mat.mvp = view_info.mvp_from_transform(transform);
-                        let rot = transform.rotation;
-                        transform_mat.quat = rotor_to_shader_quat(rot);
+                        transform_mat.model = transform.to_matrix();
+                        transform_mat.quat = rotor_to_shader_quat(transform.rotation);
                         transform_comp.scene_index = Some(i as u32);
                     }
                 }
