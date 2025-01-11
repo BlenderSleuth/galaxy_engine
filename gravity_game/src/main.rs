@@ -67,8 +67,7 @@ impl Game for GravityGame {
     fn update(&mut self, _delta_time: f32) {}
 
     fn gui_update(&mut self, ctx: &egui::Context) {
-        let mut visuals = egui::Visuals::dark();
-        visuals.panel_fill = egui::Color32::from_rgba_unmultiplied(200, 50, 50, 180);
+        let visuals = egui::Visuals::dark();
         ctx.set_visuals(visuals);
         egui::SidePanel::new(egui::panel::Side::Right, "Panel").show(ctx, |ui| {
             ui.heading("My egui Application");

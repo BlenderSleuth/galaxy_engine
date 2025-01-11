@@ -8,6 +8,7 @@ use ash::{khr, vk};
 
 use crate::engine::GalaxyEngine;
 use crate::utils;
+use crate::utils::linear_from_srgb_format;
 use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::MemResult;
@@ -17,12 +18,24 @@ use crate::vulkan::queue::queue_type::PrimaryQueue;
 use crate::vulkan::queue::Queue;
 use crate::vulkan::surface::Surface;
 
+pub struct SwapchainImage<'a> {
+    pub index: u32,
+    pub image: vk::Image,
+    pub colour_resolve: vk::ImageView,
+    pub colour_resolve_linear: vk::ImageView,
+    pub srgb: vk::ImageView,
+    pub linear: vk::ImageView,
+    _marker: std::marker::PhantomData<&'a ()>,
+}
+
 pub struct Swapchain {
     loader: khr::swapchain::Device,
     handle: vk::SwapchainKHR,
     images: Vec<vk::Image>,
     image_views: Vec<ImageView>,
+    linear_image_views: Vec<ImageView>,
     colour_resolve_image: Option<Image>,
+    colour_resolve_linear_view: Option<ImageView>,
     depth_image: ManuallyDrop<Image>,
     extent: vk::Extent2D,
     msaa_samples: vk::SampleCountFlags,
@@ -58,14 +71,20 @@ impl Swapchain {
                 ),
             }
         };
-        let swapchain_format = device_properties.swapchain_format;
+        let surface_srgb_format = device_properties.surface_format;
+        let surface_linear_format = device_properties.surface_linear_format;
 
-        let loader = khr::swapchain::Device::new(instance.loader(), &device.loader());
+        let loader = khr::swapchain::Device::new(instance.loader(), device.loader());
+
+        let view_formats = [surface_srgb_format.format, surface_linear_format];
+
+        let mut view_format_list = vk::ImageFormatListCreateInfo::default().view_formats(&view_formats);
         let swapchain_info = vk::SwapchainCreateInfoKHR::default()
+            .flags(vk::SwapchainCreateFlagsKHR::MUTABLE_FORMAT)
             .surface(surface.handle())
             .min_image_count(device_properties.swapchain_image_count)
-            .image_format(swapchain_format.format)
-            .image_color_space(swapchain_format.color_space)
+            .image_format(surface_srgb_format.format)
+            .image_color_space(surface_srgb_format.color_space)
             .image_extent(swapchain_extent)
             .image_array_layers(1)
             .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
@@ -74,7 +93,8 @@ impl Swapchain {
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(device_properties.presentation_mode)
             .clipped(true)
-            .old_swapchain(old_swapchain.map_or(vk::SwapchainKHR::null(), |swapchain| swapchain.handle));
+            .old_swapchain(old_swapchain.map_or(vk::SwapchainKHR::null(), |swapchain| swapchain.handle))
+            .push_next(&mut view_format_list);
 
         let handle = unsafe { loader.create_swapchain(&swapchain_info, None) }?;
 
@@ -84,16 +104,25 @@ impl Swapchain {
         // Create image views.
         let mut image_view_info = vk::ImageViewCreateInfo::default()
             .view_type(vk::ImageViewType::TYPE_2D)
-            .format(swapchain_format.format)
             .components(vk::ComponentMapping::default())
             .subresource_range(utils::DEFAULT_SUBRESOURCE_RANGE);
-        let image_views = images
-            .iter()
-            .map(|swapchain_image| {
-                image_view_info.image = *swapchain_image;
-                unsafe { ImageView::new(device, &image_view_info) }
-            })
-            .collect::<VkResult<Vec<_>>>()?;
+
+        let mut create_image_views = |images: &[vk::Image], format: vk::Format| -> VkResult<Vec<ImageView>> {
+            image_view_info.format = format;
+            images
+                .iter()
+                .map(|swapchain_image| {
+                    image_view_info.image = *swapchain_image;
+                    unsafe { ImageView::new(device, &image_view_info) }
+                })
+                .collect::<VkResult<_>>()
+        };
+
+        // Create srgb image views.
+        let image_views = create_image_views(&images, surface_srgb_format.format)?;
+
+        // Create linear image views.
+        let linear_image_views = create_image_views(&images, linear_from_srgb_format(surface_srgb_format.format))?;
 
         let msaa_samples = if device
             .physical_device()
@@ -108,22 +137,36 @@ impl Swapchain {
         // Create colour resolve image for multisampling.
         let colour_resolve_image = if msaa_samples > vk::SampleCountFlags::TYPE_1 {
             let colour_resolve_info = vk::ImageCreateInfo::default()
+                .flags(vk::ImageCreateFlags::MUTABLE_FORMAT)
                 .image_type(vk::ImageType::TYPE_2D)
                 .extent(swapchain_extent.into())
                 .mip_levels(1)
                 .array_layers(1)
-                .format(device_properties.swapchain_format.format)
+                .format(surface_srgb_format.format)
                 .tiling(vk::ImageTiling::OPTIMAL)
                 .initial_layout(vk::ImageLayout::UNDEFINED)
                 .usage(vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE)
-                .samples(msaa_samples);
+                .samples(msaa_samples)
+                .push_next(&mut view_format_list);
             Some(Image::new(
                 "Colour resolve image",
                 &device,
                 &colour_resolve_info,
                 Self::get_subresource_range(),
             )?)
+        } else {
+            None
+        };
+
+        let colour_resolve_linear_view = if let Some(image) = &colour_resolve_image {
+            let image_view_info = vk::ImageViewCreateInfo::default()
+                .image(image.handle())
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(linear_from_srgb_format(surface_srgb_format.format))
+                .components(vk::ComponentMapping::default())
+                .subresource_range(Self::get_subresource_range());
+            Some(unsafe { ImageView::new(device, &image_view_info) }?)
         } else {
             None
         };
@@ -165,7 +208,9 @@ impl Swapchain {
             handle,
             images,
             image_views,
+            linear_image_views,
             colour_resolve_image,
+            colour_resolve_linear_view,
             depth_image: ManuallyDrop::new(depth_image),
             extent: swapchain_extent,
             msaa_samples,
@@ -176,20 +221,19 @@ impl Swapchain {
         self.extent
     }
 
-    pub fn get_colour_resolve_view(&self, image_idx: u32) -> &ImageView {
-        self.colour_resolve_image
-            .as_ref()
-            .map(|image| image.view())
-            .unwrap_or(&self.image_views[image_idx as usize])
-    }
+    //fn get_colour_resolve_view(&self, image_idx: u32) -> vk::ImageView {}
 
-    pub fn get_images(&self) -> &[vk::Image] {
-        &self.images
-    }
+    //pub fn get_images(&self) -> &[vk::Image] {
+    //    &self.images
+    //}
 
-    pub fn get_image_views(&self) -> &[ImageView] {
-        &self.image_views
-    }
+    //pub fn get_image_view(&self, index: u32) -> vk::ImageView {
+    //    self.image_views[index as usize].handle()
+    //}
+    //
+    //pub fn get_linear_image_view(&self, index: u32) -> vk::ImageView {
+    //    self.linear_image_views[index as usize].handle()
+    //}
 
     pub fn get_depth_view(&self) -> &ImageView {
         self.depth_image.view()
@@ -209,8 +253,30 @@ impl Swapchain {
         self.msaa_samples
     }
 
-    pub fn acquire_next_image(&self, semaphore: vk::Semaphore, fence: vk::Fence) -> VkResult<(u32, bool)> {
-        unsafe { self.loader.acquire_next_image(self.handle, u64::MAX, semaphore, fence) }
+    pub fn acquire_next_image(&self, semaphore: vk::Semaphore, fence: vk::Fence) -> VkResult<(SwapchainImage, bool)> {
+        let (index, optimal) = unsafe { self.loader.acquire_next_image(self.handle, u64::MAX, semaphore, fence) }?;
+        let i = index as usize;
+        Ok((
+            SwapchainImage {
+                index,
+                image: self.images[i],
+                colour_resolve: self
+                    .colour_resolve_image
+                    .as_ref()
+                    .map(|image| image.view())
+                    .unwrap_or(&self.image_views[i])
+                    .handle(),
+                colour_resolve_linear: self
+                    .colour_resolve_linear_view
+                    .as_ref()
+                    .map(|view| view.handle())
+                    .unwrap_or(self.linear_image_views[i].handle()),
+                srgb: self.image_views[i].handle(),
+                linear: self.linear_image_views[i].handle(),
+                _marker: std::marker::PhantomData,
+            },
+            optimal,
+        ))
     }
 
     pub fn queue_present(

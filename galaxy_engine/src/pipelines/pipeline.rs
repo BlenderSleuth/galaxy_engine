@@ -9,7 +9,9 @@ use ash::vk;
 use ash::vk::Handle;
 use itertools::izip;
 
-use crate::pipelines::config::{ComputePipelineConfig, GraphicsPipelineConfig, PipelineBindingMap};
+use crate::pipelines::config::{
+    ColourAttachmentColourSpace, ComputePipelineConfig, GraphicsPipelineConfig, PipelineBindingMap,
+};
 use crate::vulkan::device::Device;
 use crate::vulkan::shader::{shader_stage, ShaderModule};
 
@@ -80,7 +82,7 @@ impl GraphicsPipeline {
         }
 
         // Constant pipeline creation infos.
-        let device_properties = device.physical_device();
+        let physical_device = device.physical_device();
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
@@ -89,9 +91,6 @@ impl GraphicsPipeline {
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .viewport_count(1)
             .scissor_count(1);
-        let dynamic_pipeline_info = vk::PipelineRenderingCreateInfo::default()
-            .color_attachment_formats(slice::from_ref(&device_properties.swapchain_format.format))
-            .depth_attachment_format(device.physical_device().depth_stencil_format);
 
         // Create shader stages arrays.
         let shader_stages: Vec<[vk::PipelineShaderStageCreateInfo; 2]> = create_resources
@@ -161,7 +160,14 @@ impl GraphicsPipeline {
                         .stencil_test_enable(false)
                         .front(Default::default())
                         .back(Default::default()),
-                    dynamic_pipeline_info,
+                    vk::PipelineRenderingCreateInfo::default()
+                        .color_attachment_formats(slice::from_ref(
+                            match resources.config.rasteriser.attachment_colour_space {
+                                ColourAttachmentColourSpace::Srgb => &physical_device.surface_format.format,
+                                ColourAttachmentColourSpace::Linear => &physical_device.surface_linear_format,
+                            },
+                        ))
+                        .depth_attachment_format(device.physical_device().depth_stencil_format),
                 )
             })
             .collect();

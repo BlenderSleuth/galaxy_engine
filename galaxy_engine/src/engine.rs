@@ -307,7 +307,7 @@ impl GalaxyEngine {
         // Begin graphics command buffer recording.
 
         // Acquire image from swapchain.
-        let (image_idx, _is_suboptimal) = match self
+        let (swapchain_image, _is_suboptimal) = match self
             .swapchain
             .acquire_next_image(self.image_available_semaphores[frame_index].handle(), vk::Fence::null())
         {
@@ -327,7 +327,7 @@ impl GalaxyEngine {
             .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
             .old_layout(vk::ImageLayout::UNDEFINED)
             .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .image(self.swapchain.get_images()[image_idx as usize])
+            .image(swapchain_image.image)
             .subresource_range(Swapchain::get_subresource_range());
 
         let ext = self.device.extensions();
@@ -349,20 +349,8 @@ impl GalaxyEngine {
                     float32: [0.0, 0.0, 0.0, 0.0],
                 },
             });
-        if self.swapchain.msaa_samples() == vk::SampleCountFlags::TYPE_1 {
-            // Render directly to swapchain image.
-            color_attachment_info = color_attachment_info
-                .image_view(self.swapchain.get_image_views()[image_idx as usize].handle())
-                .store_op(vk::AttachmentStoreOp::STORE);
-        } else {
-            // Render to MSAA image and resolve to swapchain image.
-            color_attachment_info = color_attachment_info
-                .image_view(self.swapchain.get_colour_resolve_view(image_idx).handle())
-                .store_op(vk::AttachmentStoreOp::DONT_CARE)
-                .resolve_mode(vk::ResolveModeFlags::AVERAGE)
-                .resolve_image_view(self.swapchain.get_image_views()[image_idx as usize].handle())
-                .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-        }
+        color_attachment_info.image_view = swapchain_image.colour_resolve;
+        color_attachment_info.store_op = vk::AttachmentStoreOp::STORE;
 
         let depth_attachment_info = vk::RenderingAttachmentInfo::default()
             .image_view(self.swapchain.get_depth_view().handle())
@@ -374,11 +362,12 @@ impl GalaxyEngine {
                 depth_stencil: vk::ClearDepthStencilValue { depth: 0.0, stencil: 0 },
             });
 
+        let render_area = vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: framebuffer_size,
+        };
         let rendering_info = vk::RenderingInfo::default()
-            .render_area(vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: framebuffer_size,
-            })
+            .render_area(render_area)
             .layer_count(1)
             .color_attachments(slice::from_ref(&color_attachment_info))
             .depth_attachment(&depth_attachment_info);
@@ -405,8 +394,28 @@ impl GalaxyEngine {
                 level.render(&self.device, pipeline_manager, rendering, frame_index);
             };
         }
+        // Finish pass.
+        gfx_cmd_buffer.end_rendering(ext)?;
 
-        // Render GUI.
+        // Render GUI in separate pass.
+        color_attachment_info.image_view = swapchain_image.colour_resolve_linear;
+        color_attachment_info.load_op = vk::AttachmentLoadOp::LOAD;
+        if self.swapchain.msaa_samples() == vk::SampleCountFlags::TYPE_1 {
+            // Render directly to swapchain image.
+            color_attachment_info.store_op = vk::AttachmentStoreOp::STORE;
+        } else {
+            // Render to MSAA image and resolve to swapchain image.
+            color_attachment_info.store_op = vk::AttachmentStoreOp::DONT_CARE;
+            color_attachment_info.resolve_mode = vk::ResolveModeFlags::AVERAGE;
+            color_attachment_info.resolve_image_view = swapchain_image.linear;
+            color_attachment_info.resolve_image_layout = vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL;
+        }
+        let rendering_info = vk::RenderingInfo::default()
+            .render_area(render_area)
+            .layer_count(1)
+            .color_attachments(slice::from_ref(&color_attachment_info));
+
+        let rendering = gfx_cmd_buffer.begin_rendering(ext, &rendering_info)?;
         {
             let mut transient_cmd_pool = self.transient_cmd_pool.lock().unwrap();
             gui_renderer.render(
@@ -428,7 +437,7 @@ impl GalaxyEngine {
             .dst_stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE)
             .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-            .image(self.swapchain.get_images()[image_idx as usize])
+            .image(swapchain_image.image)
             .subresource_range(Swapchain::get_subresource_range());
 
         let dependency_info = vk::DependencyInfo::default()
@@ -453,7 +462,7 @@ impl GalaxyEngine {
 
         match self.swapchain.queue_present(
             self.device.primary_queue_mut(),
-            image_idx,
+            swapchain_image.index,
             &[self.render_finished_semaphores[frame_index].handle()],
         ) {
             Ok(_) => {}

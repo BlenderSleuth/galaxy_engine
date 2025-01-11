@@ -14,6 +14,7 @@ GraphicsPipeline(
         depth_enable: false,
         backface_cull_mode: None,
         transparent: true,
+        attachment_colour_space: Linear,
     ),
     layout: (
         push_constant: DrawOffset, 

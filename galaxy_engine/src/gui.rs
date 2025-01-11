@@ -529,7 +529,7 @@ impl GuiRenderer {
                 };
             }
 
-            // TODO: Consolidate uploads to the same texture into a single copy command.
+            // TODO: Consolidate uploads to the same texture into a single copy command?
             upload_cmd_buf.copy_buffer_to_image(
                 &staging_buffer,
                 &mut texture.image,

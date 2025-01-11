@@ -6,6 +6,7 @@ use std::num::NonZeroU32;
 use arrayvec::ArrayVec;
 use ash::vk;
 
+use crate::utils::linear_from_srgb_format;
 use crate::vulkan;
 use crate::vulkan::surface::Surface;
 
@@ -107,7 +108,8 @@ pub struct PhysicalDevice {
     pub async_transfer_queue_family_idx: Option<u32>,
     pub async_compute_queue_family_idx: Option<u32>,
     pub is_discrete: bool,
-    pub swapchain_format: vk::SurfaceFormatKHR,
+    pub surface_format: vk::SurfaceFormatKHR,
+    pub surface_linear_format: vk::Format,
     pub presentation_mode: vk::PresentModeKHR,
     pub depth_stencil_format: vk::Format,
     pub swapchain_image_count: u32,
@@ -399,7 +401,8 @@ impl PhysicalDevice {
             async_transfer_queue_family_idx,
             async_compute_queue_family_idx,
             is_discrete: device_properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU,
-            swapchain_format: surface_format,
+            surface_format,
+            surface_linear_format: linear_from_srgb_format(surface_format.format),
             presentation_mode,
             depth_stencil_format: DEPTH_STENCIL_FORMAT,
             swapchain_image_count: image_count,

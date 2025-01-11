@@ -27,10 +27,11 @@ pub(super) struct GraphicsShaderConfig<'a> {
     pub fragment: FragmentShaderConfig<'a>,
 }
 
-#[derive(serde::Deserialize, Debug)]
+#[derive(serde::Deserialize, Debug, Default)]
 pub enum BackfaceCullMode {
     None,
     Front,
+    #[default]
     Back,
 }
 
@@ -44,10 +45,11 @@ impl BackfaceCullMode {
     }
 }
 
-impl Default for BackfaceCullMode {
-    fn default() -> Self {
-        Self::Back
-    }
+#[derive(serde::Deserialize, Debug, Default)]
+pub(crate) enum ColourAttachmentColourSpace {
+    #[default]
+    Srgb,
+    Linear,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -58,6 +60,8 @@ pub(super) struct RasteriserConfig {
     pub backface_cull_mode: BackfaceCullMode,
     #[serde(default)]
     pub transparent: bool,
+    #[serde(default)]
+    pub attachment_colour_space: ColourAttachmentColourSpace,
 }
 
 //bitflags::bitflags! {

@@ -10,6 +10,14 @@ pub const DEFAULT_SUBRESOURCE_RANGE: vk::ImageSubresourceRange = vk::ImageSubres
     layer_count: 1,
 };
 
+pub fn linear_from_srgb_format(srgb: vk::Format) -> vk::Format {
+    match srgb {
+        vk::Format::R8G8B8A8_SRGB => vk::Format::R8G8B8A8_UNORM,
+        vk::Format::B8G8R8A8_SRGB => vk::Format::B8G8R8A8_UNORM,
+        _ => unimplemented!("No linear format for {:?}", srgb),
+    }
+}
+
 pub fn get_aspect_for_format(format: vk::Format) -> vk::ImageAspectFlags {
     use vk::Format;
     match format {
