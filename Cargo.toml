@@ -37,6 +37,7 @@ zstd = "0.13"
 ktx2 = { git = "https://github.com/BVE-Reborn/ktx2.git" }
 const_format = "0.2.33"
 bincode = { version = "2.0.0-rc.3", default-features = false, features = ["std", "derive"] }
+egui = "0.30.0"
 
 [profile.dev]
 #opt-level = 1

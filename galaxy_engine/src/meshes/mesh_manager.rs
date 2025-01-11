@@ -289,13 +289,23 @@ impl MeshManager {
                     .get_compute_pipeline(Self::INDEX_COPY_PIPELINE_ID)
                     .expect("Index copy pipeline not found");
                 let vertex_total_group_count = num_vertices.div_ceil(vertex_copy_pipeline.total_threads_per_group());
-                let (vertex_group_count_x, vertex_group_count_y) = grid_size_for_count(vertex_total_group_count, 5);
+                let (vertex_group_count_x, vertex_group_count_y) = grid_size_for_count(
+                    vertex_total_group_count,
+                    5,
+                    PhysicalDevice::MAX_DISPATCH_GROUPS_PER_DIMENSION,
+                )
+                .expect("Too many vertices");
                 assert!(vertex_group_count_x * vertex_group_count_y >= vertex_total_group_count);
                 assert!(vertex_group_count_x <= PhysicalDevice::MAX_DISPATCH_GROUPS_PER_DIMENSION);
                 assert!(vertex_group_count_y <= PhysicalDevice::MAX_DISPATCH_GROUPS_PER_DIMENSION);
 
                 let index_total_group_count = num_indices.div_ceil(index_copy_pipeline.total_threads_per_group());
-                let (index_group_count_x, index_group_count_y) = grid_size_for_count(index_total_group_count, 5);
+                let (index_group_count_x, index_group_count_y) = grid_size_for_count(
+                    index_total_group_count,
+                    5,
+                    PhysicalDevice::MAX_DISPATCH_GROUPS_PER_DIMENSION,
+                )
+                .expect("Too many indices");
                 assert!(index_group_count_x * index_group_count_y >= index_total_group_count);
                 assert!(index_group_count_x <= PhysicalDevice::MAX_DISPATCH_GROUPS_PER_DIMENSION);
                 assert!(index_group_count_y <= PhysicalDevice::MAX_DISPATCH_GROUPS_PER_DIMENSION);

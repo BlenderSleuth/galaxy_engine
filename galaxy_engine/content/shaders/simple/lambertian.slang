@@ -28,5 +28,5 @@ float4 mainFS(VSToFS vertex_input) : SV_TARGET0 {
     //return float4(vertex_input.tex_coord, 0., 1.);
     //return float4(vertex_input.tex_coord, vertex_input.vertex_id, 1.);
     //return float4(vertex_input.vertex_id.xxx, 1.);
-    return float4(lit_colour, 1.);
+    return float4(qtangent.q.xyz, 1.);
 }

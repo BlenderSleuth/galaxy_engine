@@ -1,6 +1,6 @@
 {
     "lion": Material(
-        pipeline: "/engine/simple/unlit",
+        pipeline: "/engine/simple/lambertian",
         params: {
             "base_colour": Texture("textures/lion"),
         },

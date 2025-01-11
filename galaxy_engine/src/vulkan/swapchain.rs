@@ -151,13 +151,13 @@ impl Swapchain {
 
         let mut depth_image = Image::new("Depth image", device, &depth_image_info, depth_subresource)?;
         let mut cmd_buffer = cmd_pool.allocate_transient_cmd_buffer()?;
-        depth_image.transition_layout(
-            device,
-            &mut cmd_buffer,
+        let barrier = depth_image.layout_transition_barrier(
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             None,
         );
+        let dep_info = vk::DependencyInfoKHR::default().image_memory_barriers(slice::from_ref(&barrier));
+        cmd_buffer.pipeline_barrier2(device, &dep_info);
         cmd_buffer.end_submit_wait_and_free()?;
 
         Ok(Self {

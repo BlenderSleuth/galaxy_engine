@@ -9,6 +9,6 @@ import common.scene_data;
 public ParameterBlock<SceneData> scene;
 
 [shader("fragment")]
-float4 mainFS(uniform uint tex_idx, VSToFS input) : SV_TARGET0 {
-    return input.colour; //* scene.textures[tex_idx].Sample(input.texcoord);
+float4 mainFS(uniform PushConstants constants, VSToFS input) : SV_TARGET0 {
+    return input.colour * scene.textures[constants.tex_idx].Sample(input.texcoord);
 }

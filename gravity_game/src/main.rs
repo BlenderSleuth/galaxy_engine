@@ -39,11 +39,17 @@ impl ComponentConfig for GravitySourceConfig {
 
 register_components!(ComponentConfigEnum, GravitySource: GravitySourceConfig);
 
-struct GravityGame {}
+struct GravityGame {
+    name: String,
+    age: u32,
+}
 
 impl GravityGame {
     fn new() -> Self {
-        GravityGame {}
+        GravityGame {
+            name: "Arthur".to_string(),
+            age: 42,
+        }
     }
 }
 
@@ -59,6 +65,24 @@ impl Game for GravityGame {
     }
 
     fn update(&mut self, _delta_time: f32) {}
+
+    fn gui_update(&mut self, ctx: &egui::Context) {
+        let mut visuals = egui::Visuals::dark();
+        visuals.panel_fill = egui::Color32::from_rgba_unmultiplied(200, 50, 50, 180);
+        ctx.set_visuals(visuals);
+        egui::SidePanel::new(egui::panel::Side::Right, "Panel").show(ctx, |ui| {
+            ui.heading("My egui Application");
+            ui.horizontal(|ui| {
+                let name_label = ui.label("Your name: ");
+                ui.text_edit_singleline(&mut self.name).labelled_by(name_label.id);
+            });
+            ui.add(egui::Slider::new(&mut self.age, 0..=120).text("age"));
+            if ui.button("Increment").clicked() {
+                self.age += 1;
+            }
+            ui.label(format!("Hello '{}', age {}", &self.name, self.age));
+        });
+    }
 }
 
 fn main() -> Result<(), MainError> {

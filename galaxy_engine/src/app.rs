@@ -16,7 +16,7 @@ use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use crate::engine::GalaxyEngine;
 use crate::game::Game;
-use crate::gui::GuiRenderer;
+use crate::gui::GuiIntegration;
 use crate::utils;
 
 bitflags! {
@@ -75,7 +75,7 @@ macro_rules! unwrap_or_exit {
 // Valid post-resumed event.
 struct ActiveApp {
     // Importantly dropped in this order.
-    egui_renderer: GuiRenderer,
+    egui_renderer: GuiIntegration,
     engine: GalaxyEngine,
     window: Arc<Window>,
 }
@@ -146,7 +146,7 @@ impl ApplicationHandler for GalaxyApp {
         );
 
         let egui_renderer = unwrap_or_exit!(
-            GuiRenderer::new(egui_ctx, Arc::clone(&window), event_loop, &engine),
+            GuiIntegration::new(egui_ctx, Arc::clone(&window), event_loop, &engine),
             "Failed to create GUI renderer: {}.\nExiting.",
             event_loop
         );

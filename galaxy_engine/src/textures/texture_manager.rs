@@ -9,11 +9,11 @@ use crate::resource_paths::{resource_type, ResourcePath};
 use crate::textures::texture::TextureError;
 use crate::textures::Texture;
 use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
-use crate::vulkan::device::Device;
-use crate::vulkan::image::Sampler;
+use crate::vulkan::device::{Device, SharedDeviceLoader};
 
 pub struct TextureManager {
-    default_sampler: Sampler,
+    loader: SharedDeviceLoader,
+    default_sampler: vk::Sampler,
     textures: IndexMap<ResourcePath, Texture>,
 }
 
@@ -23,7 +23,7 @@ impl TextureManager {
     pub fn new(device: &Device) -> VkResult<Self> {
         // Create default texture sampler.
         let max_anisotropy = device.physical_device().properties.base.limits.max_sampler_anisotropy;
-        let sampler_info = vk::SamplerCreateInfo::default()
+        let default_sampler_info = vk::SamplerCreateInfo::default()
             .mag_filter(vk::Filter::LINEAR)
             .min_filter(vk::Filter::LINEAR)
             .address_mode_u(vk::SamplerAddressMode::REPEAT)
@@ -38,8 +38,9 @@ impl TextureManager {
             .mip_lod_bias(0.)
             .min_lod(0.)
             .max_lod(vk::LOD_CLAMP_NONE);
-        let default_sampler = Sampler::new(device, &sampler_info)?;
+        let default_sampler = unsafe { device.loader().create_sampler(&default_sampler_info, None) }?;
         Ok(Self {
+            loader: device.cloned_loader(),
             default_sampler,
             textures: IndexMap::new(),
         })
@@ -81,8 +82,16 @@ impl TextureManager {
                 vk::DescriptorImageInfo::default()
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .image_view(texture.image().view().handle())
-                    .sampler(self.default_sampler.handle())
+                    .sampler(self.default_sampler)
             })
             .collect()
+    }
+}
+
+impl Drop for TextureManager {
+    fn drop(&mut self) {
+        unsafe {
+            self.loader.destroy_sampler(self.default_sampler, None);
+        }
     }
 }

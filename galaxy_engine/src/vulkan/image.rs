@@ -241,13 +241,10 @@ impl Image {
         let mut cmd_buffer = cmd_pool.allocate_transient_cmd_buffer()?;
 
         // Transition all mip levels to transfer destination optimal.
-        image.transition_layout(
-            device,
-            &mut cmd_buffer,
-            vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            None,
-        );
+        let barrier =
+            image.layout_transition_barrier(vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, None);
+        let dep_info = vk::DependencyInfoKHR::default().image_memory_barriers(slice::from_ref(&barrier));
+        cmd_buffer.pipeline_barrier2(device, &dep_info);
 
         // Perform the copy.
         cmd_buffer.copy_buffer_to_image(
@@ -258,13 +255,13 @@ impl Image {
         );
 
         // Transition all mip levels to shader read only optimal.
-        image.transition_layout(
-            device,
-            &mut cmd_buffer,
+        let barrier = image.layout_transition_barrier(
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             None,
         );
+        let dep_info = vk::DependencyInfoKHR::default().image_memory_barriers(slice::from_ref(&barrier));
+        cmd_buffer.pipeline_barrier2(device, &dep_info);
 
         cmd_buffer.end_submit_wait_and_free()?;
 
@@ -279,14 +276,16 @@ impl Image {
         &self.view
     }
 
-    pub fn transition_layout(
+    pub fn aspect_mask(&self) -> vk::ImageAspectFlags {
+        self.subresource.aspect_mask
+    }
+
+    pub fn layout_transition_barrier(
         &mut self,
-        device: &Device,
-        cmd_buffer: &mut RecordingCmdBuf<impl QueueType>,
         old_layout: vk::ImageLayout,
         new_layout: vk::ImageLayout,
         mip_level: Option<u32>,
-    ) {
+    ) -> vk::ImageMemoryBarrier2 {
         let mut image_barrier = vk::ImageMemoryBarrier2::default()
             .old_layout(old_layout)
             .new_layout(new_layout)
@@ -323,15 +322,19 @@ impl Image {
 
             image_barrier.src_stage_mask = vk::PipelineStageFlags2::TRANSFER;
             image_barrier.dst_stage_mask = vk::PipelineStageFlags2::FRAGMENT_SHADER;
+        } else if old_layout == vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+            && new_layout == vk::ImageLayout::TRANSFER_DST_OPTIMAL
+        {
+            image_barrier.src_access_mask = vk::AccessFlags2KHR::SHADER_READ; // Wait for shader read to finish.
+            image_barrier.dst_access_mask = vk::AccessFlags2KHR::TRANSFER_WRITE; // Required for transfer.
+
+            image_barrier.src_stage_mask = vk::PipelineStageFlags2::FRAGMENT_SHADER;
+            image_barrier.dst_stage_mask = vk::PipelineStageFlags2::TRANSFER;
         } else {
             panic!("Unsupported layout transition.");
         }
 
-        let dependency_info = vk::DependencyInfo::default()
-            .dependency_flags(vk::DependencyFlags::BY_REGION)
-            .image_memory_barriers(slice::from_ref(&image_barrier));
-
-        cmd_buffer.pipeline_barrier2(device, &dependency_info);
+        image_barrier
     }
 
     pub fn copy_buffer_to_image(
@@ -368,26 +371,26 @@ impl Drop for Image {
     }
 }
 
-pub struct Sampler {
-    handle: vk::Sampler,
-}
-
-impl Sampler {
-    pub fn new(device: &Device, info: &vk::SamplerCreateInfo) -> VkResult<Self> {
-        let handle = unsafe { device.loader().create_sampler(info, None) }?;
-        Ok(Self { handle })
-    }
-
-    pub fn handle(&self) -> vk::Sampler {
-        self.handle
-    }
-}
-
-impl Drop for Sampler {
-    fn drop(&mut self) {
-        unsafe { get_device_loader().destroy_sampler(self.handle, None) };
-    }
-}
+//pub struct Sampler {
+//    handle: vk::Sampler,
+//}
+//
+//impl Sampler {
+//    pub fn new(device: &Device, info: &vk::SamplerCreateInfo) -> VkResult<Self> {
+//        let handle = unsafe { device.loader().create_sampler(info, None) }?;
+//        Ok(Self { handle })
+//    }
+//
+//    pub fn handle(&self) -> vk::Sampler {
+//        self.handle
+//    }
+//}
+//
+//impl Drop for Sampler {
+//    fn drop(&mut self) {
+//        unsafe { get_device_loader().destroy_sampler(self.handle, None) };
+//    }
+//}
 
 //pub struct CombinedImageSampler {
 //    image: Image,

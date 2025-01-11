@@ -18,7 +18,7 @@ use winit::keyboard::{Key, SmolStr};
 use crate::app::AppInfo;
 use crate::engine::MainLoopError::VulkanError;
 use crate::game::Game;
-use crate::gui::GuiRenderer;
+use crate::gui::{GuiIntegration, GuiRenderer};
 use crate::level::{DeserializableComponentConfig, Level, LoadResult};
 use crate::materials::MaterialError;
 use crate::meshes::MeshError;
@@ -89,6 +89,7 @@ pub struct GalaxyEngine {
     image_available_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     render_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
     _compute_finished_semaphores: ArrayVec<BinarySemaphore, { GalaxyEngine::MAX_FRAMES_IN_FLIGHT }>,
+    gui_renderer: GuiRenderer,
     frame_index: u32,
     start_time: std::time::Instant,
     game_time: std::time::Duration,
@@ -177,6 +178,8 @@ impl GalaxyEngine {
             compute_finished_semaphores.push(BinarySemaphore::new(&device)?);
         }
 
+        let gui_renderer = GuiRenderer::new(&device, &pipeline_manager)?;
+
         Ok(Self {
             game: RefCell::new(game),
             game_content_dir: app_info.game_dir.clone(),
@@ -186,6 +189,7 @@ impl GalaxyEngine {
             device,
             swapchain,
             pipeline_manager,
+            gui_renderer,
             _static_resources_guard: static_resources_guard,
             primary_cmd_pools,
             transient_cmd_pool: Mutex::new(transient_cmd_pool),
@@ -245,7 +249,7 @@ impl GalaxyEngine {
 
     const MAX_FRAME_TIME: f32 = 1.0 / 60.0;
 
-    pub(crate) fn main_loop(&mut self, gui_renderer: &mut GuiRenderer) -> Result<(), MainLoopError> {
+    pub(crate) fn main_loop(&mut self, gui_renderer: &mut GuiIntegration) -> Result<(), MainLoopError> {
         if self.window_resized {
             self.window_resized = false;
             self.recreate_swapchain()?;
@@ -273,25 +277,8 @@ impl GalaxyEngine {
         // Run game update.
         self.game.borrow_mut().update(delta_time);
 
-        // Run egui update.
-        let mut name = "Arthur".to_owned();
-        let mut age = 42;
+        // Run gui update.
         gui_renderer.build_ui(|ctx| {
-            let mut visuals = egui::Visuals::dark();
-            visuals.panel_fill = (egui::Color32::from_rgba_unmultiplied(200, 50, 50, 180));
-            ctx.set_visuals(visuals);
-            egui::SidePanel::new(egui::panel::Side::Right, "Panel").show(ctx, |ui| {
-                ui.heading("My egui Application");
-                ui.horizontal(|ui| {
-                    let name_label = ui.label("Your name: ");
-                    ui.text_edit_singleline(&mut name).labelled_by(name_label.id);
-                });
-                ui.add(egui::Slider::new(&mut age, 0..=120).text("age"));
-                if ui.button("Increment").clicked() {
-                    age += 1;
-                }
-                ui.label(format!("Hello '{name}', age {age}"));
-            });
             self.game.borrow_mut().gui_update(ctx);
         });
 
@@ -423,6 +410,7 @@ impl GalaxyEngine {
         {
             let mut transient_cmd_pool = self.transient_cmd_pool.lock().unwrap();
             gui_renderer.render(
+                &mut self.gui_renderer,
                 &self.device,
                 framebuffer_size,
                 frame_index,

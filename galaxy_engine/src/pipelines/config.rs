@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use ash::vk;
 use indexmap::IndexMap;
-use ultraviolet::Vec2;
 
 use crate::vertex_input::VertexInputType;
 
@@ -112,12 +111,12 @@ impl PipelineBindingDataSize {
 
 pub type PipelineBindingMap<S = Arc<str>> = IndexMap<S, PipelineBindingDataSize>;
 
-#[repr(C)]
-#[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
-struct GuiPushConstants {
-    screen_size: Vec2,
-    tex_idx: u32,
-}
+//#[repr(C)]
+//#[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
+//struct GuiPushConstants {
+//    screen_size: Vec2,
+//    tex_idx: u32,
+//}
 
 // Todo: better push constant management. List of sizes and shader stages.
 #[derive(serde::Deserialize, Debug, Hash, Copy, Clone, PartialEq, Eq)]

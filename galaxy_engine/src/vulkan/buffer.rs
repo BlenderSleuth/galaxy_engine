@@ -86,6 +86,7 @@ impl MemLocation for GpuToCpu {
     }
 }
 
+// TODO: Take alignment as well as non-zero size.
 pub struct Buffer<L: MemLocation> {
     loader: SharedDeviceLoader,
     alloc: SharedAllocator,

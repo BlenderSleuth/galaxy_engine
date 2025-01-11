@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 pub use ultraviolet::{Bivec3, Isometry3, Mat3, Mat4, Rotor3, Similarity3, Vec2, Vec3, Vec4};
 
+use crate::vulkan::physical_device::PhysicalDevice;
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Transform {
     pub translation: Vec3,
@@ -139,7 +141,13 @@ pub fn spin_transform(time_s: f32, rpm: f32) -> Similarity3 {
 }
 
 // Finds a 2D grid size for a given count of elements, with a maximum number of unused elements.
-pub fn grid_size_for_count(count: u32, max_unused: u32) -> (u32, u32) {
+pub fn grid_size_for_count(count: u32, max_unused: u32, max_side_length: u32) -> Option<(u32, u32)> {
+    if count <= max_side_length {
+        return Some((count, 1));
+    }
+    if count >= max_side_length * max_side_length {
+        return None;
+    }
     let max_unused = max_unused as i32;
     let mut root = (count as f32).sqrt().floor() as u32;
     while {
@@ -148,14 +156,15 @@ pub fn grid_size_for_count(count: u32, max_unused: u32) -> (u32, u32) {
     } {
         root -= 1;
     }
-    (root, count.div_ceil(root))
+    Some((root, count.div_ceil(root)))
 }
 
 #[allow(dead_code)]
 pub(crate) fn test_grid_size_for_count(test_size: u32) {
     let mut results = Vec::with_capacity(test_size as usize);
     for test_num in 1..test_size {
-        let (group_count_x, group_size_y) = grid_size_for_count(test_num, 5);
+        let (group_count_x, group_size_y) =
+            grid_size_for_count(test_num, 5, PhysicalDevice::MAX_DISPATCH_GROUPS_PER_DIMENSION).unwrap();
         let grid_size = group_count_x * group_size_y;
         let remainder = grid_size as i32 - test_num as i32;
         results.push((test_num, group_count_x, group_size_y, remainder));

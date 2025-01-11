@@ -44,7 +44,7 @@ self_cell = "1.1.0"
 path-slash = "0.2.1"
 bevy_mikktspace = "0.15.0"
 smallvec = "1.13.2"
-egui = "0.30.0"
+egui.workspace = true
 egui-winit = "0.30.0"
 
 [build-dependencies]

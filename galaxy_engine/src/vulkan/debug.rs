@@ -55,10 +55,6 @@ mod debug_messenger {
         0x20a0ac66, // BestPractices-NVIDIA-CreateDevice-PageableDeviceLocalMemory
         0x8b6f2f9a, // BestPractices-NVIDIA-AllocateMemory-SetPriority
         0xf00e92a8, // BestPractices-NVIDIA-CreateImage-Depth32Format
-        // TODO: Re-enable this once combined image samplers can be used.
-        0xf2b6a8e8, // BestPractices-NVIDIA-CreatePipelineLayout-SeparateSampler
-        // TODO: Re-enable this when fences are pooled properly.
-        0xa9f4ff68, // BestPractices-SyncObjects-HighNumberOfFences
     ];
     const IGNORED_MESSAGES: &[&CStr] =
         &[c"Validation Warning: [ WARNING-GPU-Assisted-Validation ] | MessageID = 0x24b5c69f | vkCreateDevice():  Internal Warning: Forcing VkPhysicalDeviceVulkan12Features::timelineSemaphore to VK_TRUE"];
