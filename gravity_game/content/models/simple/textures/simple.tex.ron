@@ -15,4 +15,12 @@
         path: "Normal_2K__whnfbg3.png",
         type: Normal,
     ),
+    //"worn_wood_alb": Texture(
+    //    path: "Albedo_4K__whnfbg3.png",
+    //    type: Colour(RGB),
+    //),
+    //"worn_wood_nrm": Texture(
+    //    path: "Normal_4K__whnfbg3.png",
+    //    type: Normal,
+    //),
 }

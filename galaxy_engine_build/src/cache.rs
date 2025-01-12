@@ -25,12 +25,17 @@ pub fn exists_in_cache<E: bincode::Encode>(
     let cache_hash_file_path = cache_asset_file_path.with_extension("hash");
 
     // Load the source asset so we can hash it.
-    let mut _asset_data = Vec::new();
+    let mut asset_data = Vec::new();
     let asset_data_slice = if let Some(source_asset_bytes) = source_asset_bytes {
         source_asset_bytes
     } else {
-        _asset_data = std::fs::read(source_asset_path).expect("Failed to read source asset file");
-        &_asset_data
+        if let Ok(mut file) = std::fs::File::open(source_asset_path) {
+            file.read_to_end(&mut asset_data).expect("Failed to read source asset file");
+        } else {
+            return false;
+        };
+        //_asset_data = std::fs::read(source_asset_path).expect("Failed to read source asset file");
+        &asset_data
     };
 
     let hash = {
