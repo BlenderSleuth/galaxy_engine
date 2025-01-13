@@ -6,13 +6,14 @@ use std::sync::Arc;
 use ash::vk;
 
 use crate::engine::GalaxyEngine;
+use crate::loading::LoadingContext;
 use crate::materials::config::{MaterialConfig, MaterialConfigError, ResourceBindingConfig};
 use crate::materials::ResourceBinding;
 use crate::pipelines::{GraphicsPipeline, Pipeline};
 use crate::resource_paths::{ResourcePath, SubresourcePath};
 use crate::textures::{TextureError, TextureManager};
-use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::gpu_alloc::MemoryError;
+use crate::vulkan::queue::QueueType;
 
 #[derive(thiserror::Error, Debug)]
 pub enum MaterialError {
@@ -48,7 +49,7 @@ impl Material {
         path: SubresourcePath,
         //buffer_index: u32,
         level_index: u32,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext<impl QueueType>,
     ) -> Result<Self, MaterialError> {
         let pipeline = engine
             .pipeline_manager
@@ -70,7 +71,7 @@ impl Material {
                     let texture_path = ResourcePath::new(texture_path_str, Some(path.resource()))
                         .ok_or(MaterialError::ResourceError(texture_path_str.to_owned()))?;
                     let texture_index =
-                        texture_manager.load_texture(texture_path_str, &texture_path, engine, cmd_pool)?;
+                        texture_manager.load_texture(texture_path_str, &texture_path, engine, loading_ctx)?;
                     // Add to resource bindings.
                     resource_bindings.insert(id, ResourceBinding::Texture(texture_index));
                 }

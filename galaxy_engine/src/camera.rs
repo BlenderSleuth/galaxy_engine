@@ -5,8 +5,8 @@ use shipyard::{Component, EntityId};
 
 use crate::engine::GalaxyEngine;
 use crate::level::{ComponentConfig, LoadResult, LoadingLevel};
+use crate::loading::LoadingContext;
 use crate::prelude::*;
-use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CameraConfig {
@@ -20,7 +20,7 @@ impl ComponentConfig for CameraConfig {
         entity_id: EntityId,
         level: &mut LoadingLevel,
         engine: &GalaxyEngine,
-        _cmd_pool: &mut TransientPrimaryCommandPool,
+        _loading_ctx: &mut LoadingContext,
     ) -> LoadResult<()> {
         level.world.add_component(
             entity_id,

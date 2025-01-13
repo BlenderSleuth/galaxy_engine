@@ -19,7 +19,7 @@ impl<const N: usize> DescriptorPool<N> {
         let info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(pool_sizes)
             .max_sets(N as u32);
-        let handle = unsafe { device.loader().create_descriptor_pool(&info, None) }?;
+        let handle = unsafe { device.loader.create_descriptor_pool(&info, None) }?;
         Ok(Self {
             loader: device.cloned_loader(),
             handle,
@@ -51,7 +51,7 @@ impl<const N: usize> DescriptorPool<N> {
             .set_layouts(layouts);
         let start = self.sets.len();
         self.sets
-            .extend(unsafe { device.loader().allocate_descriptor_sets(&alloc_info) }?);
+            .extend(unsafe { device.loader.allocate_descriptor_sets(&alloc_info) }?);
         Ok(Range {
             start,
             end: self.sets.len(),

@@ -7,12 +7,13 @@ use std::sync::Arc;
 use ash::vk;
 use parking_lot::RwLock;
 
+use crate::loading::LoadingContext;
 use crate::meshes::MeshBuffer;
 use crate::prelude::*;
 use crate::vertex_input::PositionTexCoordVertex;
-use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::MemResult;
+use crate::vulkan::queue::QueueType;
 
 const FRAC_1_SQRT_8: f32 = FRAC_1_SQRT_2 * 0.5;
 
@@ -41,14 +42,14 @@ pub struct StaticResources {
 
 impl StaticResources {
     /// Initialisation of static resources.
-    pub(crate) fn new(device: &Device, cmd_pool: &mut TransientPrimaryCommandPool) -> MemResult<Self> {
+    pub(crate) fn new(device: &Device, loading_ctx: &mut LoadingContext<impl QueueType>) -> MemResult<Self> {
         let result = Self {
             quad_buffer: Arc::new(MeshBuffer::new_from_vertices_and_indices(
                 "Quad",
                 &Self::QUAD_VERTICES,
                 &Self::QUAD_INDICES,
                 device,
-                cmd_pool,
+                loading_ctx,
                 vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER,
             )?),
             octagon_buffer: Arc::new(MeshBuffer::new_from_vertices_and_indices(
@@ -56,7 +57,7 @@ impl StaticResources {
                 &Self::OCTAGON_VERTICES,
                 &Self::OCTAGON_INDICES,
                 device,
-                cmd_pool,
+                loading_ctx,
                 vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER,
             )?),
         };

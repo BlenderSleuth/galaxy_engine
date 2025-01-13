@@ -10,18 +10,13 @@ pub trait Semaphore {
     fn handle(&self) -> vk::Semaphore;
 }
 
-pub struct WaitSemaphore {
-    pub handle: vk::Semaphore,
-    pub stage_mask: vk::PipelineStageFlags,
-}
-
 pub struct BinarySemaphore {
     handle: vk::Semaphore,
 }
 
 impl BinarySemaphore {
     pub fn new(device: &Device) -> VkResult<Self> {
-        let handle = unsafe { device.loader().create_semaphore(&Default::default(), None) }?;
+        let handle = unsafe { device.loader.create_semaphore(&Default::default(), None) }?;
         Ok(Self { handle })
     }
 }
@@ -48,8 +43,8 @@ pub struct Fence {
 }
 
 impl Fence {
-    pub fn new(loader: &ash::Device, signaled: bool) -> VkResult<Self> {
-        let handle = unsafe {
+    pub fn new(loader: &ash::Device, signaled: bool) -> Self {
+        let handle = match unsafe {
             loader.create_fence(
                 &vk::FenceCreateInfo::default().flags(if signaled {
                     vk::FenceCreateFlags::SIGNALED
@@ -58,8 +53,15 @@ impl Fence {
                 }),
                 None,
             )
-        }?;
-        Ok(Self { handle })
+        } {
+            Ok(handle) => handle,
+            // These are the only two errors that can occur when creating a fence.
+            Err(vk::Result::ERROR_OUT_OF_HOST_MEMORY) => panic!("Out of host memory."),
+            Err(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY) => panic!("Out of device memory."),
+            Err(err) => panic!("Not on spec: failed to create fence with invalid error: {err}."),
+        };
+
+        Self { handle }
     }
 
     pub fn handle(&self) -> vk::Fence {

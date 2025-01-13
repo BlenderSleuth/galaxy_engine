@@ -7,15 +7,14 @@ use ash::prelude::VkResult;
 use ash::{khr, vk};
 
 use crate::engine::GalaxyEngine;
+use crate::loading::LoadingContext;
 use crate::utils;
 use crate::utils::linear_from_srgb_format;
-use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
+use crate::vulkan::device::queue::queue_type::PrimaryQueue;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::MemResult;
 use crate::vulkan::image::{Image, ImageView};
 use crate::vulkan::instance::Instance;
-use crate::vulkan::queue::queue_type::PrimaryQueue;
-use crate::vulkan::queue::Queue;
 use crate::vulkan::surface::Surface;
 
 pub struct SwapchainImage<'a> {
@@ -25,7 +24,7 @@ pub struct SwapchainImage<'a> {
     pub colour_resolve_linear: vk::ImageView,
     pub srgb: vk::ImageView,
     pub linear: vk::ImageView,
-    _marker: std::marker::PhantomData<&'a ()>,
+    _marker: std::marker::PhantomData<&'a Swapchain>,
 }
 
 pub struct Swapchain {
@@ -45,16 +44,16 @@ impl Swapchain {
     pub fn new(
         instance: &Instance,
         device: &Device,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext<PrimaryQueue>,
         surface: &Surface,
         window_size: vk::Extent2D,
         old_swapchain: Option<&Swapchain>,
     ) -> MemResult<Self> {
-        let device_properties = device.physical_device();
+        let physical_properties = &device.physical;
 
         // Create swapchain.
 
-        let surface_capabilities = surface.get_capabilities(device.physical_device().handle)?;
+        let surface_capabilities = surface.get_capabilities(physical_properties.handle)?;
 
         // Choose swap extent.
         let swapchain_extent = if surface_capabilities.current_extent.width != u32::MAX {
@@ -71,10 +70,10 @@ impl Swapchain {
                 ),
             }
         };
-        let surface_srgb_format = device_properties.surface_format;
-        let surface_linear_format = device_properties.surface_linear_format;
+        let surface_srgb_format = physical_properties.surface_format;
+        let surface_linear_format = physical_properties.surface_linear_format;
 
-        let loader = khr::swapchain::Device::new(instance.loader(), device.loader());
+        let loader = khr::swapchain::Device::new(instance.loader(), &device.loader);
 
         let view_formats = [surface_srgb_format.format, surface_linear_format];
 
@@ -82,7 +81,7 @@ impl Swapchain {
         let swapchain_info = vk::SwapchainCreateInfoKHR::default()
             .flags(vk::SwapchainCreateFlagsKHR::MUTABLE_FORMAT)
             .surface(surface.handle())
-            .min_image_count(device_properties.swapchain_image_count)
+            .min_image_count(physical_properties.swapchain_image_count)
             .image_format(surface_srgb_format.format)
             .image_color_space(surface_srgb_format.color_space)
             .image_extent(swapchain_extent)
@@ -91,7 +90,7 @@ impl Swapchain {
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
             .pre_transform(surface_capabilities.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(device_properties.presentation_mode)
+            .present_mode(physical_properties.presentation_mode)
             .clipped(true)
             .old_swapchain(old_swapchain.map_or(vk::SwapchainKHR::null(), |swapchain| swapchain.handle))
             .push_next(&mut view_format_list);
@@ -124,8 +123,7 @@ impl Swapchain {
         // Create linear image views.
         let linear_image_views = create_image_views(&images, linear_from_srgb_format(surface_srgb_format.format))?;
 
-        let msaa_samples = if device
-            .physical_device()
+        let msaa_samples = if physical_properties
             .supported_msaa_samples
             .contains(GalaxyEngine::NUM_MSAA_SAMPLES)
         {
@@ -181,27 +179,29 @@ impl Swapchain {
             })
             .mip_levels(1)
             .array_layers(1)
-            .format(device.physical_device().depth_stencil_format)
+            .format(physical_properties.depth_stencil_format)
             .tiling(vk::ImageTiling::OPTIMAL)
             .initial_layout(vk::ImageLayout::UNDEFINED)
             .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .samples(msaa_samples);
         let depth_subresource = vk::ImageSubresourceRange {
-            aspect_mask: utils::get_aspect_for_format(device.physical_device().depth_stencil_format),
+            aspect_mask: utils::get_aspect_for_format(physical_properties.depth_stencil_format),
             ..Self::get_subresource_range()
         };
 
         let mut depth_image = Image::new("Depth image", device, &depth_image_info, depth_subresource)?;
-        let mut cmd_buffer = cmd_pool.allocate_transient_cmd_buffer()?;
-        let barrier = depth_image.layout_transition_barrier(
-            vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            None,
-        );
-        let dep_info = vk::DependencyInfoKHR::default().image_memory_barriers(slice::from_ref(&barrier));
-        cmd_buffer.pipeline_barrier2(device, &dep_info);
-        cmd_buffer.end_submit_wait_and_free()?;
+
+        loading_ctx.load(|cmd_buf| {
+            let barrier = depth_image.layout_transition_barrier(
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                None,
+            );
+            let dep_info = vk::DependencyInfoKHR::default().image_memory_barriers(slice::from_ref(&barrier));
+            cmd_buf.pipeline_barrier2(device, &dep_info);
+            Ok(Vec::new())
+        })?;
 
         Ok(Self {
             loader,
@@ -279,17 +279,18 @@ impl Swapchain {
         ))
     }
 
-    pub fn queue_present(
+    pub(super) unsafe fn queue_present(
         &self,
-        queue: &mut Queue<PrimaryQueue>,
-        image_index: u32,
+        queue: vk::Queue,
+        image: SwapchainImage,
         wait_semaphores: &[vk::Semaphore],
     ) -> VkResult<bool> {
         let present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(wait_semaphores)
             .swapchains(slice::from_ref(&self.handle))
-            .image_indices(slice::from_ref(&image_index));
-        unsafe { self.loader.queue_present(queue.handle(), &present_info) }
+            .image_indices(slice::from_ref(&image.index));
+
+        unsafe { self.loader.queue_present(queue, &present_info) }
     }
 }
 

@@ -8,6 +8,7 @@ use ash::vk;
 use itertools::izip;
 
 use crate::engine::GalaxyEngine;
+use crate::loading::LoadingContext;
 use crate::maths::grid_size_for_count;
 use crate::meshes::{Mesh, MeshError};
 use crate::pipelines::{ComputeResourceType, Pipeline};
@@ -15,11 +16,13 @@ use crate::resource_paths::ResourcePath;
 use crate::vertex_input::MeshVertex;
 use crate::volatile_buffer::{VolatileBuffer, VolatileBufferType};
 use crate::vulkan::buffer::{Buffer, GpuOnly};
-use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingState, TransientPrimaryCommandPool};
+use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingState};
 use crate::vulkan::descriptors::DescriptorPool;
+use crate::vulkan::device::queue::queue_type::PrimaryQueue;
 use crate::vulkan::gpu_alloc::MemResult;
 use crate::vulkan::physical_device::PhysicalDevice;
-use crate::vulkan::queue::queue_type::PrimaryQueue;
+use crate::vulkan::queue::queue_type::ComputeQueueType;
+use crate::vulkan::queue::QueueType;
 
 pub struct LoadingMeshManager {
     resource_path_map: HashMap<ResourcePath, u32>,
@@ -39,7 +42,7 @@ impl LoadingMeshManager {
     pub fn get_or_load_mesh(
         &mut self,
         engine: &GalaxyEngine,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext<impl QueueType>,
         resource_path: &ResourcePath,
     ) -> Result<Arc<Mesh>, MeshError> {
         if let Some(mesh_index) = self.resource_path_map.get(resource_path) {
@@ -55,7 +58,7 @@ impl LoadingMeshManager {
             let mesh = Arc::new(Mesh::new(
                 mesh_name,
                 engine,
-                cmd_pool,
+                loading_ctx,
                 resource_path,
                 mesh_index,
                 self.element_offset,
@@ -70,9 +73,9 @@ impl LoadingMeshManager {
     pub(crate) fn finalise_loading(
         self,
         engine: &GalaxyEngine,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext<impl ComputeQueueType>,
     ) -> MemResult<MeshManager> {
-        MeshManager::new(self, engine, cmd_pool)
+        MeshManager::new(self, engine, loading_ctx)
     }
 }
 
@@ -103,6 +106,12 @@ pub struct MeshManager {
     element_draw_data: Vec<MeshElementDrawData>,
     vertex_megabuffer: Buffer<GpuOnly>,
     index_megabuffer: Buffer<GpuOnly>,
+    // TODO: Refactor as staging buffers and keep in loading context.
+    _index_buffers: VolatileBuffer<vk::DeviceAddress, 1>,
+    _vertex_buffers: VolatileBuffer<vk::DeviceAddress, 1>,
+    _index_offsets_buffer: VolatileBuffer<MeshBufferOffset, 1>,
+    _vertex_offsets_buffer: VolatileBuffer<MeshBufferOffset, 1>,
+    _megabuffer_descriptor_pool: DescriptorPool<1>,
 }
 
 impl MeshManager {
@@ -113,7 +122,7 @@ impl MeshManager {
     fn new(
         loading: LoadingMeshManager,
         engine: &GalaxyEngine,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext<impl ComputeQueueType>,
     ) -> MemResult<Self> {
         let meshes = loading.meshes;
         // Loading manager should retain insertion order, so sorting again shouldn't be required.
@@ -141,7 +150,15 @@ impl MeshManager {
             })
             .collect();
 
-        let (vertex_megabuffer, index_megabuffer) = {
+        let (
+            megabuffer_descriptor_pool,
+            vertex_offsets_buffer,
+            index_offsets_buffer,
+            vertex_buffers,
+            index_buffers,
+            vertex_megabuffer,
+            index_megabuffer,
+        ) = {
             // Vertex offsets for the megabuffer construct shader (the buffer index and offset of each mesh element's indices).
             let mut vertex_offsets_buffer = VolatileBuffer::<MeshBufferOffset, 1>::new_array(
                 "Level vertex offsets",
@@ -275,7 +292,7 @@ impl MeshManager {
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .buffer_info(slice::from_ref(&index_megabuffer_info)),
                 ];
-                unsafe { engine.device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
+                unsafe { engine.device.loader.update_descriptor_sets(&descriptor_writes, &[]) };
             }
 
             // Run copy compute shaders.
@@ -310,58 +327,73 @@ impl MeshManager {
                 assert!(index_group_count_x <= PhysicalDevice::MAX_DISPATCH_GROUPS_PER_DIMENSION);
                 assert!(index_group_count_y <= PhysicalDevice::MAX_DISPATCH_GROUPS_PER_DIMENSION);
 
-                let mut cmd_buf = cmd_pool.allocate_transient_cmd_buffer()?;
-                cmd_buf.bind_descriptor_sets(
-                    vk::PipelineBindPoint::COMPUTE,
-                    vertex_copy_pipeline.layout(),
-                    0,
-                    &[megabuffer_descriptor_set],
-                    &[],
-                );
+                loading_ctx.load(|cmd_buf| {
+                    cmd_buf.bind_descriptor_sets(
+                        vk::PipelineBindPoint::COMPUTE,
+                        vertex_copy_pipeline.layout(),
+                        0,
+                        &[megabuffer_descriptor_set],
+                        &[],
+                    );
 
-                cmd_buf.bind_compute_pipeline(vertex_copy_pipeline);
-                cmd_buf.push_constants(
-                    vertex_copy_pipeline.layout(),
-                    vk::ShaderStageFlags::COMPUTE,
-                    0,
-                    bytemuck::bytes_of(&MegabufferPushConstants {
-                        group_count_x: vertex_group_count_x,
-                        num_threads: num_vertices,
-                    }),
-                );
-                //let copy_barrier = vk::BufferMemoryBarrier2::default()
-                //    .src_stage_mask(vk::PipelineStageFlags2::COPY)
-                //    .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                //    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                //    .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_READ)
-                //    .buffer(index_buffers.handle_dep())
-                //    .size(vk::WHOLE_SIZE)
-                //    .offset(0);
-                //let dependency_info = vk::DependencyInfo::default().memory_barriers(slice::from_ref(&copy_barrier));
-                //cmd_buf.pipeline_barrier2(&engine.device, &dependency_info);
-                cmd_buf.dispatch(vertex_group_count_x, vertex_group_count_y, 1);
+                    cmd_buf.bind_compute_pipeline(vertex_copy_pipeline);
+                    cmd_buf.push_constants(
+                        vertex_copy_pipeline.layout(),
+                        vk::ShaderStageFlags::COMPUTE,
+                        0,
+                        bytemuck::bytes_of(&MegabufferPushConstants {
+                            group_count_x: vertex_group_count_x,
+                            num_threads: num_vertices,
+                        }),
+                    );
+                    //let copy_barrier = vk::BufferMemoryBarrier2::default()
+                    //    .src_stage_mask(vk::PipelineStageFlags2::COPY)
+                    //    .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                    //    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    //    .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_READ)
+                    //    .buffer(index_buffers.handle_dep())
+                    //    .size(vk::WHOLE_SIZE)
+                    //    .offset(0);
+                    //let dependency_info = vk::DependencyInfo::default().memory_barriers(slice::from_ref(&copy_barrier));
+                    //cmd_buf.pipeline_barrier2(&engine.device, &dependency_info);
+                    cmd_buf.dispatch(vertex_group_count_x, vertex_group_count_y, 1);
 
-                cmd_buf.bind_compute_pipeline(index_copy_pipeline);
-                cmd_buf.push_constants(
-                    vertex_copy_pipeline.layout(),
-                    vk::ShaderStageFlags::COMPUTE,
-                    0,
-                    bytemuck::bytes_of(&MegabufferPushConstants {
-                        group_count_x: index_group_count_x,
-                        num_threads: num_indices,
-                    }),
-                );
-                cmd_buf.dispatch(index_group_count_x, index_group_count_y, 1);
+                    cmd_buf.bind_compute_pipeline(index_copy_pipeline);
+                    cmd_buf.push_constants(
+                        vertex_copy_pipeline.layout(),
+                        vk::ShaderStageFlags::COMPUTE,
+                        0,
+                        bytemuck::bytes_of(&MegabufferPushConstants {
+                            group_count_x: index_group_count_x,
+                            num_threads: num_indices,
+                        }),
+                    );
+                    cmd_buf.dispatch(index_group_count_x, index_group_count_y, 1);
 
-                cmd_buf.end_submit_wait_and_free()?;
+                    Ok([])
+                })?;
+                loading_ctx.submit()?;
             }
 
-            (vertex_megabuffer, index_megabuffer)
+            (
+                megabuffer_descriptor_pool,
+                vertex_offsets_buffer,
+                index_offsets_buffer,
+                vertex_buffers,
+                index_buffers,
+                vertex_megabuffer,
+                index_megabuffer,
+            )
         };
 
         Ok(Self {
             _meshes: meshes,
             element_draw_data,
+            _vertex_offsets_buffer: vertex_offsets_buffer,
+            _index_offsets_buffer: index_offsets_buffer,
+            _vertex_buffers: vertex_buffers,
+            _index_buffers: index_buffers,
+            _megabuffer_descriptor_pool: megabuffer_descriptor_pool,
             vertex_megabuffer,
             index_megabuffer,
         })

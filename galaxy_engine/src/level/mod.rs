@@ -11,6 +11,7 @@ use shipyard::{Component, EntityId, IntoIter, Ref, RefMut, View, ViewMut, World}
 
 use crate::camera::{CamIsometry, Camera, FirstPersonCamera, ViewInfo};
 use crate::engine::GalaxyEngine;
+use crate::loading::LoadingContext;
 use crate::materials::{LoadingMaterialManager, Material, MaterialError, MaterialManager};
 use crate::meshes::mesh_manager::{LoadingMeshManager, MeshManager};
 use crate::meshes::{Mesh, MeshError};
@@ -19,11 +20,11 @@ use crate::prelude::*;
 use crate::resource_paths::{resource_type, ResourcePath, SubresourcePath};
 use crate::textures::TextureManager;
 use crate::volatile_buffer::{VolatileBuffer, VolatileBufferType};
-use crate::vulkan::command_buffer::{RenderingCmdBuf, TransientPrimaryCommandPool};
+use crate::vulkan::command_buffer::RenderingCmdBuf;
 use crate::vulkan::descriptors::DescriptorPool;
+use crate::vulkan::device::queue::queue_type::PrimaryQueue;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::MemoryError;
-use crate::vulkan::queue::queue_type::PrimaryQueue;
 
 #[enum_delegate::register]
 pub trait ComponentConfig {
@@ -32,7 +33,7 @@ pub trait ComponentConfig {
         entity_id: EntityId,
         level: &mut LoadingLevel,
         engine: &GalaxyEngine,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext,
     ) -> LoadResult<()>;
 }
 
@@ -46,7 +47,7 @@ where
         entity_id: EntityId,
         level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
-        _cmd_pool: &mut TransientPrimaryCommandPool,
+        _loading_ctx: &mut LoadingContext,
     ) -> LoadResult<()> {
         level.world.add_component(entity_id, self.clone());
         Ok(())
@@ -68,7 +69,7 @@ impl ComponentConfig for LightConfig {
         _entity_id: EntityId,
         _level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
-        _cmd_pool: &mut TransientPrimaryCommandPool,
+        _loading_ctx: &mut LoadingContext,
     ) -> LoadResult<()> {
         Ok(())
     }
@@ -115,7 +116,7 @@ impl ComponentConfig for Transform {
         entity_id: EntityId,
         level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
-        _cmd_pool: &mut TransientPrimaryCommandPool,
+        _loading_ctx: &mut LoadingContext,
     ) -> LoadResult<()> {
         level.world.add_component(
             entity_id,
@@ -157,7 +158,7 @@ impl ComponentConfig for Scale {
         entity_id: EntityId,
         level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
-        _cmd_pool: &mut TransientPrimaryCommandPool,
+        _loading_ctx: &mut LoadingContext,
     ) -> LoadResult<()> {
         level.world.update_transform_with(entity_id, |transform| {
             transform.scale = self.0;
@@ -178,7 +179,7 @@ impl ComponentConfig for AnglePlaneRotor {
         entity_id: EntityId,
         level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
-        _cmd_pool: &mut TransientPrimaryCommandPool,
+        _loading_ctx: &mut LoadingContext,
     ) -> LoadResult<()> {
         level.world.update_transform_with(entity_id, |transform| {
             transform.rotation = Rotor3::from_angle_plane(self.angle.to_radians(), self.plane.normalized());
@@ -207,7 +208,7 @@ impl ComponentConfig for ModelConfig {
         entity_id: EntityId,
         level: &mut LoadingLevel,
         engine: &GalaxyEngine,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext,
     ) -> LoadResult<()> {
         if self.materials.is_empty() {
             self.materials
@@ -217,7 +218,7 @@ impl ComponentConfig for ModelConfig {
         // Load mesh.
         let mesh_path = ResourcePath::new(&self.mesh, Some(&level.config_path))
             .ok_or(LoadError::ResourcePathError(self.mesh.clone()))?;
-        let mesh = level.mesh_manager.get_or_load_mesh(engine, cmd_pool, &mesh_path)?;
+        let mesh = level.mesh_manager.get_or_load_mesh(engine, loading_ctx, &mesh_path)?;
 
         // Load materials.
         let mut materials = self
@@ -229,7 +230,7 @@ impl ComponentConfig for ModelConfig {
                 Ok(level.material_manager.get_or_load_material(
                     engine,
                     &mut level.texture_manager,
-                    cmd_pool,
+                    loading_ctx,
                     material_path,
                 )?)
             })
@@ -413,7 +414,7 @@ impl Level {
     pub fn new<T: DeserializableComponentConfig>(
         config_path: ResourcePath,
         engine: &GalaxyEngine,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext,
         _old_level: Option<Self>, // TODO: for reusing resources.
     ) -> Result<Self, LoadError> {
         // TODO: Unload previous level and resources.
@@ -424,7 +425,7 @@ impl Level {
             world: World::new(),
             camera_entity: EntityId::dead(),
             mesh_manager: LoadingMeshManager::new(),
-            material_manager: LoadingMaterialManager::new(engine, &mut texture_manager, cmd_pool)?,
+            material_manager: LoadingMaterialManager::new(engine, &mut texture_manager, loading_ctx)?,
             texture_manager,
         };
 
@@ -436,7 +437,7 @@ impl Level {
         for entity_config in config.entities {
             let id = level.world.add_entity(Name::new(entity_config.name));
             for mut component_config in entity_config.components.into_iter() {
-                component_config.load(id, &mut level, engine, cmd_pool)?;
+                component_config.load(id, &mut level, engine, loading_ctx)?;
             }
         }
 
@@ -487,8 +488,8 @@ impl Level {
         )?;
 
         // Finish material and mesh loading.
-        let material_manager = level.material_manager.finalise_loading(engine, cmd_pool)?;
-        let mesh_manager = level.mesh_manager.finalise_loading(engine, cmd_pool)?;
+        let material_manager = level.material_manager.finalise_loading(engine, loading_ctx)?;
+        let mesh_manager = level.mesh_manager.finalise_loading(engine, loading_ctx)?;
 
         let draw_data_buffer =
             VolatileBuffer::new_array("Draw data buffer", num_draws, device, VolatileBufferType::Storage)?;
@@ -561,7 +562,7 @@ impl Level {
             }));
         }
 
-        unsafe { device.loader().update_descriptor_sets(&descriptor_writes, &[]) };
+        unsafe { device.loader.update_descriptor_sets(&descriptor_writes, &[]) };
 
         // Create draw indirect buffer.
         //let draw_indirect_commands_size = (size_of::<vk::DrawIndexedIndirectCommand>() * num_models) as vk::DeviceSize;
@@ -832,7 +833,7 @@ impl Level {
                 &pipeline_draw_range.draw_offset_push_constant(),
             );
             unsafe {
-                device.loader().cmd_draw_indexed_indirect(
+                device.loader.cmd_draw_indexed_indirect(
                     cmd_buf.handle_dep(),
                     self.draw_indirect_buffer.handle_dep(),
                     self.draw_indirect_buffer.frame_offset(frame_index) as vk::DeviceSize

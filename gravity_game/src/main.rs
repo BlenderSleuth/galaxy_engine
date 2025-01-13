@@ -6,8 +6,8 @@ use app::{AppFlags, AppInfo, GalaxyApp};
 use galaxy_engine::engine::GalaxyEngine;
 use galaxy_engine::game::Game;
 use galaxy_engine::level::{ComponentConfig, LoadResult, LoadingLevel};
+use galaxy_engine::loading::LoadingContext;
 use galaxy_engine::resource_paths::ResourcePath;
-use galaxy_engine::vulkan::command_buffer::TransientPrimaryCommandPool;
 use galaxy_engine::{app, game_dir, register_components};
 use serde::{Deserialize, Serialize};
 use shipyard::EntityId;
@@ -31,7 +31,7 @@ impl ComponentConfig for GravitySourceConfig {
         _entity_id: EntityId,
         _level: &mut LoadingLevel,
         _engine: &GalaxyEngine,
-        _cmd_pool: &mut TransientPrimaryCommandPool,
+        _loading_ctx: &mut LoadingContext,
     ) -> LoadResult<()> {
         Ok(())
     }

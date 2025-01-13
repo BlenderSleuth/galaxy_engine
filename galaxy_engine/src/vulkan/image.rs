@@ -8,12 +8,13 @@ use ash::vk;
 use gpu_allocator::vulkan::{AllocationCreateDesc, AllocationScheme};
 use gpu_allocator::MemoryLocation;
 
+use crate::loading::LoadingContext;
 use crate::utils;
 use crate::vulkan::buffer::{Buffer, Staging};
-use crate::vulkan::command_buffer::{RecordingCmdBuf, TransientPrimaryCommandPool};
+use crate::vulkan::command_buffer::RecordingCmdBuf;
+use crate::vulkan::device::queue::queue_type::QueueType;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
-use crate::vulkan::queue::queue_type::QueueType;
 use crate::vulkan::{debug, get_device_loader, gpu_alloc};
 
 pub struct ImageView {
@@ -23,7 +24,7 @@ pub struct ImageView {
 impl ImageView {
     // Image in view_info must outlive the image view. Usually call Image::get_or_create_view() instead.
     pub unsafe fn new(device: &Device, view_info: &vk::ImageViewCreateInfo) -> VkResult<Self> {
-        let handle = unsafe { device.loader().create_image_view(view_info, None) }?;
+        let handle = unsafe { device.loader.create_image_view(view_info, None) }?;
         Ok(Self { handle })
     }
 
@@ -107,7 +108,7 @@ impl Image {
         info: &vk::ImageCreateInfo,
         subresource: vk::ImageSubresourceRange,
     ) -> MemResult<Self> {
-        let handle = unsafe { device.loader().create_image(&info, None) }?;
+        let handle = unsafe { device.loader.create_image(&info, None) }?;
 
         // Debug name image object.
         debug::set_object_name(device, handle, name)?;
@@ -118,7 +119,7 @@ impl Image {
         let requirements_info = vk::ImageMemoryRequirementsInfo2::default().image(handle);
         unsafe {
             device
-                .loader()
+                .loader
                 .get_image_memory_requirements2(&requirements_info, &mut requirements)
         };
 
@@ -162,7 +163,7 @@ impl Image {
     pub fn new_from_mip_levels(
         name: &str,
         device: &Device,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext<impl QueueType>,
         levels: &[&[u8]],
         dimensions: ImageDimensions,
         format: vk::Format,
@@ -193,77 +194,79 @@ impl Image {
         };
         let mut image = Image::new(name, device, &image_info, subresource)?;
 
-        let mut image_buffer = Buffer::<Staging>::new(
-            debug::debug_only_name!("{name} staging buffer"),
-            &device,
-            total_mip_size as vk::DeviceSize,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-        )?;
+        loading_ctx.load(|cmd_buffer| {
+            let mut image_buffer = Buffer::<Staging>::new(
+                debug::debug_only_name!("{name} staging buffer"),
+                &device,
+                total_mip_size as vk::DeviceSize,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+            )?;
 
-        // Copy mip levels into buffer.
-        let mut offset = 0;
-        let regions = levels
-            .iter()
-            .enumerate()
-            .map(|(mip_level, data)| {
-                let mip_level = mip_level as u32;
-                let region = vk::BufferImageCopy::default()
-                    .buffer_offset(offset as vk::DeviceSize)
-                    // Tight packed data.
-                    .buffer_row_length(0)
-                    .buffer_image_height(0)
-                    .image_subresource(vk::ImageSubresourceLayers {
-                        aspect_mask: subresource.aspect_mask,
-                        mip_level,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    })
-                    .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
-                    .image_extent(vk::Extent3D {
-                        width: extent.width >> mip_level,
-                        height: if dimensions.num_dimensions() >= 2 {
-                            extent.height >> mip_level
-                        } else {
-                            1
-                        },
-                        depth: if dimensions.num_dimensions() >= 3 {
-                            extent.depth >> mip_level
-                        } else {
-                            1
-                        },
-                    });
-                image_buffer.copy_slice_into_buffer(&data, offset)?;
-                offset += data.len();
-                Ok(region)
-            })
-            .collect::<MemResult<Vec<_>>>()?;
+            // Copy mip levels into buffer.
+            let mut offset = 0;
+            let regions = levels
+                .iter()
+                .enumerate()
+                .map(|(mip_level, data)| {
+                    let mip_level = mip_level as u32;
+                    let region = vk::BufferImageCopy::default()
+                        .buffer_offset(offset as vk::DeviceSize)
+                        // Tight packed data.
+                        .buffer_row_length(0)
+                        .buffer_image_height(0)
+                        .image_subresource(vk::ImageSubresourceLayers {
+                            aspect_mask: subresource.aspect_mask,
+                            mip_level,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        })
+                        .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                        .image_extent(vk::Extent3D {
+                            width: extent.width >> mip_level,
+                            height: if dimensions.num_dimensions() >= 2 {
+                                extent.height >> mip_level
+                            } else {
+                                1
+                            },
+                            depth: if dimensions.num_dimensions() >= 3 {
+                                extent.depth >> mip_level
+                            } else {
+                                1
+                            },
+                        });
+                    image_buffer.copy_slice_into_buffer(&data, offset)?;
+                    offset += data.len();
+                    Ok(region)
+                })
+                .collect::<MemResult<Vec<_>>>()?;
+            // Transition all mip levels to transfer destination optimal.
+            let barrier = image.layout_transition_barrier(
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                None,
+            );
+            let dep_info = vk::DependencyInfoKHR::default().image_memory_barriers(slice::from_ref(&barrier));
+            cmd_buffer.pipeline_barrier2(device, &dep_info);
 
-        let mut cmd_buffer = cmd_pool.allocate_transient_cmd_buffer()?;
+            // Perform the copy.
+            cmd_buffer.copy_buffer_to_image(
+                &image_buffer,
+                &mut image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &regions,
+            );
 
-        // Transition all mip levels to transfer destination optimal.
-        let barrier =
-            image.layout_transition_barrier(vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, None);
-        let dep_info = vk::DependencyInfoKHR::default().image_memory_barriers(slice::from_ref(&barrier));
-        cmd_buffer.pipeline_barrier2(device, &dep_info);
+            // Transition all mip levels to shader read only optimal.
+            let barrier = image.layout_transition_barrier(
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                None,
+            );
+            let dep_info = vk::DependencyInfoKHR::default().image_memory_barriers(slice::from_ref(&barrier));
+            cmd_buffer.pipeline_barrier2(device, &dep_info);
 
-        // Perform the copy.
-        cmd_buffer.copy_buffer_to_image(
-            &image_buffer,
-            &mut image,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            &regions,
-        );
-
-        // Transition all mip levels to shader read only optimal.
-        let barrier = image.layout_transition_barrier(
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            None,
-        );
-        let dep_info = vk::DependencyInfoKHR::default().image_memory_barriers(slice::from_ref(&barrier));
-        cmd_buffer.pipeline_barrier2(device, &dep_info);
-
-        cmd_buffer.end_submit_wait_and_free()?;
+            Ok([image_buffer])
+        })?;
 
         Ok(image)
     }

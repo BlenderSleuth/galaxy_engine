@@ -9,8 +9,6 @@ pub mod extensions;
 pub mod gpu_alloc;
 pub mod image;
 pub mod instance;
-pub mod physical_device;
-pub mod queue;
 pub mod shader;
 pub mod surface;
 pub mod swapchain;
@@ -19,10 +17,12 @@ pub mod sync;
 use std::ffi::CStr;
 
 use ash::vk;
+pub use device::physical_device;
+pub use device::queue;
 pub use device::get_device_loader;
 
-pub const ENGINE_NAME: &'static CStr = c"Galaxy Engine";
-pub const ENGINE_VERSION_STR: &'static str = env!("CARGO_PKG_VERSION");
+pub const ENGINE_NAME: &CStr = c"Galaxy Engine";
+pub const ENGINE_VERSION_STR: &str = env!("CARGO_PKG_VERSION");
 pub const ENGINE_VERSION: u32 = crate::utils::pkg_version();
 pub const MIN_VK_VERSION: u32 = vk::make_api_version(0, 1, 2, 0);
 

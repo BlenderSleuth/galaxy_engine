@@ -11,6 +11,7 @@ use itertools::izip;
 use ultraviolet::Vec2;
 
 use crate::engine::GalaxyEngine;
+use crate::loading::LoadingContext;
 use crate::meshes::MeshBuffer;
 use crate::pipelines::{GraphicsPipeline, Pipeline, PipelineManager};
 use crate::vulkan::buffer::{Buffer, Staging};
@@ -20,6 +21,7 @@ use crate::vulkan::descriptors::DescriptorPool;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::MemResult;
 use crate::vulkan::image::Image;
+use crate::vulkan::queue::QueueType;
 
 #[derive(Default)]
 struct GuiDrawData {
@@ -48,15 +50,7 @@ impl GuiIntegration {
             event_loop,
             Some(window.scale_factor() as f32),
             event_loop.system_theme(),
-            Some(
-                engine
-                    .device
-                    .physical_device()
-                    .properties
-                    .base
-                    .limits
-                    .max_image_dimension2_d as usize,
-            ),
+            Some(engine.device.physical.properties.base.limits.max_image_dimension2_d as usize),
         );
 
         // TODO: Use custom GUI layout.
@@ -248,17 +242,22 @@ impl GuiRenderer {
             },
         );
 
+        let mut loading_ctx = LoadingContext::new(device, transient_cmd_pool)?;
         let mesh_buffer = MeshBuffer::new_from_vertices_and_indices(
             debug_only_name!("GUI mesh buffer"),
             &vertices,
             &indices,
             device,
-            transient_cmd_pool,
+            &mut loading_ctx,
             vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER,
         )?;
+        loading_ctx.submit()?;
 
         // Set up textures.
-        self.upload_textures(device, &draw_data.textures_delta, frame_index, transient_cmd_pool)?;
+        self.upload_textures(device, &draw_data.textures_delta, frame_index, &mut loading_ctx)?;
+
+        // TODO: Sync with semaphore properly.
+        loading_ctx.complete()?;
 
         // Queue draw commands.
         let pipeline_layout = self.pipeline.layout();
@@ -291,7 +290,7 @@ impl GuiRenderer {
             cmd_buf.push_constants(
                 self.pipeline.layout(),
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                std::mem::size_of::<Vec2>() as u32,
+                size_of::<Vec2>() as u32,
                 bytemuck::bytes_of(&texture_index),
             );
             cmd_buf.draw_indexed(draw.index_count, 1, draw.first_index, draw.vertex_offset, 0);
@@ -351,7 +350,7 @@ impl GuiRenderer {
             .mip_lod_bias(0.)
             .min_lod(0.)
             .max_lod(vk::LOD_CLAMP_NONE);
-        let sampler = unsafe { device.loader().create_sampler(&default_sampler_info, None) }?;
+        let sampler = unsafe { device.loader.create_sampler(&default_sampler_info, None) }?;
 
         self.samplers.insert(*options, sampler);
 
@@ -392,7 +391,7 @@ impl GuiRenderer {
         device: &Device,
         textures_delta: &egui::TexturesDelta,
         frame_index: usize,
-        transient_cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext<impl QueueType>,
     ) -> MemResult<()> {
         fn image_size(delta: &epaint::ImageDelta) -> usize {
             // TODO: If supported, fonts could use a 2-byte format to save memory:
@@ -433,134 +432,131 @@ impl GuiRenderer {
         }
         self.descriptors_dirty[frame_index] = true;
 
-        let mut upload_cmd_buf = transient_cmd_pool.allocate_transient_cmd_buffer()?;
+        loading_ctx.load(|cmd_buffer| {
+            let mut staging_buffer = Buffer::<Staging>::new(
+                debug_only_name!("GUI texture upload"),
+                device,
+                total_bytes,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+            )?;
 
-        let mut staging_buffer = Buffer::<Staging>::new(
-            debug_only_name!("GUI texture upload"),
-            device,
-            total_bytes,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-        )?;
+            let texture_format = vk::Format::R8G8B8A8_UNORM;
 
-        let texture_format = vk::Format::R8G8B8A8_UNORM;
+            let mut texture_layouts = HashMap::new();
+            for (id, delta) in textures_delta.set.iter() {
+                let mut image_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+                let sampler = self.get_or_create_sampler(device, &delta.options)?;
 
-        let mut texture_layouts = HashMap::new();
-        for (id, delta) in textures_delta.set.iter() {
-            let mut image_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
-            let sampler = self.get_or_create_sampler(device, &delta.options)?;
+                if delta.pos.is_some() {
+                    assert!(
+                        self.textures.contains_key(id),
+                        "GUI delta op applied to non-existent texture"
+                    );
+                } else if let indexmap::map::Entry::Vacant(entry) = self.textures.entry(*id) {
+                    // Insert new texture.
+                    let info = vk::ImageCreateInfo::default()
+                        .image_type(vk::ImageType::TYPE_2D)
+                        .format(texture_format)
+                        .extent(image_extent(delta))
+                        .mip_levels(1)
+                        .array_layers(1)
+                        .samples(vk::SampleCountFlags::TYPE_1)
+                        .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED);
+                    let subresource = vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .level_count(1)
+                        .layer_count(1);
 
-            if delta.pos.is_some() {
-                assert!(
-                    self.textures.contains_key(id),
-                    "GUI delta op applied to non-existent texture"
-                );
-            } else if let indexmap::map::Entry::Vacant(entry) = self.textures.entry(*id) {
-                // Insert new texture.
-                let info = vk::ImageCreateInfo::default()
-                    .image_type(vk::ImageType::TYPE_2D)
-                    .format(texture_format)
-                    .extent(image_extent(delta))
-                    .mip_levels(1)
-                    .array_layers(1)
-                    .samples(vk::SampleCountFlags::TYPE_1)
-                    .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED);
-                let subresource = vk::ImageSubresourceRange::default()
-                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                    .level_count(1)
-                    .layer_count(1);
+                    entry.insert(FontTexture {
+                        image: Image::new(debug_only_name!("GUI texture {id:?}"), device, &info, subresource)?,
+                        sampler,
+                    });
 
-                entry.insert(FontTexture {
-                    image: Image::new(debug_only_name!("GUI texture {id:?}"), device, &info, subresource)?,
-                    sampler,
-                });
-
-                image_layout = vk::ImageLayout::UNDEFINED;
-            }
-            texture_layouts.insert(*id, image_layout);
-        }
-
-        // Transition textures that are updated to transfer destination layout.
-        //let images: Vec<_> = textures_delta.set.iter().map(|(id, _)| &self.textures[id]).collect();
-        let barriers: Vec<_> = self
-            .textures
-            .iter_mut()
-            .filter_map(|(id, texture)| {
-                texture_layouts.get(id).map(|initial_layout| {
-                    texture.image.layout_transition_barrier(
-                        *initial_layout,
-                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                        Some(0),
-                    )
-                })
-            })
-            .collect();
-        let dep_info = vk::DependencyInfoKHR::default().image_memory_barriers(&barriers);
-        upload_cmd_buf.pipeline_barrier2(device, &dep_info);
-
-        let mut font_vec = Vec::new();
-        for ((id, delta), offset) in izip!(textures_delta.set.iter(), offsets) {
-            let texture = self.textures.get_mut(id).unwrap();
-
-            let colour_data = match &delta.image {
-                egui::ImageData::Color(image) => &image.pixels,
-                egui::ImageData::Font(font) => {
-                    font_vec.clear();
-                    font_vec.extend(font.srgba_pixels(None));
-                    &font_vec
+                    image_layout = vk::ImageLayout::UNDEFINED;
                 }
-            };
-            staging_buffer.copy_slice_into_buffer(colour_data, offset as usize)?;
-
-            let mut region = vk::BufferImageCopy::default()
-                .buffer_offset(offset as vk::DeviceSize)
-                .image_subresource(vk::ImageSubresourceLayers {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    mip_level: 0,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                })
-                .image_extent(image_extent(delta));
-
-            if let Some(pos) = delta.pos {
-                region.image_offset = vk::Offset3D {
-                    x: pos[0] as i32,
-                    y: pos[1] as i32,
-                    z: 0,
-                };
+                texture_layouts.insert(*id, image_layout);
             }
 
-            // TODO: Consolidate uploads to the same texture into a single copy command?
-            upload_cmd_buf.copy_buffer_to_image(
-                &staging_buffer,
-                &mut texture.image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[region],
-            );
-        }
-
-        // Transition textures to shader read-only layout.
-        let barriers: Vec<_> = self
-            .textures
-            .iter_mut()
-            .filter_map(|(id, texture)| {
-                texture_layouts.contains_key(id).then(|| {
-                    texture.image.layout_transition_barrier(
-                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                        Some(0),
-                    )
+            // Transition textures that are updated to transfer destination layout.
+            //let images: Vec<_> = textures_delta.set.iter().map(|(id, _)| &self.textures[id]).collect();
+            let barriers: Vec<_> = self
+                .textures
+                .iter_mut()
+                .filter_map(|(id, texture)| {
+                    texture_layouts.get(id).map(|initial_layout| {
+                        texture.image.layout_transition_barrier(
+                            *initial_layout,
+                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                            Some(0),
+                        )
+                    })
                 })
-            })
-            .collect();
-        let dep_info = vk::DependencyInfoKHR::default().image_memory_barriers(&barriers);
-        upload_cmd_buf.pipeline_barrier2(device, &dep_info);
+                .collect();
+            let dep_info = vk::DependencyInfoKHR::default().image_memory_barriers(&barriers);
+            cmd_buffer.pipeline_barrier2(device, &dep_info);
 
-        let exec = upload_cmd_buf.end()?;
-        let pending = exec.submit(&[], &[])?;
+            let mut font_vec = Vec::new();
+            for ((id, delta), offset) in izip!(textures_delta.set.iter(), offsets) {
+                let texture = self.textures.get_mut(id).unwrap();
+
+                let colour_data = match &delta.image {
+                    egui::ImageData::Color(image) => &image.pixels,
+                    egui::ImageData::Font(font) => {
+                        font_vec.clear();
+                        font_vec.extend(font.srgba_pixels(None));
+                        &font_vec
+                    }
+                };
+                staging_buffer.copy_slice_into_buffer(colour_data, offset as usize)?;
+
+                let mut region = vk::BufferImageCopy::default()
+                    .buffer_offset(offset as vk::DeviceSize)
+                    .image_subresource(vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .image_extent(image_extent(delta));
+
+                if let Some(pos) = delta.pos {
+                    region.image_offset = vk::Offset3D {
+                        x: pos[0] as i32,
+                        y: pos[1] as i32,
+                        z: 0,
+                    };
+                }
+
+                // TODO: Consolidate uploads to the same texture into a single copy command?
+                cmd_buffer.copy_buffer_to_image(
+                    &staging_buffer,
+                    &mut texture.image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[region],
+                );
+            }
+
+            // Transition textures to shader read-only layout.
+            let barriers: Vec<_> = self
+                .textures
+                .iter_mut()
+                .filter_map(|(id, texture)| {
+                    texture_layouts.contains_key(id).then(|| {
+                        texture.image.layout_transition_barrier(
+                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                            Some(0),
+                        )
+                    })
+                })
+                .collect();
+            let dep_info = vk::DependencyInfoKHR::default().image_memory_barriers(&barriers);
+            cmd_buffer.pipeline_barrier2(device, &dep_info);
+
+            Ok([staging_buffer])
+        })?;
 
         self.write_texture_descriptors(frame_index);
-
-        pending.wait_for_fence()?;
 
         Ok(())
     }

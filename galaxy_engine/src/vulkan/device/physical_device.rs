@@ -3,7 +3,6 @@
 use std::ffi::CStr;
 use std::num::NonZeroU32;
 
-use arrayvec::ArrayVec;
 use ash::vk;
 
 use crate::utils::linear_from_srgb_format;
@@ -125,8 +124,9 @@ pub struct PhysicalDevice {
     pub enabled_features: PhysicalDeviceFeatures,
 }
 
-//noinspection RsUnresolvedPath
-pub type PropertyQueueList<T = u32> = ArrayVec<T, { PhysicalDevice::MAX_QUEUE_FAMILIES }>;
+// An array vec with a fixed size to accommodate the number of queue types .
+pub type QueueArray<T> = arrayvec::ArrayVec<T, { PhysicalDevice::MAX_QUEUE_FAMILIES }>;
+
 impl PhysicalDevice {
     const MAX_QUEUE_FAMILIES: usize = 3;
     pub const MAX_DISPATCH_GROUPS_PER_DIMENSION: u32 = 65535; // Guaranteed by Vulkan spec.
@@ -417,15 +417,32 @@ impl PhysicalDevice {
         })
     }
 
-    pub fn get_unique_queue_families(&self) -> PropertyQueueList {
-        let mut unique_queue_families = PropertyQueueList::new();
-        unique_queue_families.push(self.primary_queue_family_idx);
-        if let Some(async_transfer_queue_family_idx) = self.async_transfer_queue_family_idx {
-            unique_queue_families.push(async_transfer_queue_family_idx);
-        }
-        if let Some(async_compute_queue_family_idx) = self.async_compute_queue_family_idx {
-            unique_queue_families.push(async_compute_queue_family_idx);
-        }
-        unique_queue_families
+    pub fn queue_infos(&self) -> QueueArray<vk::DeviceQueueCreateInfo<'static>> {
+        let mut queue_infos = QueueArray::new();
+
+        // Async queues are optional, and replaced with a primary queue if not present.
+        let num_primary_queues = 1
+            + self.async_transfer_queue_family_idx.is_none() as usize
+            + self.async_compute_queue_family_idx.is_none() as usize;
+
+        let primary_info = vk::DeviceQueueCreateInfo::default()
+            .queue_family_index(self.primary_queue_family_idx)
+            .queue_priorities(&[1., 1., 1.][0..num_primary_queues]);
+
+        queue_infos.push(primary_info);
+
+        let mut add_optional_queue = |queue_family_index| {
+            if let Some(index) = queue_family_index {
+                queue_infos.push(
+                    vk::DeviceQueueCreateInfo::default()
+                        .queue_family_index(index)
+                        .queue_priorities(&[1.]),
+                );
+            }
+        };
+        add_optional_queue(self.async_transfer_queue_family_idx);
+        add_optional_queue(self.async_compute_queue_family_idx);
+
+        queue_infos
     }
 }

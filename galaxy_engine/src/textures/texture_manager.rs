@@ -5,11 +5,12 @@ use ash::vk;
 use indexmap::IndexMap;
 
 use crate::engine::GalaxyEngine;
+use crate::loading::LoadingContext;
 use crate::resource_paths::{resource_type, ResourcePath};
 use crate::textures::texture::TextureError;
 use crate::textures::Texture;
-use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
+use crate::vulkan::queue::QueueType;
 
 pub struct TextureManager {
     loader: SharedDeviceLoader,
@@ -22,7 +23,7 @@ impl TextureManager {
 
     pub fn new(device: &Device) -> VkResult<Self> {
         // Create default texture sampler.
-        let max_anisotropy = device.physical_device().properties.base.limits.max_sampler_anisotropy;
+        let max_anisotropy = device.physical.properties.base.limits.max_sampler_anisotropy;
         let default_sampler_info = vk::SamplerCreateInfo::default()
             .mag_filter(vk::Filter::LINEAR)
             .min_filter(vk::Filter::LINEAR)
@@ -38,7 +39,7 @@ impl TextureManager {
             .mip_lod_bias(0.)
             .min_lod(0.)
             .max_lod(vk::LOD_CLAMP_NONE);
-        let default_sampler = unsafe { device.loader().create_sampler(&default_sampler_info, None) }?;
+        let default_sampler = unsafe { device.loader.create_sampler(&default_sampler_info, None) }?;
         Ok(Self {
             loader: device.cloned_loader(),
             default_sampler,
@@ -51,7 +52,7 @@ impl TextureManager {
         name: &str,
         path: &ResourcePath,
         engine: &GalaxyEngine,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext<impl QueueType>,
     ) -> Result<u32, TextureError> {
         assert!(self.textures.len() < Self::MAX_TEXTURES);
 
@@ -65,7 +66,7 @@ impl TextureManager {
             name,
             &path.full_path::<resource_type::Texture>(engine),
             &engine.device,
-            cmd_pool,
+            loading_ctx,
         )?;
         let texture_index = self.textures.insert_full(path.clone(), texture).0;
         Ok(texture_index as u32)

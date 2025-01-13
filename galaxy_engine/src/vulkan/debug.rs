@@ -16,7 +16,7 @@ pub(crate) use debug_only_name;
 
 #[inline]
 pub fn set_object_name<H: vk::Handle>(_device: &Device, _handle: H, _name: &str) -> VkResult<()> {
-    set_object_name_with_ext(_device.extensions(), _handle, _name)
+    set_object_name_with_ext(&_device.extensions, _handle, _name)
 }
 
 #[inline]

@@ -27,7 +27,7 @@ fn create_descriptor_set_layout(
     bindings: &[vk::DescriptorSetLayoutBinding],
 ) -> VkResult<vk::DescriptorSetLayout> {
     let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(bindings);
-    unsafe { device.loader().create_descriptor_set_layout(&info, None) }
+    unsafe { device.loader.create_descriptor_set_layout(&info, None) }
 }
 
 fn get_or_create_compute_descriptor_set_layout(
@@ -70,7 +70,7 @@ fn create_pipeline_layout(
     if let Some(push_constant_range) = push_constant_range {
         pipeline_layout_info = pipeline_layout_info.push_constant_ranges(&push_constant_range);
     }
-    let handle = unsafe { device.loader().create_pipeline_layout(&pipeline_layout_info, None) }?;
+    let handle = unsafe { device.loader.create_pipeline_layout(&pipeline_layout_info, None) }?;
 
     Ok(handle)
 }

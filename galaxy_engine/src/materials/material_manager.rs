@@ -8,14 +8,15 @@ use indexmap::IndexMap;
 
 use super::config::MaterialConfigsCache;
 use crate::engine::GalaxyEngine;
+use crate::loading::LoadingContext;
 use crate::materials::{Material, MaterialError, ResourceBinding, ResourceConstant, ResourceRef};
 use crate::pipelines::{Pipeline, PipelineBindingDataSize};
 use crate::resource_paths::SubresourcePath;
 use crate::textures::TextureManager;
 use crate::vulkan::buffer::{Buffer, GpuOnly};
-use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
 use crate::vulkan::debug::debug_only_name;
 use crate::vulkan::gpu_alloc::MemResult;
+use crate::vulkan::queue::QueueType;
 
 type ResourceConstantData = [u32; 4];
 
@@ -94,7 +95,7 @@ impl LoadingMaterialManager {
     pub(crate) fn new(
         engine: &GalaxyEngine,
         texture_manager: &mut TextureManager,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext<impl QueueType>,
     ) -> Result<Self, MaterialError> {
         let mut material_manager = Self {
             resource_path_map: HashMap::new(),
@@ -106,7 +107,7 @@ impl LoadingMaterialManager {
         material_manager.get_or_load_material(
             engine,
             texture_manager,
-            cmd_pool,
+            loading_ctx,
             SubresourcePath::new(Self::DEFAULT_MATERIAL, None).unwrap(),
         )?;
 
@@ -117,7 +118,7 @@ impl LoadingMaterialManager {
         &mut self,
         engine: &GalaxyEngine,
         texture_manager: &mut TextureManager,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext<impl QueueType>,
         subresource_path: SubresourcePath,
     ) -> Result<Arc<Material>, MaterialError> {
         if let Some(material_index) = self.resource_path_map.get(&subresource_path) {
@@ -139,7 +140,7 @@ impl LoadingMaterialManager {
                 subresource_path.clone(),
                 level_index,
                 //buffer_index,
-                cmd_pool,
+                loading_ctx,
             )?);
             let resource_paths = if self.pipelines.contains_key(material.pipeline().id()) {
                 &mut self.pipelines[material.pipeline().id()]
@@ -161,9 +162,9 @@ impl LoadingMaterialManager {
     pub(crate) fn finalise_loading(
         self,
         engine: &GalaxyEngine,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext<impl QueueType>,
     ) -> MemResult<MaterialManager> {
-        MaterialManager::new(self, engine, cmd_pool)
+        MaterialManager::new(self, engine, loading_ctx)
     }
 }
 
@@ -192,7 +193,7 @@ impl MaterialManager {
     fn new(
         loading: LoadingMaterialManager,
         engine: &GalaxyEngine,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext<impl QueueType>,
     ) -> MemResult<Self> {
         let materials = loading.materials;
         let mut material_constants: Vec<ResourceConstantData> = Vec::new();
@@ -206,82 +207,100 @@ impl MaterialManager {
             data_addr: vk::DeviceAddress,
         }
 
-        let mut cmd_buf = cmd_pool.allocate_transient_cmd_buffer()?;
-        let (_staging_buffers, (material_data_buffers, pipeline_data)): (Vec<_>, (Vec<_>, Vec<_>)) = loading
-            .pipelines
-            .into_iter()
-            .map(|(pipeline_id, resource_paths)| {
-                let pipeline = engine.pipeline_manager.get_graphics_pipeline(&pipeline_id).unwrap();
-                let bindings_len = pipeline.bindings().len();
-                let buffer_size = (resource_paths.len() * bindings_len * size_of::<ResourceRef>()) as vk::DeviceSize;
+        // TODO: Allow return of resources from load function.
+        let mut material_data_buffers = Vec::with_capacity(loading.pipelines.len());
+        let mut pipeline_data = Vec::with_capacity(loading.pipelines.len());
+        let mut material_constants_buffer_opt = None;
 
-                // Create material buffer.
-                let mut material_buffer = Buffer::new(
-                    debug_only_name!("{pipeline_id} material data buffer"),
-                    &engine.device,
-                    buffer_size,
-                    vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-                )?;
+        loading_ctx.load(|cmd_buf| {
+            // TODO: Ideally staging buffers would have an initial capacity of loading.pipelines.len() + 1.
+            let mut staging_buffers: Vec<_> = loading
+                .pipelines
+                .into_iter()
+                .map(|(pipeline_id, resource_paths)| {
+                    let pipeline = engine.pipeline_manager.get_graphics_pipeline(&pipeline_id).unwrap();
+                    let bindings_len = pipeline.bindings().len();
+                    let buffer_size =
+                        (resource_paths.len() * bindings_len * size_of::<ResourceRef>()) as vk::DeviceSize;
 
-                let mut materials_addrs: Vec<_> = resource_paths
-                    .into_iter()
-                    .map(|path| MaterialWithDataAddr {
-                        mat: materials[loading.resource_path_map[&path] as usize].as_ref(),
-                        data_addr: material_buffer.device_address(), // Point to the start of the material data buffer initially.
-                    })
-                    .collect();
+                    // Create material buffer.
+                    let mut material_buffer = Buffer::new(
+                        debug_only_name!("{pipeline_id} material data buffer"),
+                        &engine.device,
+                        buffer_size,
+                        vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                    )?;
 
-                // Copy material resource bindings to buffer.
-                let staging_buffer =
-                    material_buffer.copy_via_staging_buffer_with(&engine.device, &mut cmd_buf, None, |buffer| {
-                        let buffer_memory: &mut [ResourceRef] =
-                            bytemuck::cast_slice_mut(buffer.zero_and_get_mut_bytes());
+                    let mut materials_addrs: Vec<_> = resource_paths
+                        .into_iter()
+                        .map(|path| MaterialWithDataAddr {
+                            mat: materials[loading.resource_path_map[&path] as usize].as_ref(),
+                            data_addr: material_buffer.device_address(), // Point to the start of the material data buffer initially.
+                        })
+                        .collect();
 
-                        for (i, material_addr) in materials_addrs.iter_mut().enumerate() {
-                            let buffer_range = i * bindings_len..(i + 1) * bindings_len;
+                    // Copy material resource bindings to buffer.
+                    let staging_buffer =
+                        material_buffer.copy_via_staging_buffer_with(&engine.device, cmd_buf, None, |buffer| {
+                            let buffer_memory: &mut [ResourceRef] =
+                                bytemuck::cast_slice_mut(buffer.zero_and_get_mut_bytes());
 
-                            // Offset the data address to point to the start of this material's data.
-                            material_addr.data_addr +=
-                                (buffer_range.start * size_of::<ResourceRef>()) as vk::DeviceAddress;
+                            for (i, material_addr) in materials_addrs.iter_mut().enumerate() {
+                                let buffer_range = i * bindings_len..(i + 1) * bindings_len;
 
-                            for ((bind_point, binding_size), resource_ref) in
-                                pipeline.bindings().iter().zip(&mut buffer_memory[buffer_range])
-                            {
-                                let resource_binding = material_addr
-                                    .mat
-                                    .get_resource_binding(bind_point)
-                                    .unwrap_or(binding_size.unbound());
+                                // Offset the data address to point to the start of this material's data.
+                                material_addr.data_addr +=
+                                    (buffer_range.start * size_of::<ResourceRef>()) as vk::DeviceAddress;
 
-                                *resource_ref = match resource_binding {
-                                    ResourceBinding::Texture(index) => ResourceRef::texture(*index),
-                                    ResourceBinding::Constant(constant) => {
-                                        constant.write_constant(&mut material_constants)
-                                    }
-                                };
+                                for ((bind_point, binding_size), resource_ref) in
+                                    pipeline.bindings().iter().zip(&mut buffer_memory[buffer_range])
+                                {
+                                    let resource_binding = material_addr
+                                        .mat
+                                        .get_resource_binding(bind_point)
+                                        .unwrap_or(binding_size.unbound());
+
+                                    *resource_ref = match resource_binding {
+                                        ResourceBinding::Texture(index) => ResourceRef::texture(*index),
+                                        ResourceBinding::Constant(constant) => {
+                                            constant.write_constant(&mut material_constants)
+                                        }
+                                    };
+                                }
                             }
-                        }
 
-                        Ok(())
-                    })?;
+                            Ok(())
+                        })?;
 
-                Ok((staging_buffer, (material_buffer, materials_addrs)))
-            })
-            .collect::<MemResult<_>>()?;
+                    material_data_buffers.push(material_buffer);
+                    pipeline_data.push(materials_addrs);
 
-        let mut material_constants_buffer = Buffer::new(
-            "Material constants buffer",
-            &engine.device,
-            (material_constants.len() * size_of::<ResourceConstantData>()) as vk::DeviceSize,
-            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::STORAGE_BUFFER,
-        )?;
-        let _constants_staging =
-            material_constants_buffer.copy_via_staging_buffer_with(&engine.device, &mut cmd_buf, None, |buffer| {
-                buffer.copy_slice_into_buffer(&material_constants, 0)?;
-                Ok(())
-            })?;
+                    Ok(staging_buffer)
+                })
+                .collect::<MemResult<_>>()?;
 
-        // Upload material buffer.
-        let pending = cmd_buf.end()?.submit(&[], &[])?;
+            let mut material_constants_buffer = Buffer::new(
+                "Material constants buffer",
+                &engine.device,
+                (material_constants.len() * size_of::<ResourceConstantData>()) as vk::DeviceSize,
+                vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::STORAGE_BUFFER,
+            )?;
+
+            staging_buffers.push(material_constants_buffer.copy_via_staging_buffer_with(
+                &engine.device,
+                cmd_buf,
+                None,
+                |buffer| buffer.copy_slice_into_buffer(&material_constants, 0),
+            )?);
+
+            // A hack for now while the loading context is still being developed.
+            material_constants_buffer_opt = Some(material_constants_buffer);
+
+            Ok(staging_buffers)
+        })?;
+        loading_ctx.submit()?;
+
+        let material_constants_buffer = material_constants_buffer_opt.unwrap();
 
         // Set material data addresses and record where the material data address is in the buffer.
         // It's in a different order because materials are grouped in the buffer by pipeline, rather than upload order.
@@ -297,9 +316,6 @@ impl MaterialManager {
                 data_addr
             })
             .collect();
-
-        // Wait before dropping.
-        pending.wait_for_fence()?;
 
         Ok(Self {
             _materials: materials,

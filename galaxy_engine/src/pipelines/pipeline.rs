@@ -26,7 +26,7 @@ fn handle_pipeline_create(
             // All pipelines must be created for successful engine initialisation.
             for handle in handles {
                 if !handle.is_null() {
-                    unsafe { device.loader().destroy_pipeline(handle, None) };
+                    unsafe { device.loader.destroy_pipeline(handle, None) };
                 }
             }
             Err(err_code)
@@ -82,7 +82,7 @@ impl GraphicsPipeline {
         }
 
         // Constant pipeline creation infos.
-        let physical_device = device.physical_device();
+        let physical_device = &device.physical;
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
@@ -167,7 +167,7 @@ impl GraphicsPipeline {
                                 ColourAttachmentColourSpace::Linear => &physical_device.surface_linear_format,
                             },
                         ))
-                        .depth_attachment_format(device.physical_device().depth_stencil_format),
+                        .depth_attachment_format(physical_device.depth_stencil_format),
                 )
             })
             .collect();
@@ -192,7 +192,7 @@ impl GraphicsPipeline {
         // Batch create graphics pipelines.
         let handles = handle_pipeline_create(device, unsafe {
             device
-                .loader()
+                .loader
                 .create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_infos, None)
         })?;
 
@@ -279,7 +279,7 @@ impl ComputePipeline {
         // Batch create compute pipelines.
         let handles = handle_pipeline_create(device, unsafe {
             device
-                .loader()
+                .loader
                 .create_compute_pipelines(vk::PipelineCache::null(), &pipeline_infos, None)
         })?;
 

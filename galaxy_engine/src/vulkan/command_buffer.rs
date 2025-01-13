@@ -2,7 +2,6 @@
 
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
-use std::slice;
 
 use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
@@ -11,12 +10,12 @@ use castaway::cast;
 
 use crate::pipelines::{ComputePipeline, GraphicsPipeline, Pipeline};
 use crate::vulkan::buffer::{Buffer, GpuOnly, MemLocation};
+use crate::vulkan::device::queue::queue_type::{ComputeQueueType, PrimaryQueue, QueueType};
 use crate::vulkan::device::{Device, DeviceExt, SharedDeviceLoader};
 use crate::vulkan::extensions::DeviceExtensions;
 use crate::vulkan::image::Image;
-use crate::vulkan::queue::queue_type::{ComputeQueueType, PrimaryQueue, QueueType};
-use crate::vulkan::queue::Queue;
-use crate::vulkan::sync::{Fence, WaitSemaphore};
+use crate::vulkan::queue::WaitSemaphore;
+use crate::vulkan::sync::Fence;
 
 pub type PrimaryCommandPool<T> = CommandPool<PrimaryQueue, T>;
 pub type ResettablePrimaryCommandPool<const N: usize> = CommandPool<PrimaryQueue, Resettable<PrimaryQueue, N>>;
@@ -49,24 +48,22 @@ impl<Q: QueueType, const N: usize> CommandPoolType for Resettable<Q, N> {}
 pub struct CommandPool<Q: QueueType, T: CommandPoolType> {
     loader: SharedDeviceLoader,
     handle: vk::CommandPool,
-    queue: vk::Queue,
     queue_type: PhantomData<Q>,
     pool_storage: ManuallyDrop<T>,
 }
 
 impl<Q: QueueType, T: CommandPoolType> CommandPool<Q, T> {
-    pub fn new(name: &str, device: &Device, queue: &Queue<Q>) -> VkResult<Self> {
+    pub fn new(name: &str, device: &Device) -> VkResult<Self> {
         let command_pool_info = vk::CommandPoolCreateInfo::default()
             .flags(T::FLAGS)
-            .queue_family_index(queue.family_index());
-        let handle = unsafe { device.loader().create_command_pool(&command_pool_info, None) }?;
+            .queue_family_index(device.get_queue::<Q>().family_index);
+        let handle = unsafe { device.loader.create_command_pool(&command_pool_info, None) }?;
 
         crate::vulkan::debug::set_object_name(device, handle, name)?;
 
         Ok(Self {
             loader: device.cloned_loader(),
             handle,
-            queue: queue.handle(),
             queue_type: PhantomData,
             pool_storage: Default::default(),
         })
@@ -81,7 +78,7 @@ impl<Q: QueueType> CommandPool<Q, Transient> {
                 .allocate_command_buffer(self.handle, vk::CommandBufferLevel::PRIMARY)
         }?;
 
-        let cmd_buffer = CommandBuffer::new(self.loader.clone(), handle, self.handle, self.queue)?;
+        let cmd_buffer = CommandBuffer::new(self.loader.clone(), handle, self.handle)?;
         cmd_buffer.begin()
     }
 }
@@ -99,7 +96,6 @@ impl<Q: QueueType, const N: usize> CommandPool<Q, Resettable<Q, N>> {
                 self.loader.clone(),
                 handle,
                 self.handle,
-                self.queue,
             )?));
 
         Ok(self.pool_storage.persistent_cmd_buffers.last_mut().unwrap())
@@ -116,14 +112,14 @@ impl<Q: QueueType, const N: usize> CommandPool<Q, Resettable<Q, N>> {
             .level(level)
             .command_buffer_count(M as u32);
         let handles = unsafe { self.loader.allocate_command_buffers_av::<M>(&allocate_info) }?;
-        let buffers: VkResult<ArrayVec<CommandBuffer<Q, Initial>, M>> = handles
+        let buffers: ArrayVec<CommandBuffer<Q, Initial>, M> = handles
             .iter()
-            .map(|&handle| CommandBuffer::new(self.loader.clone(), handle, self.handle, self.queue))
-            .collect();
+            .map(|&handle| CommandBuffer::new(self.loader.clone(), handle, self.handle))
+            .collect::<VkResult<_>>()?;
 
         self.pool_storage
             .persistent_cmd_buffers
-            .extend(buffers?.into_iter().map(|b| PersistentCmdBuf::new(b)));
+            .extend(buffers.into_iter().map(|b| PersistentCmdBuf::new(b)));
 
         let range = (self.pool_storage.persistent_cmd_buffers.len() - M)..;
         Ok(&mut self.pool_storage.persistent_cmd_buffers[range])
@@ -163,8 +159,12 @@ mod private {
     pub trait Sealed {}
 }
 use private::Sealed;
+
+use crate::vulkan::queue;
+
 pub trait CmdBufState: Sealed + 'static {}
 pub trait ResettableState: CmdBufState {}
+pub trait WaitableState: CmdBufState {}
 
 // Rendering state (with a render pass).
 pub trait RenderingState: Sealed + 'static {}
@@ -180,6 +180,7 @@ pub enum Initial {}
 impl Sealed for Initial {}
 impl CmdBufState for Initial {}
 impl ResettableState for Initial {}
+impl WaitableState for Initial {}
 
 // Recording state.
 pub struct Recording<R: RenderingState>(PhantomData<R>);
@@ -198,6 +199,7 @@ impl ResettableState for Executable {}
 pub enum Pending {}
 impl Sealed for Pending {}
 impl CmdBufState for Pending {}
+impl WaitableState for Pending {}
 
 // Invalid state.
 pub struct Invalid;
@@ -219,8 +221,6 @@ struct CommandBufferInner<Q: QueueType> {
     loader: SharedDeviceLoader,
     handle: vk::CommandBuffer,
     pool: vk::CommandPool,
-    queue: vk::Queue,
-    fence: Fence,
     queue_type: PhantomData<Q>,
 }
 
@@ -235,17 +235,12 @@ impl<Q: QueueType> CommandBuffer<Q, Initial> {
         loader: SharedDeviceLoader,
         handle: vk::CommandBuffer,
         pool: vk::CommandPool,
-        queue: vk::Queue,
     ) -> VkResult<CommandBuffer<Q, Initial>> {
-        // Initially signalled, so it can be waited upon without being submitted.
-        let fence = Fence::new(loader.as_ref(), true)?;
         Ok(Self {
             inner: CommandBufferInner {
                 loader,
                 handle,
                 pool,
-                queue,
-                fence,
                 queue_type: PhantomData,
             },
             state: PhantomData,
@@ -263,21 +258,12 @@ impl<Q: QueueType, C: CmdBufState> CommandBuffer<Q, C> {
     fn loader(&self) -> &ash::Device {
         self.inner.loader.as_ref()
     }
-    fn handle(&self) -> vk::CommandBuffer {
+    pub(super) fn handle(&self) -> vk::CommandBuffer {
         self.inner.handle
     }
     fn pool(&self) -> vk::CommandPool {
         self.inner.pool
     }
-    fn queue(&self) -> vk::Queue {
-        self.inner.queue
-    }
-    fn fence(&self) -> &Fence {
-        &self.inner.fence
-    }
-    //fn fence_mut(&mut self) -> &mut ManuallyDrop<Fence> {
-    //    &mut self.inner.fence
-    //}
 
     fn next_state<N: CmdBufState>(self) -> CommandBuffer<Q, N> {
         // Safe way to transmute between states.
@@ -294,10 +280,10 @@ impl<Q: QueueType, C: CmdBufState> CommandBuffer<Q, C> {
 
     // Can be called on any state. An invalid state must be reset to be reused, so even if real
     // vulkan command buffer state is not invalid the type-state encoding is still sound.
-    pub fn wait_for_fence(self) -> VkResult<CommandBuffer<Q, Invalid>> {
-        self.fence().wait(self.loader())?;
-        Ok(Self::next_state(self))
-    }
+    //pub fn wait_for_fence(self) -> VkResult<CommandBuffer<Q, Invalid>> {
+    //    self.fence().wait(self.loader())?;
+    //    Ok(Self::next_state(self))
+    //}
 }
 
 impl<Q: QueueType, C: ResettableState> CommandBuffer<Q, C> {
@@ -504,7 +490,7 @@ impl<Q: QueueType, R: RenderingState> CommandBuffer<Q, Recording<R>> {
     pub fn pipeline_barrier2(&mut self, device: &Device, dependency_info: &vk::DependencyInfo) {
         unsafe {
             device
-                .extensions()
+                .extensions
                 .sync2
                 .cmd_pipeline_barrier2(self.handle(), dependency_info)
         };
@@ -553,54 +539,97 @@ impl<Q: QueueType> CommandBuffer<Q, Recording<OutsideRenderPass>> {
         unsafe { self.loader().end_command_buffer(self.handle()) }?;
         Ok(Self::next_state(self))
     }
+}
 
-    // On transient buffers ending, submitting, waiting and freeing are often all done in one go.
-    pub fn end_submit_wait_and_free(self) -> VkResult<()> {
-        let ended = self.end()?;
-        let pending = ended.submit(&[], &[])?;
-        pending.wait_for_fence()?;
+// Executable commands.
+pub struct SubmitInfo<'a, Q: QueueType> {
+    pub cmd_buffers: &'a mut Vec<CommandBuffer<Q, Executable>>,
+    pub wait_semaphores: &'a [WaitSemaphore],
+    pub signal_semaphores: &'a [vk::Semaphore],
+}
+
+impl<'a, Q: QueueType> From<&'a SubmitInfo<'a, Q>> for queue::SubmitInfo<'a, Q> {
+    fn from(value: &'a SubmitInfo<'a, Q>) -> Self {
+        queue::SubmitInfo {
+            cmd_buffers: value.cmd_buffers.as_slice(),
+            wait_semaphores: value.wait_semaphores,
+            signal_semaphores: value.signal_semaphores,
+        }
+    }
+}
+
+impl<Q: QueueType> CommandBuffer<Q, Executable> {
+    pub fn submit_one(
+        self,
+        device: &Device,
+        wait_semaphores: &[WaitSemaphore],
+        signal_semaphores: &[vk::Semaphore],
+        fence: Option<&Fence>,
+    ) -> VkResult<PendingCmdBuf<Q>> {
+        let submit_info = queue::SubmitInfo {
+            cmd_buffers: core::slice::from_ref(&self),
+            wait_semaphores,
+            signal_semaphores,
+        };
+
+        let queue = device.get_queue::<Q>();
+        unsafe { queue.submit(&[submit_info], fence)? };
+
+        Ok(self.next_state())
+    }
+
+    pub fn submit<const N: usize>(
+        device: &Device,
+        submit_infos: [SubmitInfo<Q>; N],
+        fence: Option<&Fence>,
+        pending_out: &mut Vec<CommandBuffer<Q, Pending>>,
+    ) -> VkResult<()> {
+        let queue = device.get_queue::<Q>();
+        let queue_submit_infos: [_; N] = core::array::from_fn(|i| (&submit_infos[i]).into());
+        unsafe { queue.submit(&queue_submit_infos, fence)? };
+
+        pending_out.extend(
+            submit_infos
+                .into_iter()
+                .flat_map(|info| info.cmd_buffers.drain(..).map(|cmd_buf| cmd_buf.next_state())),
+        );
+
         Ok(())
     }
 }
 
-// Executable commands.
-impl<Q: QueueType> CommandBuffer<Q, Executable> {
-    pub fn submit<const M: usize>(
-        self,
-        wait_semaphores: &[WaitSemaphore; M],
-        signal_semaphores: &[vk::Semaphore],
-    ) -> VkResult<CommandBuffer<Q, Pending>> {
-        let semaphore_handles: ArrayVec<_, M> = wait_semaphores.iter().map(|sem| sem.handle).collect();
-        let semaphore_stages: ArrayVec<_, M> = wait_semaphores.iter().map(|sem| sem.stage_mask).collect();
+impl<Q: QueueType, C: WaitableState> CommandBuffer<Q, C> {
+    fn should_wait(&self) -> bool {
+        cast!(self, &CommandBuffer<Q, Pending>).is_ok()
+    }
 
-        let submit_info = vk::SubmitInfo::default()
-            .wait_semaphores(&semaphore_handles)
-            .wait_dst_stage_mask(&semaphore_stages)
-            .signal_semaphores(signal_semaphores)
-            .command_buffers(slice::from_ref(&self.inner.handle));
-
-        // Reset fence right before submitting.
-        self.fence().reset(self.loader())?;
-        unsafe {
-            self.loader()
-                .queue_submit(self.queue(), &[submit_info], self.fence().handle())
-        }?;
-
+    // Fence must be signalling for the command buffer.
+    pub fn wait_for_fence(self, fence: &Fence) -> VkResult<CommandBuffer<Q, Invalid>> {
+        if self.should_wait() {
+            fence.wait(self.loader())?;
+        }
         Ok(self.next_state())
+    }
+
+    pub fn wait_idle(cmd_bufs: Vec<Self>, device: &Device) -> VkResult<Vec<CommandBuffer<Q, Invalid>>> {
+        if cmd_bufs.first().map(|c| c.should_wait()) == Some(true) {
+            device.get_queue::<Q>().wait_idle()?;
+        }
+        Ok(cmd_bufs.into_iter().map(|cmd_buf| cmd_buf.next_state()).collect())
     }
 }
 
 // Persistent command buffers last more than a frame, and are state-tracked in an enum.
 #[derive(thiserror::Error, Debug)]
 pub enum CmdBufStateTransitionError {
-    #[error("Command buffer is in the wrong state ({0}) for operation {1}")]
+    #[error("Command buffer is in the wrong state ({0}) for operation \"{1}\"")]
     WrongState(&'static str, &'static str),
     #[error("Vulkan error while transitioning command buffer state: {0}")]
     VulkanError(#[from] vk::Result),
 }
 type CmdBufStateTransitionResult<T> = Result<T, CmdBufStateTransitionError>;
 
-pub enum PersistentCmdBuf<Q: QueueType> {
+enum PersistentCmdBufState<Q: QueueType> {
     Invalid(CommandBuffer<Q, Invalid>),
     Initial(CommandBuffer<Q, Initial>),
     Recording(CommandBuffer<Q, Recording<OutsideRenderPass>>),
@@ -612,53 +641,24 @@ pub enum PersistentCmdBuf<Q: QueueType> {
     Transitioning,
 }
 
-impl<Q: QueueType> PersistentCmdBuf<Q> {
-    fn new(cmd_buf: CommandBuffer<Q, Initial>) -> Self {
-        Self::Initial(cmd_buf)
-    }
-
+impl<Q: QueueType> PersistentCmdBufState<Q> {
     fn check_not_transitioning(&self) {
         debug_assert!(
-            !matches!(self, Self::Transitioning),
+            !matches!(self, PersistentCmdBufState::Transitioning),
             "Command buffer is already transitioning."
         );
     }
 
     const fn state_str(&self) -> &'static str {
         match self {
-            Self::Initial(_) => "Initial",
-            Self::Recording(_) => "Recording",
-            Self::Rendering(_) => "Rendering",
-            Self::Executable(_) => "Executable",
-            Self::Pending(_) => "Pending",
-            Self::Invalid(_) => "Invalid",
-            Self::Transitioning => "Transitioning",
+            PersistentCmdBufState::Initial(_) => "Initial",
+            PersistentCmdBufState::Recording(_) => "Recording",
+            PersistentCmdBufState::Rendering(_) => "Rendering",
+            PersistentCmdBufState::Executable(_) => "Executable",
+            PersistentCmdBufState::Pending(_) => "Pending",
+            PersistentCmdBufState::Invalid(_) => "Invalid",
+            PersistentCmdBufState::Transitioning => "Transitioning",
         }
-    }
-
-    // Resets back to initial state.
-    fn reset(&mut self) -> Result<(), CmdBufStateTransitionError> {
-        self.check_not_transitioning();
-
-        if let Self::Pending(_) = self {
-            return Err(CmdBufStateTransitionError::WrongState(
-                self.state_str(),
-                "reset command buffer",
-            ));
-        }
-
-        // TODO: Check if this whole block is close to a no-op.
-        *self = Self::Initial(match std::mem::replace(self, Self::Transitioning) {
-            Self::Initial(cmd_buf) => cmd_buf.reset(),
-            Self::Recording(cmd_buf) => cmd_buf.reset(),
-            Self::Rendering(cmd_buf) => cmd_buf.reset(),
-            Self::Executable(cmd_buf) => cmd_buf.reset(),
-            Self::Pending(_) => unreachable!(),
-            Self::Invalid(cmd_buf) => cmd_buf.reset(),
-            Self::Transitioning => unreachable!(),
-        });
-
-        Ok(())
     }
 
     pub fn begin(&mut self) -> CmdBufStateTransitionResult<&mut CommandBuffer<Q, Recording<OutsideRenderPass>>> {
@@ -690,53 +690,72 @@ impl<Q: QueueType> PersistentCmdBuf<Q> {
         }
     }
 
-    pub fn submit<const M: usize>(
+    pub fn submit<const N: usize>(
         &mut self,
-        wait_semaphores: &[WaitSemaphore; M],
+        device: &Device,
+        wait_semaphores: &[WaitSemaphore; N],
         signal_semaphores: &[vk::Semaphore],
+        fence: &Fence,
     ) -> CmdBufStateTransitionResult<()> {
         self.check_not_transitioning();
 
         if !matches!(self, Self::Executable(_)) {
             Err(CmdBufStateTransitionError::WrongState(self.state_str(), "submit"))
         } else if let Self::Executable(cmd_buf) = std::mem::replace(self, Self::Transitioning) {
-            *self = Self::Pending(cmd_buf.submit(wait_semaphores, signal_semaphores)?);
+            *self = Self::Pending(cmd_buf.submit_one(device, wait_semaphores, signal_semaphores, Some(fence))?);
             Ok(())
         } else {
             unreachable!()
         }
     }
 
-    pub fn wait_for_fence(&mut self) -> CmdBufStateTransitionResult<()> {
+    // Fence must be signalling for the command buffer.
+    pub fn wait_for_fence(&mut self, fence: &Fence) -> CmdBufStateTransitionResult<()> {
         self.check_not_transitioning();
 
-        *self = match std::mem::replace(self, Self::Transitioning) {
-            PersistentCmdBuf::Invalid(cmd_buf) => PersistentCmdBuf::Invalid(cmd_buf.wait_for_fence()?),
-            PersistentCmdBuf::Initial(cmd_buf) => PersistentCmdBuf::Invalid(cmd_buf.wait_for_fence()?),
-            PersistentCmdBuf::Recording(cmd_buf) => PersistentCmdBuf::Invalid(cmd_buf.wait_for_fence()?),
-            PersistentCmdBuf::Rendering(cmd_buf) => PersistentCmdBuf::Invalid(cmd_buf.wait_for_fence()?),
-            PersistentCmdBuf::Executable(cmd_buf) => PersistentCmdBuf::Invalid(cmd_buf.wait_for_fence()?),
-            PersistentCmdBuf::Pending(cmd_buf) => PersistentCmdBuf::Invalid(cmd_buf.wait_for_fence()?),
-            PersistentCmdBuf::Transitioning => unreachable!(),
-        };
+        if !matches!(self, Self::Initial(_)) && !matches!(self, Self::Pending(_)) {
+            return Err(CmdBufStateTransitionError::WrongState(
+                self.state_str(),
+                "wait for fence",
+            ));
+        }
+
+        *self = Self::Invalid(match std::mem::replace(self, Self::Transitioning) {
+            Self::Initial(cmd_buf) => cmd_buf.wait_for_fence(fence)?,
+            Self::Pending(cmd_buf) => cmd_buf.wait_for_fence(fence)?,
+            _ => unreachable!(),
+        });
+
         Ok(())
     }
 
-    // Internal use only.
-    //fn free_fence(&mut self) {
-    //    match self {
-    //        Self::Invalid(cmd_buf) => unsafe { ManuallyDrop::drop(cmd_buf.fence_mut()) },
-    //        Self::Initial(cmd_buf) => unsafe { ManuallyDrop::drop(cmd_buf.fence_mut()) },
-    //        Self::Recording(cmd_buf) => unsafe { ManuallyDrop::drop(cmd_buf.fence_mut()) },
-    //        Self::Rendering(cmd_buf) => unsafe { ManuallyDrop::drop(cmd_buf.fence_mut()) },
-    //        Self::Executable(cmd_buf) => unsafe { ManuallyDrop::drop(cmd_buf.fence_mut()) },
-    //        Self::Pending(cmd_buf) => unsafe { ManuallyDrop::drop(cmd_buf.fence_mut()) },
-    //        Self::Transitioning => unreachable!(),
-    //    }
-    //}
+    // Resets back to initial state.
+    fn reset(&mut self) -> CmdBufStateTransitionResult<()> {
+        self.check_not_transitioning();
+
+        if let Self::Pending(_) = self {
+            return Err(CmdBufStateTransitionError::WrongState(
+                self.state_str(),
+                "reset command buffer",
+            ));
+        }
+
+        // TODO: Check if this whole block is close to a no-op.
+        *self = Self::Initial(match std::mem::replace(self, Self::Transitioning) {
+            Self::Initial(cmd_buf) => cmd_buf.reset(),
+            Self::Recording(cmd_buf) => cmd_buf.reset(),
+            Self::Rendering(cmd_buf) => cmd_buf.reset(),
+            Self::Executable(cmd_buf) => cmd_buf.reset(),
+            Self::Pending(_) => unreachable!(),
+            Self::Invalid(cmd_buf) => cmd_buf.reset(),
+            Self::Transitioning => unreachable!(),
+        });
+
+        Ok(())
+    }
 }
 
-impl PersistentCmdBuf<PrimaryQueue> {
+impl PersistentCmdBufState<PrimaryQueue> {
     pub fn begin_rendering(
         &mut self,
         ext: &DeviceExtensions,
@@ -779,14 +798,77 @@ impl PersistentCmdBuf<PrimaryQueue> {
     }
 }
 
+pub struct PersistentCmdBuf<Q: QueueType> {
+    state: PersistentCmdBufState<Q>,
+    fence: Fence,
+}
+
+impl<Q: QueueType> PersistentCmdBuf<Q> {
+    fn new(cmd_buf: CommandBuffer<Q, Initial>) -> Self {
+        Self {
+            fence: Fence::new(cmd_buf.loader(), false),
+            state: PersistentCmdBufState::Initial(cmd_buf),
+        }
+    }
+
+    // Pass-through methods.
+    pub const fn state_str(&self) -> &'static str {
+        self.state.state_str()
+    }
+
+    pub fn begin(&mut self) -> CmdBufStateTransitionResult<&mut CommandBuffer<Q, Recording<OutsideRenderPass>>> {
+        self.state.begin()
+    }
+
+    pub fn end(&mut self) -> CmdBufStateTransitionResult<()> {
+        self.state.end()
+    }
+
+    pub fn submit<const N: usize>(
+        &mut self,
+        device: &Device,
+        wait_semaphores: &[WaitSemaphore; N],
+        signal_semaphores: &[vk::Semaphore],
+    ) -> CmdBufStateTransitionResult<()> {
+        self.fence.reset(&device.loader)?;
+        self.state
+            .submit(device, wait_semaphores, signal_semaphores, &self.fence)
+    }
+
+    pub fn wait_for_fence(&mut self) -> CmdBufStateTransitionResult<()> {
+        self.state.wait_for_fence(&self.fence)
+    }
+
+    pub fn reset(&mut self) -> CmdBufStateTransitionResult<()> {
+        self.state.reset()
+    }
+}
+
+impl PersistentCmdBuf<PrimaryQueue> {
+    pub fn begin_rendering(
+        &mut self,
+        ext: &DeviceExtensions,
+        render_info: &vk::RenderingInfo,
+    ) -> CmdBufStateTransitionResult<&mut CommandBuffer<PrimaryQueue, Recording<InsideRenderPass>>> {
+        self.state.begin_rendering(ext, render_info)
+    }
+
+    pub fn end_rendering(
+        &mut self,
+        ext: &DeviceExtensions,
+    ) -> CmdBufStateTransitionResult<&mut CommandBuffer<PrimaryQueue, Recording<OutsideRenderPass>>> {
+        self.state.end_rendering(ext)
+    }
+}
+
 impl<Q: QueueType, C: CmdBufState> Drop for CommandBuffer<Q, C> {
     fn drop(&mut self) {
         // Convert to immutable reference.
         let this = &*self;
-        if let Ok(this) = cast!(this, &CommandBuffer<Q, Pending>) {
-            // Wait for the fence now.
-            this.fence().wait(self.loader()).unwrap();
+        if cast!(this, &CommandBuffer<Q, Pending>).is_ok() {
+            log::error!("Command buffer dropped while in pending state. This buffer will be leaked.");
+        } else {
+            unsafe { self.loader().free_command_buffers(self.pool(), &[self.handle()]) };
         }
-        unsafe { self.loader().free_command_buffers(self.pool(), &[self.handle()]) };
     }
 }

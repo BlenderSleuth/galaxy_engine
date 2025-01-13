@@ -20,6 +20,7 @@ use crate::engine::MainLoopError::VulkanError;
 use crate::game::Game;
 use crate::gui::{GuiIntegration, GuiRenderer};
 use crate::level::{DeserializableComponentConfig, Level, LoadResult};
+use crate::loading::LoadingContext;
 use crate::materials::MaterialError;
 use crate::meshes::MeshError;
 use crate::pipelines;
@@ -34,9 +35,10 @@ use crate::vulkan::debug::debug_only_name;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
 use crate::vulkan::instance::Instance;
+use crate::vulkan::queue::{queue_type, WaitSemaphore};
 use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain::Swapchain;
-use crate::vulkan::sync::{BinarySemaphore, Semaphore, WaitSemaphore};
+use crate::vulkan::sync::{BinarySemaphore, Semaphore};
 use crate::vulkan::{device, instance};
 
 #[derive(thiserror::Error, Debug)]
@@ -142,17 +144,20 @@ impl GalaxyEngine {
         // Create vulkan device. This sets the static device.
         let device = Device::new(instance.loader(), &surface)?;
 
-        // Create transient command pool.
-        let mut transient_cmd_pool =
-            TransientPrimaryCommandPool::new("Transient Command Pool", &device, device.primary_queue())?;
+        // Claim primary queue for main thread.
+        device.claim_queue::<queue_type::PrimaryQueue>().unwrap();
+
+        // Create loading_context.
+        let mut transient_cmd_pool = TransientPrimaryCommandPool::new("Transient Command Pool", &device)?;
+        let mut loading_context = LoadingContext::new(&device, &mut transient_cmd_pool)?;
 
         // Initialise engine static resources.
-        *STATIC_RESOURCES.write() = Some(StaticResources::new(&device, &mut transient_cmd_pool)?);
+        *STATIC_RESOURCES.write() = Some(StaticResources::new(&device, &mut loading_context)?);
         let static_resources_guard = StaticResourcesGuard::new(&STATIC_RESOURCES);
 
         // Create swapchain.
         let window_size = vk::Extent2D { width, height };
-        let swapchain = Swapchain::new(&instance, &device, &mut transient_cmd_pool, &surface, window_size, None)?;
+        let swapchain = Swapchain::new(&instance, &device, &mut loading_context, &surface, window_size, None)?;
 
         let pipeline_manager = PipelineManager::new(&device, swapchain.msaa_samples())?;
 
@@ -164,11 +169,8 @@ impl GalaxyEngine {
         let mut compute_finished_semaphores = ArrayVec::new();
         for frame in 0..Self::MAX_FRAMES_IN_FLIGHT {
             // Create command pools and buffers.
-            let mut primary_cmd_pool = ResettablePrimaryCommandPool::new(
-                debug_only_name!("Primary Command Pool {frame}"),
-                &device,
-                device.primary_queue(),
-            )?;
+            let mut primary_cmd_pool =
+                ResettablePrimaryCommandPool::new(debug_only_name!("Primary Command Pool {frame}"), &device)?;
             primary_cmd_pool.allocate_cmd_buffers::<2>(vk::CommandBufferLevel::PRIMARY)?;
             primary_cmd_pools.push(primary_cmd_pool);
 
@@ -179,6 +181,8 @@ impl GalaxyEngine {
         }
 
         let gui_renderer = GuiRenderer::new(&device, &pipeline_manager)?;
+
+        loading_context.complete()?;
 
         Ok(Self {
             game: RefCell::new(game),
@@ -234,14 +238,16 @@ impl GalaxyEngine {
         {
             // Lock transient command pool.
             let mut transient_cmd_pool = self.transient_cmd_pool.lock().unwrap();
+            let mut loading_context = LoadingContext::new(&self.device, &mut transient_cmd_pool)?;
             // Lock level.
             let mut level_lock = self.level.lock().unwrap();
             *level_lock = Some(Level::new::<T>(
                 level_path,
                 self,
-                &mut transient_cmd_pool,
+                &mut loading_context,
                 level_lock.take(),
             )?);
+            loading_context.complete()?;
         }
 
         Ok(())
@@ -330,7 +336,7 @@ impl GalaxyEngine {
             .image(swapchain_image.image)
             .subresource_range(Swapchain::get_subresource_range());
 
-        let ext = self.device.extensions();
+        let ext = &self.device.extensions;
 
         // Record graphics command buffer.
         let gfx_cmd_buffer = primary_cmd_pool.get_cmd_buffer(1);
@@ -458,15 +464,16 @@ impl GalaxyEngine {
             },
         ];
         let signal_semaphores = [self.render_finished_semaphores[frame_index].handle()];
-        gfx_cmd_buffer.submit(&wait_semaphores, &signal_semaphores)?;
 
-        match self.swapchain.queue_present(
-            self.device.primary_queue_mut(),
-            swapchain_image.index,
+        gfx_cmd_buffer.submit(&self.device, &wait_semaphores, &signal_semaphores)?;
+
+        match self.device.get_queue::<queue_type::PrimaryQueue>().present(
+            &self.swapchain,
+            swapchain_image,
             &[self.render_finished_semaphores[frame_index].handle()],
         ) {
-            Ok(_) => {}
-            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
+            Ok(false) => {}
+            Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 self.recreate_swapchain()?;
             }
             Err(e) => return Err(VulkanError(e)),
@@ -478,15 +485,17 @@ impl GalaxyEngine {
     }
 
     fn recreate_swapchain(&mut self) -> MemResult<()> {
-        unsafe { self.device.loader().device_wait_idle() }?;
+        unsafe { self.device.loader.device_wait_idle() }?;
+        let mut loading_context = LoadingContext::new(&self.device, self.transient_cmd_pool.get_mut().unwrap())?;
         let new_swapchain = Swapchain::new(
             &self.instance,
             &self.device,
-            self.transient_cmd_pool.get_mut().unwrap(),
+            &mut loading_context,
             &self.surface,
             self.window_size,
             Some(&self.swapchain),
         )?;
+        loading_context.complete()?;
         let _ = std::mem::replace(&mut self.swapchain, new_swapchain);
         Ok(())
     }

@@ -6,11 +6,12 @@ use ash::vk;
 use basis_universal::{DecodeFlags, SliceParametersUastc, TranscodeError, TranscoderBlockFormat};
 use ktx2::{BasicDataFormatDescriptor, DataFormatDescriptorHeader};
 
-use crate::vulkan::command_buffer::TransientPrimaryCommandPool;
+use crate::loading::LoadingContext;
 use crate::vulkan::debug;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::MemoryError;
 use crate::vulkan::image::{Image, ImageDimensions};
+use crate::vulkan::queue::QueueType;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TextureError {
@@ -45,7 +46,7 @@ impl Texture {
         name: &str,
         path: &Path,
         device: &Device,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext<impl QueueType>,
     ) -> Result<Self, TextureError> {
         // Load texture.
         let texture_data = std::fs::read(path)?;
@@ -160,7 +161,7 @@ impl Texture {
         let texture_image = Image::new_from_mip_levels(
             debug::debug_only_name!("{name} texture"),
             device,
-            cmd_pool,
+            loading_ctx,
             &mip_levels,
             ImageDimensions::Type2D(extent),
             if is_normal_map {

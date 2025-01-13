@@ -11,9 +11,9 @@ use presser::Slab;
 
 use crate::utils::ScopeGuard;
 use crate::vulkan::command_buffer::RecordingCmdBuf;
+use crate::vulkan::device::queue::queue_type::QueueType;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::{ManuallyFreeAllocation, MemResult, SharedAllocator};
-use crate::vulkan::queue::queue_type::QueueType;
 use crate::vulkan::{debug, gpu_alloc};
 
 // Type-state trait encoding of gpu_allocator::MemoryLocation for use in generic parameters.
@@ -57,7 +57,7 @@ impl MemLocation for HostVisibleDeviceLocal {
         MemoryLocation::CpuToGpu
     }
     fn memory_type_override(device: &Device) -> Option<NonZeroU32> {
-        Some(device.physical_device().volatile_memory_type.type_bits)
+        Some(device.physical.volatile_memory_type.type_bits)
     }
 }
 impl HostVisible for HostVisibleDeviceLocal {}
@@ -71,7 +71,7 @@ impl MemLocation for Staging {
         MemoryLocation::CpuToGpu
     }
     fn memory_type_override(device: &Device) -> Option<NonZeroU32> {
-        Some(device.physical_device().staging_memory_type.type_bits)
+        Some(device.physical.staging_memory_type.type_bits)
     }
 }
 impl HostVisible for Staging {}
@@ -85,6 +85,8 @@ impl MemLocation for GpuToCpu {
         MemoryLocation::GpuToCpu
     }
 }
+
+pub type StagingBuffer = Buffer<Staging>;
 
 // TODO: Take alignment as well as non-zero size.
 pub struct Buffer<L: MemLocation> {
@@ -115,8 +117,8 @@ impl<L: MemLocation> Buffer<L> {
             .size(size)
             .usage(usage | L::extra_usage_flags())
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
-        let handle = unsafe { device.loader().create_buffer(&buffer_info, None) }?;
-        let mut guard = ScopeGuard::new(|| unsafe { device.loader().destroy_buffer(handle, None) });
+        let handle = unsafe { device.loader.create_buffer(&buffer_info, None) }?;
+        let mut guard = ScopeGuard::new(|| unsafe { device.loader.destroy_buffer(handle, None) });
 
         // Debug name object.
         debug::set_object_name(device, handle, name)?;
@@ -127,7 +129,7 @@ impl<L: MemLocation> Buffer<L> {
         let requirements_info = vk::BufferMemoryRequirementsInfo2::default().buffer(handle);
         unsafe {
             device
-                .loader()
+                .loader
                 .get_buffer_memory_requirements2(&requirements_info, &mut requirements)
         };
 
@@ -166,7 +168,7 @@ impl<L: MemLocation> Buffer<L> {
             handle,
             allocation,
             size,
-            mem_location: L::new(device.loader(), handle),
+            mem_location: L::new(&device.loader, handle),
         })
     }
 
@@ -255,7 +257,7 @@ impl<L: HostVisible> Buffer<L> {
     ///
     /// Buffer memory must be initialised.
     pub unsafe fn get_mut<T: bytemuck::Pod>(&mut self, offset: usize) -> &mut T {
-        let size = std::mem::size_of::<T>();
+        let size = size_of::<T>();
         // Panics if the alignment is wrong.
         bytemuck::try_from_bytes_mut(self.get_mut_bytes(size, offset)).unwrap()
     }
@@ -265,7 +267,7 @@ impl<L: HostVisible> Buffer<L> {
     ///
     /// Buffer memory must be initialised.
     pub unsafe fn get_mut_slice<T: bytemuck::Pod>(&mut self, len: usize, offset: usize) -> &mut [T] {
-        let size = std::mem::size_of::<T>() * len;
+        let size = size_of::<T>() * len;
         // Panics if the alignment is wrong.
         bytemuck::try_cast_slice_mut(self.get_mut_bytes(size, offset)).unwrap()
     }

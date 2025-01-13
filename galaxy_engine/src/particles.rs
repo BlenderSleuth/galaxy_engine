@@ -15,7 +15,7 @@ use crate::vulkan::command_buffer::{CommandPool, RecordingCmdBuf, RenderingCmdBu
 use crate::vulkan::descriptors::DescriptorPool;
 use crate::vulkan::device::{Device, SharedDeviceLoader};
 use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
-use crate::vulkan::queue::queue_type::{ComputeQueueType, PrimaryQueue, QueueType};
+use crate::vulkan::device::queue::queue_type::{ComputeQueueType, PrimaryQueue, QueueType};
 
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Zeroable, bytemuck::Pod)]

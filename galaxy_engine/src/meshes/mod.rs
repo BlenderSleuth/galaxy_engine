@@ -8,14 +8,16 @@ use std::alloc::Layout;
 use ash::vk;
 
 use crate::engine::GalaxyEngine;
+use crate::loading::LoadingContext;
 use crate::resource_paths::{resource_type, ResourcePath};
 use crate::vertex_input::MeshVertex;
 use crate::vulkan::buffer::{Buffer, GpuOnly, Staging};
-use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingState, TransientPrimaryCommandPool};
+use crate::vulkan::command_buffer::{RecordingCmdBuf, RenderingState};
 use crate::vulkan::debug;
+use crate::vulkan::device::queue::queue_type::PrimaryQueue;
 use crate::vulkan::device::Device;
 use crate::vulkan::gpu_alloc::{MemResult, MemoryError};
-use crate::vulkan::queue::queue_type::PrimaryQueue;
+use crate::vulkan::queue::QueueType;
 
 pub trait IndexTypeTrait: bytemuck::Pod {
     fn index_type() -> vk::IndexType;
@@ -54,7 +56,7 @@ impl<V: bytemuck::Pod> MeshBuffer<V> {
         vertices: &[V],
         indices: &[I],
         device: &Device,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext<impl QueueType>,
         usage: vk::BufferUsageFlags,
     ) -> MemResult<Self> {
         // Ensure proper alignment.
@@ -68,18 +70,20 @@ impl<V: bytemuck::Pod> MeshBuffer<V> {
             vk::BufferUsageFlags::TRANSFER_DST | usage,
         )?;
 
-        let mut staging_buffer = Buffer::<Staging>::new(
-            debug::debug_only_name!("{name} meshes staging buffer"),
-            device,
-            buffer_size,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-        )?;
-        staging_buffer.copy_slice_into_buffer(vertices, 0)?;
-        staging_buffer.copy_slice_into_buffer(indices, indices_offset)?;
+        loading_ctx.load(|mut cmd_buffer| {
+            let mut staging_buffer = Buffer::<Staging>::new(
+                debug::debug_only_name!("{name} meshes staging buffer"),
+                device,
+                buffer_size,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+            )?;
+            staging_buffer.copy_slice_into_buffer(vertices, 0)?;
+            staging_buffer.copy_slice_into_buffer(indices, indices_offset)?;
 
-        let mut cmd_buffer = cmd_pool.allocate_transient_cmd_buffer()?;
-        staging_buffer.copy_to_buffer(&mut cmd_buffer, &mut buffer, staging_buffer.size());
-        cmd_buffer.end_submit_wait_and_free()?;
+            staging_buffer.copy_to_buffer(&mut cmd_buffer, &mut buffer, staging_buffer.size());
+
+            Ok([staging_buffer])
+        })?;
 
         Ok(Self {
             buffer,
@@ -145,7 +149,7 @@ impl Mesh {
     pub fn new(
         name: &str,
         engine: &GalaxyEngine,
-        cmd_pool: &mut TransientPrimaryCommandPool,
+        loading_ctx: &mut LoadingContext<impl QueueType>,
         mesh_path: &ResourcePath,
         level_index: u32,
         level_element_offset: u32,
@@ -157,7 +161,7 @@ impl Mesh {
             &loaded_obj.vertices,
             &loaded_obj.indices,
             &engine.device,
-            cmd_pool,
+            loading_ctx,
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         )?;
         log::info!(

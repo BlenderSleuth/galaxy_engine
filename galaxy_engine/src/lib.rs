@@ -6,6 +6,7 @@ pub mod engine;
 pub mod game;
 mod gui;
 pub mod level;
+pub mod loading;
 pub mod materials;
 pub mod maths;
 pub mod meshes;

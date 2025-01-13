@@ -58,7 +58,7 @@ impl<S: ShaderStageType> ShaderModule<S> {
         let create_info = vk::ShaderModuleCreateInfo::default().code(&code);
         Ok(Self {
             loader: device.cloned_loader(),
-            handle: unsafe { device.loader().create_shader_module(&create_info, None) }?,
+            handle: unsafe { device.loader.create_shader_module(&create_info, None) }?,
             _marker: std::marker::PhantomData,
         })
     }
