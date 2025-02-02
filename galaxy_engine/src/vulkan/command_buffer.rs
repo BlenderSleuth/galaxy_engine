@@ -619,6 +619,18 @@ impl<Q: QueueType, C: WaitableState> CommandBuffer<Q, C> {
     }
 }
 
+impl<Q: QueueType, C: CmdBufState> Drop for CommandBuffer<Q, C> {
+    fn drop(&mut self) {
+        // Convert to immutable reference.
+        let this = &*self;
+        if cast!(this, &CommandBuffer<Q, Pending>).is_ok() {
+            log::error!("Command buffer dropped while in pending state. This buffer will be leaked.");
+        } else {
+            unsafe { self.loader().free_command_buffers(self.pool(), &[self.handle()]) };
+        }
+    }
+}
+
 // Persistent command buffers last more than a frame, and are state-tracked in an enum.
 #[derive(thiserror::Error, Debug)]
 pub enum CmdBufStateTransitionError {
@@ -861,14 +873,10 @@ impl PersistentCmdBuf<PrimaryQueue> {
     }
 }
 
-impl<Q: QueueType, C: CmdBufState> Drop for CommandBuffer<Q, C> {
+impl<Q: QueueType> Drop for PersistentCmdBuf<Q> {
     fn drop(&mut self) {
-        // Convert to immutable reference.
-        let this = &*self;
-        if cast!(this, &CommandBuffer<Q, Pending>).is_ok() {
-            log::error!("Command buffer dropped while in pending state. This buffer will be leaked.");
-        } else {
-            unsafe { self.loader().free_command_buffers(self.pool(), &[self.handle()]) };
+        if matches!(self.state, PersistentCmdBufState::Pending(_)) {
+            self.wait_for_fence().unwrap();
         }
     }
 }

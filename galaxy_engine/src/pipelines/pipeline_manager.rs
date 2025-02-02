@@ -2,6 +2,7 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -359,7 +360,7 @@ impl PipelineManager {
     }
 
     pub fn get_cloned_graphics_pipeline(&self, id: &str) -> Option<Arc<GraphicsPipeline>> {
-        self.graphics_pipelines.get(id).map(ArcFinalOwner::clone)
+        self.graphics_pipelines.get(id).map(Deref::deref).map(Arc::clone)
     }
 
     //pub fn iter_graphics_pipelines(&self) -> impl Iterator<Item = &GraphicsPipeline> {

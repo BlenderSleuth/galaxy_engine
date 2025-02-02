@@ -357,12 +357,17 @@ impl Device {
 
 impl Drop for Device {
     fn drop(&mut self) {
+        // Release device from queue objects.
+        unsafe { self.primary_queue.release_device() };
+        unsafe { self.async_compute_queue.release_device() };
+        unsafe { self.async_transfer_queue.release_device() };
+
         // Drop allocator. Allocator has drop semantics, so we don't need a custom destroy closure.
         unsafe { self.allocator.destroy_as_final(|_| {}) }
             .unwrap_or_else(|_| log::error!("Allocator not final owner."));
 
         // Drop vulkan.
-        unsafe { self.loader.destroy_as_final(|device| device.destroy_device(None)) }
+        unsafe { self.loader.force_destroy_as_final(|device| device.destroy_device(None)) }
             .unwrap_or_else(|_| log::error!("Device not final owner."));
     }
 }

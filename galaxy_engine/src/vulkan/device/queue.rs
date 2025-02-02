@@ -1,9 +1,9 @@
 // Copyright (c) 2024-2025 Ben Sutherland.
 
 use std::marker::PhantomData;
+use std::mem::ManuallyDrop;
 use std::sync::Mutex;
 
-use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::vk;
 use itertools::izip;
@@ -31,6 +31,7 @@ pub mod queue_type {
 
     use crate::vulkan::device::GetQueue;
 
+    #[allow(private_bounds)]
     pub trait QueueType: Sized + GetQueue + 'static {}
     pub trait ComputeQueueType: QueueType {}
     // This is the primary, mandatory queue, with support for graphics, compute, transfer and present operations.
@@ -72,7 +73,7 @@ pub struct SubmitInfo<'a, Q: QueueType> {
 }
 
 pub struct Queue<Q: QueueType> {
-    loader: SharedDeviceLoader,
+    loader: ManuallyDrop<SharedDeviceLoader>,
     handle: vk::Queue,
     pub family_index: u32,
     pub index: u32,
@@ -80,12 +81,15 @@ pub struct Queue<Q: QueueType> {
 }
 
 impl<Q: QueueType> Queue<Q> {
-    // Safety: The queue type must match the type of the queue family.
-    // Will panic if a queue of the same family and index has already been created.
+    /// Retrieves a queue from the device.
+    /// Will panic if a reference to the queue of the same family and index has already been created.
+    ///
+    /// # Safety
+    /// The queue type-state must match the capabilities of the queue family.
     pub unsafe fn get(loader: SharedDeviceLoader, queue_family_idx: u32, queue_index: u32) -> Self {
         {
             // Only one queue of a given family and index should be created, to ensure each queue is only accessed by one thread at a time.
-            static CREATED_QUEUES: Mutex<QueueArray<(u32, u32)>> = Mutex::new(ArrayVec::new_const());
+            static CREATED_QUEUES: Mutex<QueueArray<(u32, u32)>> = Mutex::new(QueueArray::new_const());
 
             let mut created_queues = CREATED_QUEUES.lock().unwrap();
             let queue_key = (queue_family_idx, queue_index);
@@ -98,7 +102,7 @@ impl<Q: QueueType> Queue<Q> {
 
         let handle = unsafe { loader.get_device_queue(queue_family_idx, queue_index) };
         Self {
-            loader,
+            loader: ManuallyDrop::new(loader),
             handle,
             family_index: queue_family_idx,
             index: queue_index,
@@ -164,6 +168,10 @@ impl<Q: QueueType> Queue<Q> {
     pub fn wait_idle(&self) -> VkResult<()> {
         unsafe { self.loader.queue_wait_idle(self.handle) }
     }
+
+    pub(super) unsafe fn release_device(&mut self) {
+        ManuallyDrop::drop(&mut self.loader);
+    }
 }
 
 impl Queue<PrimaryQueue> {
@@ -176,26 +184,3 @@ impl Queue<PrimaryQueue> {
         unsafe { swapchain.queue_present(self.handle, swapchain_image, wait_semaphores) }
     }
 }
-
-// GetQueue allows us to get a queue from the device with just the typestate generic.
-//b trait GetQueue: Sized + QueueType {
-//  fn get_queue(device: &mut Device) -> Option<&mut Queue<Self>>;
-//
-//
-//pl GetQueue for PrimaryQueue {
-//  fn get_queue(device: &mut Device) -> Option<&mut Queue<Self>> {
-//      Some(device.primary_queue())
-//  }
-//
-//
-//pl GetQueue for AsyncTransferQueue {
-//  fn get_queue(device: &mut Device) -> Option<&mut Queue<Self>> {
-//      device.async_transfer_queue()
-//  }
-//
-//
-//pl GetQueue for AsyncComputeQueue {
-//  fn get_queue(device: &mut Device) -> Option<&mut Queue<Self>> {
-//      device.async_compute_queue()
-//  }
-//
