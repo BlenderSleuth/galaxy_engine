@@ -76,7 +76,7 @@ impl MaterialConfigsCache {
         &mut self,
         engine: &GalaxyEngine,
         subresource: &SubresourcePath,
-    ) -> Result<&MaterialConfig, MaterialConfigError> {
+    ) -> Result<&MaterialConfig<'_>, MaterialConfigError> {
         let resource = subresource.resource();
         let mut in_map_cache = self.config_maps.contains_key(resource);
         let mut in_single_cache = self.config_singles.contains_key(resource);

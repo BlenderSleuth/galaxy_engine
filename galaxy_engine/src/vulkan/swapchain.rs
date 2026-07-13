@@ -260,7 +260,7 @@ impl Swapchain {
         self.colour_resolve_image.as_ref()
     }
 
-    pub fn acquire_next_image(&self, semaphore: vk::Semaphore, fence: vk::Fence) -> VkResult<(SwapchainImage, bool)> {
+    pub fn acquire_next_image(&self, semaphore: vk::Semaphore, fence: vk::Fence) -> VkResult<(SwapchainImage<'_>, bool)> {
         let (index, optimal) = unsafe { self.loader.acquire_next_image(self.handle, u64::MAX, semaphore, fence) }?;
         let i = index as usize;
         Ok((

@@ -63,7 +63,7 @@ impl<S: ShaderStageType> ShaderModule<S> {
         })
     }
 
-    pub fn stage_info(&self) -> vk::PipelineShaderStageCreateInfo {
+    pub fn stage_info(&self) -> vk::PipelineShaderStageCreateInfo<'_> {
         vk::PipelineShaderStageCreateInfo::default()
             .stage(self.stage())
             .module(self.handle)

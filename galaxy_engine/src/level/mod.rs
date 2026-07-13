@@ -601,7 +601,7 @@ impl Level {
         camera.aspect = width as f32 / height as f32;
     }
 
-    pub fn get_camera(&self) -> (Ref<&Isometry3>, Ref<&Camera>) {
+    pub fn get_camera(&self) -> (Ref<'_, &Isometry3>, Ref<'_, &Camera>) {
         let (cam_transform, cam) = self
             .world
             .get::<(&IsometryComponent, &Camera)>(self.camera_entity)
@@ -609,7 +609,7 @@ impl Level {
         (Ref::map(cam_transform, |t| &t.0), cam)
     }
 
-    pub fn get_camera_transform_mut(&mut self) -> RefMut<&mut Isometry3> {
+    pub fn get_camera_transform_mut(&mut self) -> RefMut<'_, &mut Isometry3> {
         let cam_transform = self.world.get::<&mut IsometryComponent>(self.camera_entity).unwrap();
         RefMut::map(cam_transform, |t| &mut t.0)
     }

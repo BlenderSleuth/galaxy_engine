@@ -33,7 +33,7 @@ pub enum VertexInputType {
 }
 
 impl VertexInputType {
-    pub fn state_info(&self) -> vk::PipelineVertexInputStateCreateInfo {
+    pub fn state_info(&self) -> vk::PipelineVertexInputStateCreateInfo<'_> {
         match self {
             VertexInputType::PositionTexCoord => PositionTexCoordVertex::vertex_input_state(),
             VertexInputType::Mesh => MeshVertex::vertex_input_state(),

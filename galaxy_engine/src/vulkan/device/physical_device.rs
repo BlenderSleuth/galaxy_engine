@@ -199,7 +199,7 @@ impl PhysicalDevice {
             let supports_present = surface.get_physical_device_surface_support(handle, queue_family_idx)?;
 
             // This queue family is assigned to at most one of the following roles:
-            if (supports_graphics && supports_compute && supports_present) {
+            if supports_graphics && supports_compute && supports_present {
                 // Add the primary queue.
                 let _ = primary_queue_family_indices.try_push(queue_family_idx);
             // Find a queue family that supports only compute operations.

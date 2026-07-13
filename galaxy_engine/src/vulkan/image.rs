@@ -288,7 +288,7 @@ impl Image {
         old_layout: vk::ImageLayout,
         new_layout: vk::ImageLayout,
         mip_level: Option<u32>,
-    ) -> vk::ImageMemoryBarrier2 {
+    ) -> vk::ImageMemoryBarrier2<'_> {
         let mut image_barrier = vk::ImageMemoryBarrier2::default()
             .old_layout(old_layout)
             .new_layout(new_layout)
