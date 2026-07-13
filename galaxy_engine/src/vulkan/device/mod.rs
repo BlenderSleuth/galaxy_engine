@@ -212,19 +212,9 @@ impl Device {
         DEVICE_LOADER.get_or_init(|| loader.as_ref().clone());
 
         // Get queues.
-        let primary_queue = unsafe { Queue::get(Arc::clone(&loader), physical_device.primary_queue_family_idx, 0) };
-        let async_transfer_queue =
-            if let Some(async_transfer_family_index) = physical_device.async_transfer_queue_family_idx {
-                unsafe { Queue::get(Arc::clone(&loader), async_transfer_family_index, 0) }
-            } else {
-                unsafe { Queue::get(Arc::clone(&loader), physical_device.primary_queue_family_idx, 1) }
-            };
-        let async_compute_queue =
-            if let Some(async_compute_family_index) = physical_device.async_compute_queue_family_idx {
-                unsafe { Queue::get(Arc::clone(&loader), async_compute_family_index, 0) }
-            } else {
-                unsafe { Queue::get(Arc::clone(&loader), physical_device.primary_queue_family_idx, 2) }
-            };
+        let primary_queue = unsafe { Queue::get(Arc::clone(&loader), &physical_device.primary_queue) };
+        let async_transfer_queue = unsafe { Queue::get(Arc::clone(&loader), &physical_device.async_transfer_queue) };
+        let async_compute_queue = unsafe { Queue::get(Arc::clone(&loader), &physical_device.async_compute_queue) };
 
         // Set up GPU memory allocator.
         let allocator_debug_settings = if cfg!(feature = "debug_info") {

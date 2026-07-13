@@ -443,21 +443,25 @@ impl Level {
 
         let device = &engine.device;
 
+        // Transforms + draw data + material constants.
+        const NUM_SCENE_STORAGE_BUFFERS: usize = 3;
+
         // Create descriptor pool.
         let descriptor_pool_sizes = [
             // Scene uniform buffer.
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32),
-            // Transforms + draw data + material constants.
+            // Scene storage buffers.
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32 * 3),
+                .descriptor_count((GalaxyEngine::MAX_FRAMES_IN_FLIGHT * NUM_SCENE_STORAGE_BUFFERS) as u32),
             // Scene texture descriptor array.
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(
-                    (GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32 * level.texture_manager.num_textures()).max(1),
+                    // (GalaxyEngine::MAX_FRAMES_IN_FLIGHT as u32 * level.texture_manager.num_textures()).max(1),
+                    ((GalaxyEngine::MAX_FRAMES_IN_FLIGHT * TextureManager::MAX_TEXTURES) as u32).max(1),
                 ),
         ];
         let mut descriptor_pool = DescriptorPool::new(&engine.device, &descriptor_pool_sizes)?;

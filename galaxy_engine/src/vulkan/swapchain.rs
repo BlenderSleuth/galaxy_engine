@@ -252,6 +252,13 @@ impl Swapchain {
     pub fn msaa_samples(&self) -> vk::SampleCountFlags {
         self.msaa_samples
     }
+    pub fn uses_msaa(&self) -> bool {
+        self.msaa_samples != vk::SampleCountFlags::TYPE_1
+    }
+
+    pub fn get_colour_resolve_image(&self) -> Option<&Image> {
+        self.colour_resolve_image.as_ref()
+    }
 
     pub fn acquire_next_image(&self, semaphore: vk::Semaphore, fence: vk::Fence) -> VkResult<(SwapchainImage, bool)> {
         let (index, optimal) = unsafe { self.loader.acquire_next_image(self.handle, u64::MAX, semaphore, fence) }?;

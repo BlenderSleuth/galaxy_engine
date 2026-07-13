@@ -53,6 +53,7 @@ pub use queue_type::QueueType;
 use crate::vulkan::command_buffer::ExecutableCmdBuf;
 use crate::vulkan::device::physical_device::QueueArray;
 use crate::vulkan::device::SharedDeviceLoader;
+use crate::vulkan::physical_device::PhysicalDeviceQueue;
 use crate::vulkan::queue::queue_type::PrimaryQueue;
 use crate::vulkan::swapchain::{Swapchain, SwapchainImage};
 use crate::vulkan::sync::Fence;
@@ -86,26 +87,25 @@ impl<Q: QueueType> Queue<Q> {
     ///
     /// # Safety
     /// The queue type-state must match the capabilities of the queue family.
-    pub unsafe fn get(loader: SharedDeviceLoader, queue_family_idx: u32, queue_index: u32) -> Self {
+    pub unsafe fn get(loader: SharedDeviceLoader, queue: &PhysicalDeviceQueue) -> Self {
         {
             // Only one queue of a given family and index should be created, to ensure each queue is only accessed by one thread at a time.
-            static CREATED_QUEUES: Mutex<QueueArray<(u32, u32)>> = Mutex::new(QueueArray::new_const());
+            static CREATED_QUEUES: Mutex<QueueArray<PhysicalDeviceQueue>> = Mutex::new(QueueArray::new_const());
 
             let mut created_queues = CREATED_QUEUES.lock().unwrap();
-            let queue_key = (queue_family_idx, queue_index);
-            if created_queues.contains(&queue_key) {
-                panic!("Queue (family: {queue_family_idx}, index: {queue_index}) already created");
+            if created_queues.contains(&queue) {
+                panic!("Queue (family: {0}, index: {1}) already created", queue.family_idx, queue.queue_idx);
             } else {
-                created_queues.push(queue_key);
+                created_queues.push(*queue);
             }
         }
 
-        let handle = unsafe { loader.get_device_queue(queue_family_idx, queue_index) };
+        let handle = unsafe { loader.get_device_queue(queue.family_idx, queue.queue_idx) };
         Self {
             loader: ManuallyDrop::new(loader),
             handle,
-            family_index: queue_family_idx,
-            index: queue_index,
+            family_index: queue.family_idx,
+            index: queue.queue_idx,
             _ty: PhantomData,
         }
     }

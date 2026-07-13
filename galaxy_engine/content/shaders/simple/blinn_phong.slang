@@ -34,4 +34,3 @@ float4 mainFS(VSToFS vertex_input) : SV_TARGET0 {
 
     return float4(lit_colour, 1.);
 }
-

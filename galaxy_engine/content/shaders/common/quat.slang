@@ -6,7 +6,7 @@ module quat;
     }\
 
 public struct Quat {
-    float4 q;
+    public float4 q;
 
     comp_access(float, x)
     comp_access(float, y)

@@ -12,7 +12,7 @@ void mainCS(uint3 thread_id: SV_DispatchThreadID, uniform PushConstants push_con
     }
 
     let index_offset = resources.index_offsets[thread_index];
-    let index_buffer = resources.index_buffers[index_offset.buffer_index];
+    let index_buffer = resources.index_buffers[index_offset.buffer_index].value;
     let indices_index = thread_index - index_offset.offset;
 
     resources.index_megabuffer[thread_index] = index_buffer[indices_index];

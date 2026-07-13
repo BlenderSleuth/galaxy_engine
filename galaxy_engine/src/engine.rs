@@ -326,16 +326,25 @@ impl GalaxyEngine {
         };
         let framebuffer_size = self.swapchain.get_extent();
 
-        let color_optimal_transition = vk::ImageMemoryBarrier2::default()
-            .src_access_mask(vk::AccessFlags2::NONE)
-            .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-            .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .image(swapchain_image.image)
-            .subresource_range(Swapchain::get_subresource_range());
+        let mut color_optimal_transitions = ArrayVec::<vk::ImageMemoryBarrier2, 2>::new();
 
+        let mut add_color_optimal_transition = |image| {
+            color_optimal_transitions.push(
+                vk::ImageMemoryBarrier2::default()
+                    .src_access_mask(vk::AccessFlags2::NONE)
+                    .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                    .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                    .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .image(image)
+                    .subresource_range(Swapchain::get_subresource_range()),
+            )
+        };
+        add_color_optimal_transition(swapchain_image.image);
+        if let Some(color_resolve_image) = self.swapchain.get_colour_resolve_image() {
+            add_color_optimal_transition(color_resolve_image.handle());
+        }
         let ext = &self.device.extensions;
 
         // Record graphics command buffer.
@@ -343,8 +352,7 @@ impl GalaxyEngine {
 
         // Transition colour attachment to optimal layout (from present).
         let recording = gfx_cmd_buffer.begin()?;
-        let dependency_info =
-            vk::DependencyInfo::default().image_memory_barriers(slice::from_ref(&color_optimal_transition));
+        let dependency_info = vk::DependencyInfo::default().image_memory_barriers(&color_optimal_transitions);
         recording.pipeline_barrier2(&self.device, &dependency_info);
 
         let mut color_attachment_info = vk::RenderingAttachmentInfo::default()
@@ -406,15 +414,15 @@ impl GalaxyEngine {
         // Render GUI in separate pass.
         color_attachment_info.image_view = swapchain_image.colour_resolve_linear;
         color_attachment_info.load_op = vk::AttachmentLoadOp::LOAD;
-        if self.swapchain.msaa_samples() == vk::SampleCountFlags::TYPE_1 {
-            // Render directly to swapchain image.
-            color_attachment_info.store_op = vk::AttachmentStoreOp::STORE;
-        } else {
+        if self.swapchain.uses_msaa() {
             // Render to MSAA image and resolve to swapchain image.
             color_attachment_info.store_op = vk::AttachmentStoreOp::DONT_CARE;
             color_attachment_info.resolve_mode = vk::ResolveModeFlags::AVERAGE;
             color_attachment_info.resolve_image_view = swapchain_image.linear;
             color_attachment_info.resolve_image_layout = vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL;
+        } else {
+            // Render directly to swapchain image.
+            color_attachment_info.store_op = vk::AttachmentStoreOp::STORE;
         }
         let rendering_info = vk::RenderingInfo::default()
             .render_area(render_area)

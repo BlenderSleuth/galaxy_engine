@@ -8,11 +8,11 @@
     //    type: Normal,
     //),
     "worn_wood_alb": Texture(
-        path: "Albedo_2K__whnfbg3.png",
+        path: "Red_Wooden_Planks_tj3sbacbw_2K_BaseColor.jpg",
         type: Colour(RGB),
     ),
     "worn_wood_nrm": Texture(
-        path: "Normal_2K__whnfbg3.png",
+        path: "Red_Wooden_Planks_tj3sbacbw_2K_Normal.jpg",
         type: Normal,
     ),
     //"worn_wood_alb": Texture(

@@ -132,7 +132,7 @@ struct MeshElementOffset {
 pub enum MeshError {
     #[error("Obj error: {0}")]
     ObjError(#[from] obj::ObjError),
-    #[error("Mesh vulkan error: {0}")]
+    #[error("Mesh Vulkan error: {0}")]
     VulkanError(#[from] vk::Result),
     #[error("Memory error: {0}")]
     MemoryError(#[from] MemoryError),

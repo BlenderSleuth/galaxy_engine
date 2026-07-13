@@ -67,7 +67,7 @@ impl<'a> Texture<'a> {
         match self.ty {
             TextureType::Colour(dimensions) => {
                 command
-                    .args(["--assign-oetf", "sRGB"])
+                    .args(["--assign-tf", "sRGB"])
                     .args(["--assign-primaries", "sRGB"])
                     .args([
                         "--format",
@@ -80,7 +80,7 @@ impl<'a> Texture<'a> {
                     ]);
             }
             TextureType::Linear(dimensions) => {
-                command.args(["--assign-oetf", "linear"]).args([
+                command.args(["--assign-tf", "linear"]).args([
                     "--format",
                     match dimensions {
                         TextureComponents::Greyscale => "R8_UNORM",
@@ -124,14 +124,14 @@ impl<'a> Texture<'a> {
 
                 input_texture_path = cached_normal_path;
                 command
-                    .args(["--assign-oetf", "srgb"])
+                    .args(["--assign-tf", "linear"])
                     .args(["--format", "R8G8B8_UNORM"])
                     .arg("--normal-mode");
             }
             TextureType::Normal => {
                 command
                     //.args(["--assign-primaries", "BT709"])
-                    .args(["--assign-oetf", "srgb"])
+                    .args(["--assign-tf", "linear"])
                     .args(["--format", "R8G8B8_UNORM"])
                     .arg("--normal-mode");
             }

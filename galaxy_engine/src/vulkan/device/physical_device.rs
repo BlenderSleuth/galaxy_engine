@@ -1,9 +1,9 @@
 // Copyright (c) 2024-2025 Ben Sutherland.
 
+use arrayvec::ArrayVec;
+use ash::vk;
 use std::ffi::CStr;
 use std::num::NonZeroU32;
-
-use ash::vk;
 
 use crate::utils::linear_from_srgb_format;
 use crate::vulkan;
@@ -101,11 +101,23 @@ pub struct PhysicalDeviceFeatures {
     pub shader_sm_builtins_features_nv: vk::PhysicalDeviceShaderSMBuiltinsFeaturesNV<'static>,
 }
 
+#[derive(Copy, Clone, PartialEq)]
+pub struct PhysicalDeviceQueue {
+    pub family_idx: u32,
+    pub queue_idx: u32,
+}
+#[derive(Copy, Clone)]
+pub struct PhysicalDeviceQueueCreateInfo {
+    pub family_idx: u32,
+    pub num: u32,
+}
+
 pub struct PhysicalDevice {
     pub handle: vk::PhysicalDevice,
-    pub primary_queue_family_idx: u32,
-    pub async_transfer_queue_family_idx: Option<u32>,
-    pub async_compute_queue_family_idx: Option<u32>,
+    pub primary_queue: PhysicalDeviceQueue,
+    pub async_transfer_queue: PhysicalDeviceQueue,
+    pub async_compute_queue: PhysicalDeviceQueue,
+    pub queue_infos: ArrayVec<PhysicalDeviceQueueCreateInfo, 3>,
     pub is_discrete: bool,
     pub surface_format: vk::SurfaceFormatKHR,
     pub surface_linear_format: vk::Format,
@@ -167,7 +179,7 @@ impl PhysicalDevice {
         enabled_extensions.extend_from_slice(required_extensions);
 
         // Select queue families.
-        let mut primary_queue_family_idx = None;
+        let mut primary_queue_family_indices = ArrayVec::<u32, 3>::new();
         let mut async_transfer_queue_family_idx = None;
         let mut async_compute_queue_family_idx = None;
         let queue_families = unsafe { instance.get_physical_device_queue_family_properties(handle) };
@@ -187,9 +199,9 @@ impl PhysicalDevice {
             let supports_present = surface.get_physical_device_surface_support(handle, queue_family_idx)?;
 
             // This queue family is assigned to at most one of the following roles:
-            // Find the primary queue.
-            if primary_queue_family_idx.is_none() && supports_graphics && supports_compute && supports_present {
-                primary_queue_family_idx = Some(queue_family_idx);
+            if (supports_graphics && supports_compute && supports_present) {
+                // Add the primary queue.
+                let _ = primary_queue_family_indices.try_push(queue_family_idx);
             // Find a queue family that supports only compute operations.
             } else if async_compute_queue_family_idx.is_none() && supports_compute && !supports_graphics {
                 async_compute_queue_family_idx = Some(queue_family_idx);
@@ -205,11 +217,81 @@ impl PhysicalDevice {
         }
 
         // Require the primary queue family.
-        let primary_queue_family_idx =
-            primary_queue_family_idx.ok_or(PhysicalDeviceIncompatibility::NoPrimaryQueueFamily)?;
+        let get_primary_queue_family_idx = |i: usize| {
+            primary_queue_family_indices
+                .get(i)
+                .copied()
+                .ok_or(PhysicalDeviceIncompatibility::NoPrimaryQueueFamily)
+        };
 
-        // Require specific format for depth/stencil.
-        // Nvidia recommends 24-bit depth buffer with 8-bit stencil buffer, but AMD recommends 32-bit float depth buffer.
+        let mut current_primary_queue_family = 0;
+        let mut primary_queue_idx = 0;
+        let mut primary_queue_family_idx = get_primary_queue_family_idx(current_primary_queue_family)?;
+        let primary_queue = PhysicalDeviceQueue {
+            family_idx: primary_queue_family_idx,
+            queue_idx: primary_queue_idx,
+        };
+
+        let mut queue_infos = QueueArray::new();
+        queue_infos.push(PhysicalDeviceQueueCreateInfo {
+            family_idx: primary_queue_family_idx,
+            num: 1,
+        });
+
+        let get_queue_count = |idx| queue_families[idx as usize].queue_count;
+
+        // Handle assigning primary queues to the async queues if they don't exist.
+        let mut primary_queue_count = get_queue_count(primary_queue_family_idx);
+        // 1 of the queues is the primary queue.
+        primary_queue_count -= 1;
+        primary_queue_idx += 1;
+
+        let mut find_async_queue = |async_queue_family: Option<u32>| -> Result<PhysicalDeviceQueue, PhysicalDeviceIncompatibility> {
+            if let Some(async_queue_family_idx) = async_queue_family {
+                // If we found a specialised queue family, use it.
+                queue_infos.push(PhysicalDeviceQueueCreateInfo {
+                    family_idx: async_queue_family_idx,
+                    num: 1,
+                });
+                Ok(PhysicalDeviceQueue {
+                    family_idx: async_queue_family_idx,
+                    queue_idx: 0,
+                })
+            } else {
+                // Find a primary queue with at least 1 queue left;
+                if primary_queue_count == 0 {
+                    current_primary_queue_family += 1;
+                    primary_queue_idx = 0;
+                    primary_queue_family_idx = get_primary_queue_family_idx(current_primary_queue_family)?;
+                    primary_queue_count = get_queue_count(primary_queue_family_idx);
+
+                    queue_infos.push(PhysicalDeviceQueueCreateInfo {
+                        family_idx: primary_queue_family_idx,
+                        num: 0,
+                    });
+                }
+
+                queue_infos.last_mut().unwrap().num += 1;
+                let queue = PhysicalDeviceQueue {
+                    family_idx: primary_queue_family_idx,
+                    queue_idx: primary_queue_idx,
+                };
+
+                primary_queue_count -= 1;
+                primary_queue_idx += 1;
+
+                Ok(queue)
+            }
+        };
+
+        // Async queue families are guaranteed to be distinct.
+        let async_compute_queue = find_async_queue(async_compute_queue_family_idx)?;
+        let async_transfer_queue = find_async_queue(async_transfer_queue_family_idx)?;
+
+        queue_infos.sort_unstable_by(|a, b| a.family_idx.cmp(&b.family_idx));
+
+        // Require a specific format for depth/stencil.
+        // Nvidia recommends a 24-bit depth buffer with an 8-bit stencil buffer, but AMD recommends a 32-bit float depth buffer.
         const DEPTH_STENCIL_FORMAT: vk::Format = vk::Format::D32_SFLOAT_S8_UINT;
         let format_properties = unsafe { instance.get_physical_device_format_properties(handle, DEPTH_STENCIL_FORMAT) };
         if !format_properties
@@ -315,7 +397,7 @@ impl PhysicalDevice {
             .push_next(&mut features11)
             .push_next(&mut features12);
         if cfg!(feature = "debug_info") {
-            physical_device_features = physical_device_features.push_next(&mut shader_sm_builtins_features_nv);
+             physical_device_features = physical_device_features.push_next(&mut shader_sm_builtins_features_nv);
         }
         unsafe { instance.get_physical_device_features2(handle, &mut physical_device_features) };
         let features = physical_device_features.features;
@@ -324,17 +406,22 @@ impl PhysicalDevice {
 
         macro_rules! check_and_enable_feature {
             ($group:ident.$feature:ident) => {
+                check_and_enable_feature!($group.$feature, false);
+            };
+            ($group:ident.$feature:ident, $optional:literal) => {
                 if $group.$feature == vk::FALSE {
-                    return Err(PhysicalDeviceIncompatibility::FeatureNotSupported(stringify!(
-                        $feature
-                    )));
+                    if !$optional {
+                        return Err(PhysicalDeviceIncompatibility::FeatureNotSupported(stringify!($feature)))
+                    };
+                } else {
+                    enabled_features.$group.$feature = vk::TRUE;
                 }
-                enabled_features.$group.$feature = vk::TRUE;
             };
         }
 
-        #[cfg(feature = "debug_info")]
-        check_and_enable_feature!(shader_sm_builtins_features_nv.shader_sm_builtins);
+        if cfg!(feature = "debug_info") {
+            check_and_enable_feature!(shader_sm_builtins_features_nv.shader_sm_builtins, true);
+        }
 
         // Require anisotropic filtering support.
         check_and_enable_feature!(features.sampler_anisotropy);
@@ -397,9 +484,10 @@ impl PhysicalDevice {
 
         Ok(PhysicalDevice {
             handle,
-            primary_queue_family_idx,
-            async_transfer_queue_family_idx,
-            async_compute_queue_family_idx,
+            primary_queue,
+            async_transfer_queue,
+            async_compute_queue,
+            queue_infos,
             is_discrete: device_properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU,
             surface_format,
             surface_linear_format: linear_from_srgb_format(surface_format.format),
@@ -418,31 +506,11 @@ impl PhysicalDevice {
     }
 
     pub fn queue_infos(&self) -> QueueArray<vk::DeviceQueueCreateInfo<'static>> {
-        let mut queue_infos = QueueArray::new();
-
-        // Async queues are optional, and replaced with a primary queue if not present.
-        let num_primary_queues = 1
-            + self.async_transfer_queue_family_idx.is_none() as usize
-            + self.async_compute_queue_family_idx.is_none() as usize;
-
-        let primary_info = vk::DeviceQueueCreateInfo::default()
-            .queue_family_index(self.primary_queue_family_idx)
-            .queue_priorities(&[1., 1., 1.][0..num_primary_queues]);
-
-        queue_infos.push(primary_info);
-
-        let mut add_optional_queue = |queue_family_index| {
-            if let Some(index) = queue_family_index {
-                queue_infos.push(
-                    vk::DeviceQueueCreateInfo::default()
-                        .queue_family_index(index)
-                        .queue_priorities(&[1.]),
-                );
-            }
-        };
-        add_optional_queue(self.async_transfer_queue_family_idx);
-        add_optional_queue(self.async_compute_queue_family_idx);
-
-        queue_infos
+        static ONES: [f32; PhysicalDevice::MAX_QUEUE_FAMILIES] = [1.; PhysicalDevice::MAX_QUEUE_FAMILIES];
+        QueueArray::from_iter(self.queue_infos.iter().map(|queue| {
+            vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(queue.family_idx)
+                .queue_priorities(&ONES[0..queue.num as usize])
+        }))
     }
 }

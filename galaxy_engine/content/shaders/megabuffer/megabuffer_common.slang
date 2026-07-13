@@ -6,6 +6,16 @@ struct MeshBufferOffset {
     uint offset;
 }
 
+// Keep device addresses inside a struct so SPIRV-Cross emits an array of
+// addresses in MSL, rather than treating the table itself as one pointer.
+struct VertexBufferRef {
+    Ptr<MeshVertexLayout> value;
+}
+
+struct IndexBufferRef {
+    Ptr<uint> value;
+}
+
 struct PushConstants {
     uint group_count_x;
     uint num_threads;
@@ -15,11 +25,11 @@ struct PushConstants {
 struct Resources {
     // Vertices:
     StructuredBuffer<MeshBufferOffset> vertex_offsets;
-    StructuredBuffer<Ptr<MeshVertexLayout>> vertex_buffers;
+    RWStructuredBuffer<VertexBufferRef> vertex_buffers;
     RWStructuredBuffer<MeshVertexLayout, ScalarDataLayout> vertex_megabuffer;
     // Indices:
     StructuredBuffer<MeshBufferOffset> index_offsets;
-    StructuredBuffer<Ptr<uint>> index_buffers;
+    RWStructuredBuffer<IndexBufferRef> index_buffers;
     RWStructuredBuffer<uint> index_megabuffer;
     // Indirect draw:
     StructuredBuffer<DrawIndexedIndirectCommand> draw_indirect;
