@@ -259,7 +259,7 @@ impl<L: HostVisible> Buffer<L> {
     pub unsafe fn get_mut<T: bytemuck::Pod>(&mut self, offset: usize) -> &mut T {
         let size = size_of::<T>();
         // Panics if the alignment is wrong.
-        bytemuck::try_from_bytes_mut(self.get_mut_bytes(size, offset)).unwrap()
+        bytemuck::try_from_bytes_mut(unsafe { self.get_mut_bytes(size, offset) }).unwrap()
     }
 
     /// Casts the buffer memory to a mutable slice of type T.
@@ -269,7 +269,7 @@ impl<L: HostVisible> Buffer<L> {
     pub unsafe fn get_mut_slice<T: bytemuck::Pod>(&mut self, len: usize, offset: usize) -> &mut [T] {
         let size = size_of::<T>() * len;
         // Panics if the alignment is wrong.
-        bytemuck::try_cast_slice_mut(self.get_mut_bytes(size, offset)).unwrap()
+        bytemuck::try_cast_slice_mut(unsafe { self.get_mut_bytes(size, offset) }).unwrap()
     }
 
     pub fn zero_and_get_mut_bytes(&mut self) -> &mut [u8] {

@@ -7,7 +7,10 @@ use arrayvec::ArrayVec;
 use ash::vk;
 use itertools::{izip, Itertools};
 use serde::{Deserialize, Serialize};
-use shipyard::{Component, EntityId, IntoIter, Ref, RefMut, View, ViewMut, World};
+use shipyard::{
+    advanced::get_component::{Ref, RefMut},
+    Component, EntityId, IntoIter, View, ViewMut, World,
+};
 
 use crate::camera::{CamIsometry, Camera, FirstPersonCamera, ViewInfo};
 use crate::engine::GalaxyEngine;

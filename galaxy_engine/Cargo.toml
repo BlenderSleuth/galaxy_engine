@@ -24,10 +24,10 @@ itertools.workspace = true
 #fastrand.workspace = true
 ultraviolet = { workspace = true, features = ["bytemuck", "serde"] }
 serde = { workspace = true, features = ["derive"] }
-gpu-allocator = { version = "0.27.0", default-features = false, features = ["vulkan"] }
+gpu-allocator = { version = "0.28.0", default-features = false, features = ["std", "vulkan"] }
 presser = "0.3.1"
 obj-rs = "0.7.4"
-meshopt = "0.4.1"
+meshopt = "0.6.2"
 ktx2.workspace = true
 parking_lot = { version = "0.12.3", default-features = false }
 castaway = { version = "0.2.3", default-features = false }
@@ -45,7 +45,7 @@ path-slash = "0.2.1"
 bevy_mikktspace = "0.15.0"
 smallvec = "1.13.2"
 egui.workspace = true
-egui-winit = "0.30.0"
+egui-winit = "0.31.0"
 
 [build-dependencies]
 galaxy_engine_build = { path = "../galaxy_engine_build" }

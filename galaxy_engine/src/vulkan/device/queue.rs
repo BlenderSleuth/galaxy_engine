@@ -170,7 +170,7 @@ impl<Q: QueueType> Queue<Q> {
     }
 
     pub(super) unsafe fn release_device(&mut self) {
-        ManuallyDrop::drop(&mut self.loader);
+        unsafe { ManuallyDrop::drop(&mut self.loader) };
     }
 }
 

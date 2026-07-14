@@ -252,7 +252,7 @@ impl MeshData {
                         }
                         Polygon::PT(_) => panic!("Tried to extract normal data which are not contained in the model"),
                         Polygon::PN(_) => panic!("Tried to extract texture data which are not contained in the model"),
-                        Polygon::PTN(ref vec) if vec.len() == 3 => {
+                        Polygon::PTN(vec) if vec.len() == 3 => {
                             let triangle = (
                                 core::array::from_fn::<_, 3, _>(|i| {
                                     let (pi, ti, ni) = vec[i];

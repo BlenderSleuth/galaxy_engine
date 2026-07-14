@@ -7,10 +7,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use arrayvec::ArrayVec;
 use ash::prelude::VkResult;
 use ash::vk::Handle;
-use ash::{ext, khr, nv, vk, RawPtr};
+use ash::{RawPtr, ext, khr, nv, vk};
 use castaway::match_type;
-use gpu_allocator::vulkan::{AllocationCreateDesc, Allocator, AllocatorCreateDesc};
 use gpu_allocator::AllocatorDebugSettings;
+use gpu_allocator::vulkan::{AllocationCreateDesc, Allocator, AllocatorCreateDesc};
 use itertools::{Either, Itertools};
 
 use crate::utils;
@@ -25,7 +25,7 @@ use crate::vulkan::surface::Surface;
 
 pub mod physical_device;
 pub mod queue;
-use queue::{queue_type, Queue, QueueType};
+use queue::{Queue, QueueType, queue_type};
 
 // Initialised by the engine.
 static DEVICE_LOADER: OnceLock<ash::Device> = OnceLock::new();
@@ -217,17 +217,11 @@ impl Device {
         let async_compute_queue = unsafe { Queue::get(Arc::clone(&loader), &physical_device.async_compute_queue) };
 
         // Set up GPU memory allocator.
-        let allocator_debug_settings = if cfg!(feature = "debug_info") {
-            AllocatorDebugSettings {
-                log_memory_information: false,
-                log_leaks_on_shutdown: true,
-                store_stack_traces: false,
-                log_allocations: false,
-                log_frees: false,
-                log_stack_traces: false,
-            }
+        let mut allocator_debug_settings = AllocatorDebugSettings::default();
+        if cfg!(feature = "debug_info") {
+            allocator_debug_settings.log_leaks_on_shutdown = true;
         } else {
-            AllocatorDebugSettings::default()
+            allocator_debug_settings.log_leaks_on_shutdown = false;
         };
 
         let allocator = Allocator::new(&AllocatorCreateDesc {
@@ -379,7 +373,7 @@ impl VkResultExt for vk::Result {
         len: usize,
     ) -> VkResult<ArrayVec<T, N>> {
         self.result().map(move |()| {
-            v.set_len(len);
+            unsafe { v.set_len(len) };
             v
         })
     }
@@ -419,15 +413,17 @@ impl DeviceExt for ash::Device {
         allocation_callbacks: Option<&vk::AllocationCallbacks<'_>>,
     ) -> VkResult<vk::Pipeline> {
         let mut pipeline = std::mem::MaybeUninit::uninit();
-        (self.fp_v1_0().create_graphics_pipelines)(
-            self.handle(),
-            pipeline_cache,
-            1,
-            create_info,
-            allocation_callbacks.as_raw_ptr(),
-            pipeline.as_mut_ptr(),
-        )
-        .assume_init_on_success(pipeline)
+        unsafe {
+            (self.fp_v1_0().create_graphics_pipelines)(
+                self.handle(),
+                pipeline_cache,
+                1,
+                create_info,
+                allocation_callbacks.as_raw_ptr(),
+                pipeline.as_mut_ptr(),
+            )
+            .assume_init_on_success(pipeline)
+        }
     }
 
     /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkAllocateDescriptorSets.html>
@@ -438,8 +434,10 @@ impl DeviceExt for ash::Device {
     ) -> VkResult<ArrayVec<vk::DescriptorSet, N>> {
         assert!(allocate_info.descriptor_set_count <= N as u32);
         let mut desc_set = ArrayVec::new();
-        (self.fp_v1_0().allocate_descriptor_sets)(self.handle(), allocate_info, desc_set.as_mut_ptr())
-            .set_array_vec_len_on_success(desc_set, allocate_info.descriptor_set_count as usize)
+        unsafe {
+            (self.fp_v1_0().allocate_descriptor_sets)(self.handle(), allocate_info, desc_set.as_mut_ptr())
+                .set_array_vec_len_on_success(desc_set, allocate_info.descriptor_set_count as usize)
+        }
     }
 
     /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkAllocateCommandBuffers.html>
@@ -455,8 +453,10 @@ impl DeviceExt for ash::Device {
             .level(level)
             .command_buffer_count(1);
         let mut buffer = MaybeUninit::uninit();
-        (self.fp_v1_0().allocate_command_buffers)(self.handle(), &allocate_info, buffer.as_mut_ptr())
-            .assume_init_on_success(buffer)
+        unsafe {
+            (self.fp_v1_0().allocate_command_buffers)(self.handle(), &allocate_info, buffer.as_mut_ptr())
+                .assume_init_on_success(buffer)
+        }
     }
 
     /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkAllocateCommandBuffers.html>
@@ -467,7 +467,9 @@ impl DeviceExt for ash::Device {
     ) -> VkResult<ArrayVec<vk::CommandBuffer, N>> {
         assert!(allocate_info.command_buffer_count <= N as u32);
         let mut buffers = ArrayVec::new();
-        (self.fp_v1_0().allocate_command_buffers)(self.handle(), allocate_info, buffers.as_mut_ptr())
-            .set_array_vec_len_on_success(buffers, allocate_info.command_buffer_count as usize)
+        unsafe {
+            (self.fp_v1_0().allocate_command_buffers)(self.handle(), allocate_info, buffers.as_mut_ptr())
+                .set_array_vec_len_on_success(buffers, allocate_info.command_buffer_count as usize)
+        }
     }
 }

@@ -110,7 +110,7 @@ mod debug_messenger {
             if IGNORED_MESSAGE_IDS.contains(&(cd.message_id_number as u32)) {
                 return vk::FALSE;
             }
-            if IGNORED_MESSAGES.iter().any(|&m| Some(m) == cd.message_as_c_str()) {
+            if IGNORED_MESSAGES.iter().any(|&m| Some(m) == unsafe { cd.message_as_c_str() }) {
                 return vk::FALSE;
             }
 
